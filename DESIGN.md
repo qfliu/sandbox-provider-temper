@@ -112,7 +112,8 @@ sandbox-provider/
     ├── go.mod
     ├── cmd/api/              control plane API + dashboard entry point
     ├── cmd/gateway/          SSH gateway entry point
-    ├── internal/             shared Go packages (db, k8s, sshx, auth, …)
+    ├── Makefile              build → bin/, test, vet, check
+    ├── internal/             shared Go packages (config, httpapi; later db, auth, k8s, sshx, …)
     ├── web/                  dashboard templates + CSS (embedded via go:embed)
     ├── images/sandbox/       Dockerfile (targets: base, dev), sshd_config, entrypoint (D23)
     ├── deploy/dev/           hand-written manifests for manual testing
@@ -155,7 +156,7 @@ Update checkboxes as work progresses. **Workflow:** one branch and one PR **per 
 - **Done when:** from a clean state, `cluster-up.sh` brings up the cluster and you can SSH into a gVisor-isolated Ubuntu pod. → **PR 1**
 
 ### Phase 2: Control plane API (~1.5–2 h) — branch `phase2/control-plane`
-- [ ] 2.1 `go mod init` in `code/`; skeleton `cmd/api`, `internal/{config,db,auth,k8s,sshx,sandbox}`
+- [x] 2.1 Go module `github.com/qfliu/sandbox-provider-temper/code` in `code/`; `cmd/api` (HTTP server, `GET /healthz`, JSON logs, graceful shutdown on SIGTERM), `internal/config` (env vars), `internal/httpapi` (routes + request logging), `Makefile` (`build` → `bin/`, `test`, `vet`, `check`). Later steps add packages as they need them, so there are no empty placeholder packages
 - [ ] 2.2 Postgres in the cluster plus a schema: `users` (with `is_admin`), `api_keys` (stored hashed), `sandboxes` (id, owner, image, status, ssh_public_key, ttl, expires_at, last_activity)
 - [ ] 2.3 API key auth middleware; a CLI command to bootstrap the first admin user and key
 - [ ] 2.4 Sandbox lifecycle → Kubernetes pods via client-go: `POST/GET/LIST/DELETE /v1/sandboxes`; image limited to the 2 allowed (D2); quota of 10 per user (D17); TTL default 1 h, cap 24 h (D9)
