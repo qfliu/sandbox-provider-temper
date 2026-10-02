@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/qfliu/sandbox-provider-temper/code/internal/config"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/db"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/dbtest"
@@ -17,10 +19,12 @@ import (
 
 const validKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEv765TaxvHJjfGEoUUNbzPT0zk8UzbLbMxNO5n7TRCo alice@laptop"
 
-// fakePods records calls; set failCreate to simulate Kubernetes errors.
+// fakePods records calls; set failCreate to simulate Kubernetes errors and
+// onDelete to run something (like a watcher event) during a delete.
 type fakePods struct {
 	created, deleted []string
 	failCreate       bool
+	onDelete         func(name string)
 }
 
 func (f *fakePods) Create(_ context.Context, sb store.Sandbox) error {
@@ -33,6 +37,9 @@ func (f *fakePods) Create(_ context.Context, sb store.Sandbox) error {
 
 func (f *fakePods) Delete(_ context.Context, name string) error {
 	f.deleted = append(f.deleted, name)
+	if f.onDelete != nil {
+		f.onDelete(name)
+	}
 	return nil
 }
 
@@ -40,6 +47,7 @@ type fixture struct {
 	svc               *Service
 	pods              *fakePods
 	st                *store.Store
+	pool              *pgxpool.Pool
 	alice, bob, admin store.User
 }
 
@@ -57,6 +65,7 @@ func newFixture(t *testing.T) fixture {
 		svc:  NewService(st, pods, cfg, slog.New(slog.NewTextHandler(io.Discard, nil))),
 		pods: pods,
 		st:   st,
+		pool: pool,
 	}
 	f.alice, _ = st.CreateUser(ctx, "alice", false)
 	f.bob, _ = st.CreateUser(ctx, "bob", false)
