@@ -31,6 +31,7 @@ import (
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(log) // packages without an injected logger (e.g. store) log as JSON too
 
 	var err error
 	switch cmd := subcommand(); cmd {
