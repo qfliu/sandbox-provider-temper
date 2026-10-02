@@ -18,7 +18,7 @@ var testCfg = config.Sandbox{
 	InternalKeySecret: "sandbox-internal-key",
 }
 
-var testSandbox = store.Sandbox{ID: "sb-abc", PodName: "sb-abc", UserID: "u1", Image: "ubuntu-dev"}
+var testSandbox = store.Sandbox{ID: "sb-abc", PodName: "sb-abc", UserID: "u1", Image: "ubuntu-dev", TTLSeconds: 600}
 
 // The security-relevant parts of the pod spec must not regress silently.
 func TestBuildPodIsolation(t *testing.T) {
@@ -33,6 +33,9 @@ func TestBuildPodIsolation(t *testing.T) {
 	}
 	if spec.EnableServiceLinks == nil || *spec.EnableServiceLinks {
 		t.Fatal("pod must not get service-link env vars")
+	}
+	if spec.ActiveDeadlineSeconds == nil || *spec.ActiveDeadlineSeconds != 600+DeadlineGrace {
+		t.Fatalf("activeDeadlineSeconds = %v, want TTL + %d", spec.ActiveDeadlineSeconds, DeadlineGrace)
 	}
 	c := spec.Containers[0]
 	if c.Image != "sandbox/ubuntu-dev:0.1" {

@@ -75,12 +75,19 @@ func (p *Pods) Delete(ctx context.Context, podName string) error {
 	return err
 }
 
+// DeadlineGrace is how long past its TTL a sandbox pod may run before the
+// kubelet kills it. The reaper (step 2.8) normally deletes the sandbox at its
+// TTL and records why; this deadline is the safety net for when the API or
+// reaper is down (D27).
+const DeadlineGrace = 60
+
 // BuildPod returns the pod spec for a sandbox. It mirrors the hand-tested
 // code/deploy/dev/sandbox-pod.yaml from Phase 1.
 func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 	no := false
 	grace := int64(5)
 	keyMode := int32(0o444)
+	deadline := int64(sb.TTLSeconds + DeadlineGrace)
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -98,6 +105,7 @@ func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 			AutomountServiceAccountToken:  &no,           // sandbox code gets no cluster credentials
 			EnableServiceLinks:            &no,           // don't leak cluster service env vars
 			TerminationGracePeriodSeconds: &grace,
+			ActiveDeadlineSeconds:         &deadline, // D27: kubelet kills it even if the API is down
 			Containers: []corev1.Container{{
 				Name:            "sandbox",
 				Image:           cfg.ImageRepo + sb.Image + ":" + cfg.ImageTag,
