@@ -1,0 +1,37 @@
+# Hand-written sandbox pod for Phase 1 testing. The control plane will
+# generate pods like this one in Phase 2.
+#
+# Expects Secret `sandbox-internal-key` with key `authorized_keys` (the
+# platform-internal public key, D7).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sb-manual
+  labels:
+    app.kubernetes.io/component: sandbox
+spec:
+  runtimeClassName: gvisor                 # D4: gVisor isolation
+  automountServiceAccountToken: false      # sandbox code gets no cluster credentials
+  enableServiceLinks: false                # don't leak cluster service env vars
+  containers:
+  - name: sandbox
+    image: sandbox/ubuntu-dev:0.1
+    imagePullPolicy: Never                 # built locally with `minikube image build`
+    ports:
+    - {name: ssh, containerPort: 22}
+    resources:
+      requests: {cpu: 250m, memory: 256Mi}
+      limits:   {cpu: "1", memory: 1Gi, ephemeral-storage: 5Gi}
+    readinessProbe:
+      tcpSocket: {port: 22}
+      periodSeconds: 2
+    volumeMounts:
+    - {name: home, mountPath: /home/user}
+    - {name: internal-key, mountPath: /etc/sandbox, readOnly: true}
+  volumes:
+  - name: home                             # D8: survives container restarts, not pod loss
+    emptyDir: {sizeLimit: 5Gi}
+  - name: internal-key
+    secret:
+      secretName: sandbox-internal-key
+      defaultMode: 0444
