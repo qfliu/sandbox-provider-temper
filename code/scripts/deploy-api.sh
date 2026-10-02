@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Builds the API image inside minikube and rolls it out to sandbox-system.
+# Each build gets a unique tag, so Kubernetes always picks up the new code.
+#
+# Usage (from the project root): source ./env.sh && ./code/scripts/deploy-api.sh
+# Then reach it from your Mac:   kubectl -n sandbox-system port-forward svc/sandbox-api 18080:80
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+TAG="$(git -C "$ROOT" rev-parse --short HEAD)-$(date +%s)"
+LOG="$ROOT/.devenv/state/tmp/api-build.log"
+
+echo "==> building sandbox/api:$TAG"
+minikube image build -t "sandbox/api:$TAG" "$ROOT/code" >"$LOG" 2>&1 \
+  || { tail -30 "$LOG"; echo "API image build failed; full log: $LOG" >&2; exit 1; }
+
+echo "==> deploying"
+sed "s|sandbox/api:IMAGE_TAG|sandbox/api:$TAG|" "$ROOT/code/deploy/dev/api.yaml" | kubectl apply -f - >/dev/null
+kubectl -n sandbox-system rollout status deployment/sandbox-api --timeout=180s >/dev/null
+kubectl -n sandbox-system get pods -l app=sandbox-api -o wide | cut -c1-90
+echo "==> sandbox-api ready (sandbox-system/sandbox-api:80)"
