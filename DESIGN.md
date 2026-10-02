@@ -228,7 +228,7 @@ Nine reviewer agents reviewed PRs #1 and #3–#10 (PR #2 was docs-only). Only fi
 | M8 | `last_used_at` write failure turns a valid API key into a 500 | code | ✅ fixed (last_used_at write is best-effort: logged warning, 2 s timeout, key still authenticates) |
 | H2 | Idle-connection cleanup can close a connection mid-exec (5 min idle < 10 min max exec) | code | ✅ fixed (pool counts in-use requests via a release func; idle cleanup skips in-use connections; idle measured from last release) |
 | M2 | Dead SSH connection reported as a normal exit (`-1`, 200) and kept in the pool | code | ✅ fixed (no exit status before the limit → `ErrNoExitStatus` → connection dropped, 502; only a real timeout reports `timed_out`) |
-| M1 | Command force-killed after ignoring SIGTERM reports `exit 137, timed_out:false` | **cluster** | ⏳ |
+| M1 | Command force-killed after ignoring SIGTERM reports `exit 137, timed_out:false` | **cluster** | ✅ fixed (timed_out = limit passed and exit 124 or 137) |
 | M9 | Failed upload destroys the previous file (opened with `O_TRUNC`) | code | ⏳ |
 
 **Deferred (not reproduced, only inferred from the code):** delete-during-create race (M7), missing startupProbe (M10), scripts not checking `env.sh` was sourced (M11), checksums fetched from the same source / tools unverified (M12), plus ~30 low/nit items (index coverage, digest pinning, 401 wording, stale D14 text, etc.). **Already planned for Phase 5:** NetworkPolicies and sandbox pod securityContext hardening.

@@ -30,8 +30,13 @@ type ExecResult struct {
 // sandbox's sshd went away mid-command.
 var ErrNoExitStatus = errors.New("command ended without an exit status (connection lost)")
 
-// timeoutExitCode is what coreutils `timeout` exits with when it kills.
-const timeoutExitCode = 124
+// Exit codes that mean the in-sandbox `timeout` stopped the command:
+// 124 when SIGTERM worked; 137 (128 + SIGKILL) when the command ignored
+// SIGTERM and `timeout -k` had to KILL it (review finding M1).
+const (
+	timeoutExitCode = 124
+	killedExitCode  = 137
+)
 
 // Run executes command in workdir (relative to the home directory if not
 // absolute) with a time limit. The command runs under the sandbox's own
@@ -88,7 +93,10 @@ func Run(ctx context.Context, client *ssh.Client, command, workdir string, limit
 	default:
 		return ExecResult{}, fmt.Errorf("run command: %w", runErr)
 	}
-	res.TimedOut = res.ExitCode == timeoutExitCode && time.Since(start) >= limit
+	// Requiring the limit to have passed keeps a command that exits 124 or
+	// gets OOM-killed (137) early from being mistaken for a timeout.
+	res.TimedOut = time.Since(start) >= limit &&
+		(res.ExitCode == timeoutExitCode || res.ExitCode == killedExitCode)
 	return res, nil
 }
 
