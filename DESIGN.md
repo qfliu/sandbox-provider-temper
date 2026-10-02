@@ -223,7 +223,7 @@ Nine reviewer agents reviewed PRs #1 and #3–#10 (PR #2 was docs-only). Only fi
 | M5 | Interrupted delete left row `deleting` with pod still running; reconcile never retried | code | ✅ fixed (delete finishes even if the client hangs up; pod-delete failure → 503 and the reconcile retries the pod delete) |
 | M6 | Crash-looping sandbox stays `pending`/`running` (restartPolicy Always hides failures) | code | ✅ fixed (`CrashLoopBackOff` → `failed` with last exit code; a single restart is still fine) |
 | H3 | No admission control on `sandboxes`: a compromised API could create privileged non-gVisor pods | cluster (no PSA labels/policies) | ✅ fixed (PSA `baseline` on `sandboxes` + ValidatingAdmissionPolicy requiring gVisor, no SA token, managed-by label; even cluster-admin is denied) |
-| M3 | HTTP server has no timeouts (slowloris) | code | ⏳ |
+| M3 | HTTP server has no timeouts (slowloris) | code | ✅ fixed (ReadHeaderTimeout 10 s, IdleTimeout 2 min, 64 KiB headers; no global read/write timeout so long execs/uploads still work) |
 | M4 | Shutdown not graceful: SSH pool closes on SIGTERM before draining; shutdown deadline exits as an error | code | ⏳ |
 | M8 | `last_used_at` write failure turns a valid API key into a 500 | code | ⏳ |
 | H2 | Idle-connection cleanup can close a connection mid-exec (5 min idle < 10 min max exec) | code | ⏳ |
