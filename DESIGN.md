@@ -125,7 +125,7 @@ sandbox-provider/
 
 ## 7. Implementation Steps
 
-Update checkboxes as work progresses. **Workflow:** one branch and one PR per phase (`phaseN/<name>`); never push directly to `main`. Each phase ends with a PR containing a summary and how to test it; the user reviews and merges before the next phase starts.
+Update checkboxes as work progresses. **Workflow:** one branch and one PR **per step** (e.g. 2.1, 2.2) whenever the step changes code, docs or scripts; branch name `stepN.M/<short-name>`; never push directly to `main`. Each PR says what changed, why, and how to test it. If the previous step's PR isn't merged yet, the next branch is stacked on it (PR base = previous step branch). Phase 1 predates this rule and shipped as a single PR (#1).
 
 ### Phase 0: Decisions
 - [x] Scope: SSH-only, no GUI (D1)
