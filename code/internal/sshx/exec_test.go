@@ -185,3 +185,29 @@ func TestCloseIdleSkipsConnectionsInUse(t *testing.T) {
 		t.Fatal("released connection idle past the timeout should be closed")
 	}
 }
+
+func TestRunTimedOutDetection(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		code     uint32
+		slow     bool // the command ran past the 1 s limit
+		timedOut bool
+	}{
+		{"timeout via SIGTERM (124)", 124, true, true},
+		{"timeout escalated to SIGKILL (137)", 137, true, true},
+		{"command itself exits 124 early", 124, false, false},
+		{"OOM-killed early (137)", 137, false, false},
+		{"slow but normal failure", 1, true, false},
+	} {
+		c, _ := connect(t, func(string) execReply {
+			if tc.slow {
+				time.Sleep(1100 * time.Millisecond)
+			}
+			return execReply{code: tc.code}
+		})
+		res, err := Run(context.Background(), c, "x", "", time.Second)
+		if err != nil || res.TimedOut != tc.timedOut || res.ExitCode != int(tc.code) {
+			t.Errorf("%s: got %+v, %v; want timed_out=%v", tc.name, res, err, tc.timedOut)
+		}
+	}
+}
