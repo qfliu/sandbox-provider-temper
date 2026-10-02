@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -208,6 +209,51 @@ func TestRunTimedOutDetection(t *testing.T) {
 		res, err := Run(context.Background(), c, "x", "", time.Second)
 		if err != nil || res.TimedOut != tc.timedOut || res.ExitCode != int(tc.code) {
 			t.Errorf("%s: got %+v, %v; want timed_out=%v", tc.name, res, err, tc.timedOut)
+		}
+	}
+}
+
+// failingReader returns some data, then an error (like a client hanging up
+// or an upload exceeding its size limit).
+type failingReader struct{ sent bool }
+
+func (r *failingReader) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		return copy(p, "partial garbage"), nil
+	}
+	return 0, errors.New("client went away")
+}
+
+// A failed upload must leave the existing file intact and no temp files
+// behind (review finding M9).
+func TestUploadIsAtomic(t *testing.T) {
+	c, _ := connect(t, nil)
+	if _, err := Upload(c, "notes.txt", strings.NewReader("important v1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Upload(c, "notes.txt", &failingReader{}); err == nil {
+		t.Fatal("failed upload reported success")
+	}
+	var out bytes.Buffer
+	if err := Download(c, "notes.txt", func(int64) {}, &out); err != nil || out.String() != "important v1" {
+		t.Fatalf("after failed upload, notes.txt = %q, %v; want the original", out.String(), err)
+	}
+	if _, err := Upload(c, "notes.txt", strings.NewReader("v2")); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	Download(c, "notes.txt", func(int64) {}, &out)
+	if out.String() != "v2" {
+		t.Fatalf("successful overwrite: got %q", out.String())
+	}
+
+	sc, _ := sftp.NewClient(c)
+	defer sc.Close()
+	entries, _ := sc.ReadDir(HomeDir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".upload-") {
+			t.Fatalf("temp file left behind: %s", e.Name())
 		}
 	}
 }

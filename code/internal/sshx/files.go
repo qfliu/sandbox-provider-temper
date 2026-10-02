@@ -1,6 +1,7 @@
 package sshx
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -33,6 +34,11 @@ func ResolvePath(p string) string {
 
 // Upload writes r to path inside the sandbox, creating parent directories,
 // and returns the number of bytes written. Data is streamed, not buffered.
+//
+// It's atomic: data goes to a hidden temporary file next to the target,
+// which replaces the target in one rename only once the upload completed.
+// A failed upload (client gone, over the size limit, disk full) leaves any
+// existing file untouched (review finding M9).
 func Upload(client *ssh.Client, p string, r io.Reader) (int64, error) {
 	c, err := sftp.NewClient(client)
 	if err != nil {
@@ -41,18 +47,33 @@ func Upload(client *ssh.Client, p string, r io.Reader) (int64, error) {
 	defer c.Close()
 
 	p = ResolvePath(p)
-	if err := c.MkdirAll(path.Dir(p)); err != nil {
-		return 0, fmt.Errorf("create %s: %w", path.Dir(p), err)
+	dir := path.Dir(p)
+	if err := c.MkdirAll(dir); err != nil {
+		return 0, fmt.Errorf("create %s: %w", dir, err)
 	}
-	f, err := c.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
+	suffix := make([]byte, 6)
+	rand.Read(suffix)
+	tmp := path.Join(dir, fmt.Sprintf(".%s.upload-%x", path.Base(p), suffix))
+
+	f, err := c.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
 	if err != nil {
-		return 0, fmt.Errorf("open %s: %w", p, err)
+		return 0, fmt.Errorf("open %s: %w", tmp, err)
 	}
 	n, err := io.Copy(f, r)
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
-	return n, err
+	if err == nil {
+		// posix-rename@openssh.com replaces an existing target atomically.
+		if err = c.PosixRename(tmp, p); err != nil {
+			err = fmt.Errorf("replace %s: %w", p, err)
+		}
+	}
+	if err != nil {
+		c.Remove(tmp) // best-effort; the original file is untouched
+		return n, err
+	}
+	return n, nil
 }
 
 // Download streams the file at path into w, calling setSize with its length
