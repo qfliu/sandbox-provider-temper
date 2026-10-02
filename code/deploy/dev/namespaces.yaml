@@ -1,0 +1,11 @@
+# Platform services and sandboxes live in separate namespaces (D24, D26),
+# which keeps RBAC and the Phase 5 NetworkPolicies simple.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sandbox-system   # API, gateway, Postgres
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sandboxes        # sandbox pods only (untrusted code)

@@ -30,5 +30,15 @@ for target in base dev; do
   echo "    sandbox/ubuntu-$target:$IMAGE_TAG"
 done
 
+echo "==> namespaces and the internal SSH key"
+kubectl apply -f "$ROOT/code/deploy/dev/namespaces.yaml" >/dev/null
+# Platform-internal SSH key (D7): sandbox sshd trusts only this public key.
+# The private half stays in .devenv (the API uses it from step 2.6 on).
+KEYS="$ROOT/.devenv/state/test-keys"
+mkdir -p "$KEYS"
+[ -f "$KEYS/internal" ] || ssh-keygen -q -t ed25519 -N "" -C sandbox-internal -f "$KEYS/internal"
+kubectl -n sandboxes create secret generic sandbox-internal-key \
+  --from-file=authorized_keys="$KEYS/internal.pub" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
 echo "==> cluster ready"
 kubectl get nodes -o wide | cut -c1-100

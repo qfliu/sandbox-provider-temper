@@ -18,6 +18,25 @@ type API struct {
 	// DatabaseURL is the Postgres connection string (required), e.g.
 	// postgres://user:pass@host:5432/sandbox?sslmode=disable
 	DatabaseURL string
+	// Sandbox controls how sandbox pods are created.
+	Sandbox Sandbox
+}
+
+// Sandbox holds settings for sandbox pods.
+type Sandbox struct {
+	// Namespace is where sandbox pods run, apart from platform services (D26).
+	Namespace string
+	// ImageRepo + image name + ":" + ImageTag gives the container image,
+	// e.g. sandbox/ubuntu-dev:0.1 (D2, D23).
+	ImageRepo string
+	ImageTag  string
+	// DefaultTTL applies when a request doesn't set ttl_seconds; MaxTTL caps
+	// what users may ask for (D9).
+	DefaultTTL time.Duration
+	MaxTTL     time.Duration
+	// InternalKeySecret is the Secret holding the platform-internal SSH
+	// public key that sandbox sshd trusts (D7).
+	InternalKeySecret string
 }
 
 // LoadAPI reads API settings from the environment, applying defaults.
@@ -25,19 +44,42 @@ func LoadAPI() (API, error) {
 	cfg := API{
 		ListenAddr:      getenv("API_LISTEN_ADDR", ":8080"),
 		ShutdownTimeout: 10 * time.Second,
+		Sandbox: Sandbox{
+			Namespace:         getenv("SANDBOX_NAMESPACE", "sandboxes"),
+			ImageRepo:         getenv("SANDBOX_IMAGE_REPO", "sandbox/"),
+			ImageTag:          getenv("SANDBOX_IMAGE_TAG", "0.1"),
+			DefaultTTL:        time.Hour,
+			MaxTTL:            24 * time.Hour,
+			InternalKeySecret: getenv("SANDBOX_INTERNAL_KEY_SECRET", "sandbox-internal-key"),
+		},
 	}
+	durations := []struct {
+		env string
+		dst *time.Duration
+	}{
+		{"API_SHUTDOWN_TIMEOUT", &cfg.ShutdownTimeout},
+		{"SANDBOX_DEFAULT_TTL", &cfg.Sandbox.DefaultTTL},
+		{"SANDBOX_MAX_TTL", &cfg.Sandbox.MaxTTL},
+	}
+	for _, d := range durations {
+		if v := os.Getenv(d.env); v != "" {
+			parsed, err := time.ParseDuration(v)
+			if err != nil {
+				return API{}, fmt.Errorf("%s: %w", d.env, err)
+			}
+			*d.dst = parsed
+		}
+	}
+	if cfg.Sandbox.DefaultTTL > cfg.Sandbox.MaxTTL {
+		return API{}, fmt.Errorf("SANDBOX_DEFAULT_TTL (%s) exceeds SANDBOX_MAX_TTL (%s)",
+			cfg.Sandbox.DefaultTTL, cfg.Sandbox.MaxTTL)
+	}
+
 	url, err := DatabaseURL()
 	if err != nil {
 		return API{}, err
 	}
 	cfg.DatabaseURL = url
-	if v := os.Getenv("API_SHUTDOWN_TIMEOUT"); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			return API{}, fmt.Errorf("API_SHUTDOWN_TIMEOUT: %w", err)
-		}
-		cfg.ShutdownTimeout = d
-	}
 	return cfg, nil
 }
 

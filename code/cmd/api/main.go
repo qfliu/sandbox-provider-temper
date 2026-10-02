@@ -21,6 +21,8 @@ import (
 	"github.com/qfliu/sandbox-provider-temper/code/internal/config"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/db"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/httpapi"
+	"github.com/qfliu/sandbox-provider-temper/code/internal/k8s"
+	"github.com/qfliu/sandbox-provider-temper/code/internal/sandbox"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
 
@@ -73,9 +75,21 @@ func serve(log *slog.Logger) error {
 	}
 	log.Info("database ready", "migrations_applied", applied)
 
+	kube, err := k8s.NewClientset()
+	if err != nil {
+		return err
+	}
+	st := store.New(pool)
+	sandboxes := sandbox.NewService(st, k8s.NewPods(kube, cfg.Sandbox), cfg.Sandbox, log)
+
 	srv := &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: httpapi.NewHandler(httpapi.Deps{Log: log, DB: pool, Auth: store.New(pool)}),
+		Addr: cfg.ListenAddr,
+		Handler: httpapi.NewHandler(httpapi.Deps{
+			Log:       log,
+			DB:        pool,
+			Auth:      st,
+			Sandboxes: sandboxes,
+		}),
 	}
 
 	errCh := make(chan error, 1)
