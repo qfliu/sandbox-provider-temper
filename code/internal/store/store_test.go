@@ -102,3 +102,25 @@ func TestUserByAPIKeyRejects(t *testing.T) {
 		t.Fatalf("revoked key: err = %v, want ErrNotFound", err)
 	}
 }
+
+// Recording last_used_at is bookkeeping: if that write fails, a valid key
+// must still authenticate (review finding M8).
+func TestUserByAPIKeySurvivesLastUsedWriteFailure(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	key, _, _ := s.CreateAPIKey(ctx, alice.ID, "")
+
+	// Make every UPDATE of api_keys fail, while reads keep working.
+	if _, err := s.pool.Exec(ctx, `
+		CREATE FUNCTION refuse_update() RETURNS trigger AS $$
+		BEGIN RAISE EXCEPTION 'simulated write failure'; END $$ LANGUAGE plpgsql;
+		CREATE TRIGGER refuse BEFORE UPDATE ON api_keys FOR EACH ROW EXECUTE FUNCTION refuse_update();`); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.UserByAPIKey(ctx, key)
+	if err != nil || got.ID != alice.ID {
+		t.Fatalf("valid key rejected because last_used_at couldn't be written: %+v, %v", got, err)
+	}
+}

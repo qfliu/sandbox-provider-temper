@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -115,11 +116,17 @@ func (s *Store) UserByAPIKey(ctx context.Context, plaintext string) (User, error
 		return User{}, err
 	}
 
-	if _, err := s.pool.Exec(ctx, `
+	// Recording last_used_at is bookkeeping: if it fails (lock contention, a
+	// read-only failover…), log it and still authenticate the valid key
+	// (review finding M8). Its own short timeout keeps a slow write from
+	// delaying the request.
+	touchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if _, err := s.pool.Exec(touchCtx, `
 		UPDATE api_keys SET last_used_at = now()
 		WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')`,
 		keyID); err != nil {
-		return User{}, err
+		slog.Warn("could not record API key use", "key_id", keyID, "err", err)
 	}
 	return u, nil
 }
