@@ -17,6 +17,10 @@ AuthorizedKeysFile /etc/sandbox/authorized_keys
 # StrictModes' checks on the user's home dir.
 StrictModes no
 
+# The platform multiplexes many exec/file sessions over one pooled
+# connection per sandbox (default is 10).
+MaxSessions 64
+
 UsePAM no
 PrintMotd no
 X11Forwarding no

@@ -79,11 +79,13 @@ func serve(log *slog.Logger) error {
 	}
 	log.Info("database ready", "migrations_applied", applied)
 
-	// Load the internal key now so a missing or bad key fails at startup,
-	// not on the first exec (step 2.7 uses it).
-	if _, err := sshx.LoadSigner(cfg.Sandbox.InternalKeyFile); err != nil {
+	// The internal key the API logs into sandboxes with (D7).
+	signer, err := sshx.LoadSigner(cfg.Sandbox.InternalKeyFile)
+	if err != nil {
 		return err
 	}
+	sshPool := sshx.NewPool(sshx.Dialer{Signer: signer})
+	go sshPool.Run(ctx) // closes idle connections; closes all on shutdown
 
 	kube, err := k8s.NewClientset()
 	if err != nil {
@@ -91,7 +93,7 @@ func serve(log *slog.Logger) error {
 	}
 	st := store.New(pool)
 	pods := k8s.NewPods(kube, cfg.Sandbox)
-	sandboxes := sandbox.NewService(st, pods, cfg.Sandbox, log)
+	sandboxes := sandbox.NewService(st, pods, sshPool, cfg.Sandbox, log)
 
 	// Keep sandbox statuses in line with their pods (live events + a
 	// periodic reconcile). Both stop when ctx is cancelled at shutdown.

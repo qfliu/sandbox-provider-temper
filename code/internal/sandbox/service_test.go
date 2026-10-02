@@ -15,6 +15,7 @@ import (
 	"github.com/qfliu/sandbox-provider-temper/code/internal/config"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/db"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/dbtest"
+	"github.com/qfliu/sandbox-provider-temper/code/internal/sshx"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
 
@@ -81,7 +82,7 @@ func newFixture(t *testing.T) fixture {
 	pods := &fakePods{}
 	cfg := config.Sandbox{DefaultTTL: time.Hour, MaxTTL: 24 * time.Hour}
 	f := fixture{
-		svc:  NewService(st, pods, cfg, slog.New(slog.NewTextHandler(io.Discard, nil))),
+		svc:  NewService(st, pods, sshx.NewPool(sshx.Dialer{}), cfg, slog.New(slog.NewTextHandler(io.Discard, nil))),
 		pods: pods,
 		st:   st,
 		pool: pool,

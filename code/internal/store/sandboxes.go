@@ -178,3 +178,12 @@ func (s *Store) ListLiveSandboxes(ctx context.Context) ([]Sandbox, error) {
 	}
 	return list, rows.Err()
 }
+
+// TouchSandbox records activity (exec, file transfer, SSH) for the idle
+// reaper. Writes at most every 10 seconds per sandbox, so a busy agent
+// doesn't turn every call into a database write.
+func (s *Store) TouchSandbox(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE sandboxes SET last_activity_at = now()
+		WHERE id = $1 AND last_activity_at < now() - interval '10 seconds'`, id)
+	return err
+}
