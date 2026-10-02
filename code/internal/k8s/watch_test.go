@@ -42,6 +42,10 @@ func TestStateOf(t *testing.T) {
 		{"running, not ready yet", podWith(func(p *corev1.Pod) { p.Status.Phase = corev1.PodRunning }), PodStarting, ""},
 		{"ready", podWith(ready), PodReady, ""},
 		{"bad image", podWith(waiting("ImagePullBackOff")), PodFailed, "ImagePullBackOff"},
+		{"bad image after a previous run", podWith(func(p *corev1.Pod) {
+			waiting("ErrImagePull")(p)
+			p.Status.ContainerStatuses[0].LastTerminationState.Terminated = &corev1.ContainerStateTerminated{ExitCode: 0}
+		}), PodFailed, "ErrImagePull: details"},
 		{"deadline", podWith(func(p *corev1.Pod) { p.Status.Phase = corev1.PodFailed; p.Status.Reason = "DeadlineExceeded" }), PodExpired, ""},
 		{"evicted", podWith(func(p *corev1.Pod) {
 			p.Status.Phase = corev1.PodFailed

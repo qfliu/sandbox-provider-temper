@@ -64,7 +64,7 @@ func StateOf(pod *corev1.Pod) PodState {
 	for _, cs := range pod.Status.ContainerStatuses {
 		if w := cs.State.Waiting; w != nil && fatalWaitReasons[w.Reason] {
 			reason := strings.TrimSpace(w.Reason + ": " + w.Message)
-			if t := cs.LastTerminationState.Terminated; t != nil {
+			if t := cs.LastTerminationState.Terminated; t != nil && w.Reason == "CrashLoopBackOff" {
 				reason += fmt.Sprintf(" (last exit code %d, %d restarts)", t.ExitCode, cs.RestartCount)
 			}
 			return PodState{Phase: PodFailed, Reason: reason}
