@@ -32,6 +32,7 @@ export DOCKER_HOST="unix://$_SB_STATE/colima/default/docker.sock"
 # Kubernetes
 export MINIKUBE_HOME="$_SB_STATE/minikube"
 export KUBECONFIG="$_SB_STATE/kube/config"
+export KUBECACHEDIR="$_SB_STATE/kube/cache"   # kubectl discovery/http cache (default ~/.kube/cache)
 export HELM_CONFIG_HOME="$_SB_STATE/helm/config"
 export HELM_CACHE_HOME="$_SB_STATE/helm/cache"
 export HELM_DATA_HOME="$_SB_STATE/helm/data"
@@ -45,7 +46,7 @@ deactivate_sandbox_env() {
   export PS1="$_SB_OLD_PS1"
   export TMPDIR="$_SB_OLD_TMPDIR"
   unset GOROOT GOPATH GOMODCACHE GOCACHE GOTOOLCHAIN GOENV LIMA_HOME COLIMA_HOME \
-        DOCKER_CONFIG DOCKER_HOST MINIKUBE_HOME KUBECONFIG \
+        DOCKER_CONFIG DOCKER_HOST MINIKUBE_HOME KUBECONFIG KUBECACHEDIR \
         HELM_CONFIG_HOME HELM_CACHE_HOME HELM_DATA_HOME
   unset -f deactivate_sandbox_env
 }

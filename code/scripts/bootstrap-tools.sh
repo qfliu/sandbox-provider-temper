@@ -13,6 +13,7 @@ MINIKUBE_VERSION=v1.39.0
 COLIMA_VERSION=v0.10.3
 LIMA_VERSION=2.2.0
 DOCKER_VERSION=29.8.2
+VFKIT_VERSION=v0.6.4
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TOOLS="$ROOT/.devenv/tools"
@@ -55,6 +56,14 @@ echo "==> minikube $MINIKUBE_VERSION"
 if ! have "$BIN/minikube"; then
   fetch "https://github.com/kubernetes/minikube/releases/download/${MINIKUBE_VERSION}/minikube-${OS}-${ARCH}" "$BIN/minikube"
   chmod +x "$BIN/minikube"
+fi
+
+# vfkit boots minikube's Linux VM directly via macOS Virtualization.framework
+# (minikube --driver=vfkit). The release binary is a signed universal binary.
+echo "==> vfkit $VFKIT_VERSION"
+if ! have "$BIN/vfkit"; then
+  fetch "https://github.com/crc-org/vfkit/releases/download/${VFKIT_VERSION}/vfkit" "$BIN/vfkit"
+  chmod +x "$BIN/vfkit"
 fi
 
 # lima provides the Linux VM (via macOS Virtualization.framework); colima
