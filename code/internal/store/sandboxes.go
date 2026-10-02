@@ -38,6 +38,7 @@ type Sandbox struct {
 	SSHPublicKey   string     `json:"ssh_public_key"`
 	PodName        string     `json:"-"`
 	PodIP          string     `json:"-"`
+	HostPublicKey  string     `json:"-"` // D29: the only host key the API/gateway accept
 	TTLSeconds     int        `json:"ttl_seconds"`
 	CreatedAt      time.Time  `json:"created_at"`
 	ExpiresAt      time.Time  `json:"expires_at"`
@@ -47,20 +48,21 @@ type Sandbox struct {
 
 // NewSandbox is what's needed to insert a sandbox row.
 type NewSandbox struct {
-	ID           string
-	UserID       string
-	Image        string
-	SSHPublicKey string
-	TTLSeconds   int
+	ID            string
+	UserID        string
+	Image         string
+	SSHPublicKey  string
+	HostPublicKey string
+	TTLSeconds    int
 }
 
 const sandboxColumns = `id, user_id::text, image, status, status_reason, ssh_public_key,
-	pod_name, pod_ip, ttl_seconds, created_at, expires_at, last_activity_at, deleted_at`
+	pod_name, pod_ip, host_public_key, ttl_seconds, created_at, expires_at, last_activity_at, deleted_at`
 
 func scanSandbox(row pgx.Row) (Sandbox, error) {
 	var s Sandbox
 	err := row.Scan(&s.ID, &s.UserID, &s.Image, &s.Status, &s.StatusReason, &s.SSHPublicKey,
-		&s.PodName, &s.PodIP, &s.TTLSeconds, &s.CreatedAt, &s.ExpiresAt, &s.LastActivityAt, &s.DeletedAt)
+		&s.PodName, &s.PodIP, &s.HostPublicKey, &s.TTLSeconds, &s.CreatedAt, &s.ExpiresAt, &s.LastActivityAt, &s.DeletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Sandbox{}, ErrNotFound
 	}
@@ -90,10 +92,10 @@ func (s *Store) CreateSandbox(ctx context.Context, n NewSandbox) (Sandbox, error
 		}
 		var err error
 		sb, err = scanSandbox(tx.QueryRow(ctx, `
-			INSERT INTO sandboxes (id, user_id, image, ssh_public_key, pod_name, ttl_seconds, expires_at)
-			VALUES ($1, $2, $3, $4, $1, $5::int, now() + make_interval(secs => $5::int))
+			INSERT INTO sandboxes (id, user_id, image, ssh_public_key, host_public_key, pod_name, ttl_seconds, expires_at)
+			VALUES ($1, $2, $3, $4, $5, $1, $6::int, now() + make_interval(secs => $6::int))
 			RETURNING `+sandboxColumns,
-			n.ID, n.UserID, n.Image, n.SSHPublicKey, n.TTLSeconds))
+			n.ID, n.UserID, n.Image, n.SSHPublicKey, n.HostPublicKey, n.TTLSeconds))
 		return err
 	})
 	return sb, err

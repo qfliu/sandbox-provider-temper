@@ -177,3 +177,39 @@ func TestReconcile(t *testing.T) {
 		t.Fatalf("orphan cleanup deleted %v; want the ended sandbox's pod and the unknown pod only", f.pods.deleted)
 	}
 }
+
+func TestReconcileCleansSecretsButNotNewSandboxes(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	live := f.newSandbox(t, true)
+	ended := f.newSandbox(t, true)
+	f.st.MarkSandboxEnded(ctx, ended.ID, store.StatusDeleted, "earlier")
+
+	y := f.syncer()
+	y.SetCache(fakeCache{})
+	// A sandbox created after the reconcile lists live rows must keep its
+	// Secret: simulate it by creating one while CleanupSecrets runs.
+	var late store.Sandbox
+	f.pods.secrets = []string{live.ID, ended.ID}
+	y.pods = cleanupHook{f.pods, func() {
+		late = f.newSandbox(t, false)
+		f.pods.secrets = append(f.pods.secrets, late.ID)
+	}}
+	if err := y.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.pods.cleanedSecrets) != 1 || f.pods.cleanedSecrets[0] != ended.ID+"-hostkey" {
+		t.Fatalf("cleaned %v, want only the ended sandbox's secret", f.pods.cleanedSecrets)
+	}
+}
+
+// cleanupHook runs before() just before delegating CleanupSecrets.
+type cleanupHook struct {
+	*fakePods
+	before func()
+}
+
+func (c cleanupHook) CleanupSecrets(ctx context.Context, isLive func(string) bool) ([]string, error) {
+	c.before()
+	return c.fakePods.CleanupSecrets(ctx, isLive)
+}

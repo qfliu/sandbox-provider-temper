@@ -16,6 +16,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/qfliu/sandbox-provider-temper/code/internal/config"
+	"github.com/qfliu/sandbox-provider-temper/code/internal/sshx"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
 
@@ -35,8 +36,11 @@ var ErrUnavailable = errors.New("could not start sandbox")
 
 // Pods starts and stops sandbox pods (implemented by k8s.Pods; faked in tests).
 type Pods interface {
-	Create(ctx context.Context, sb store.Sandbox) error
+	// Create starts the pod with hostKeyPEM as its SSH host key (D29).
+	Create(ctx context.Context, sb store.Sandbox, hostKeyPEM []byte) error
 	Delete(ctx context.Context, podName string) error
+	// CleanupSecrets deletes host-key Secrets of sandboxes that aren't live.
+	CleanupSecrets(ctx context.Context, isLive func(sandboxID string) bool) ([]string, error)
 }
 
 // Service implements sandbox operations.
@@ -75,19 +79,27 @@ func (s *Service) Create(ctx context.Context, user store.User, req CreateRequest
 	if err != nil {
 		return store.Sandbox{}, err
 	}
+	// The sandbox's own SSH host key: the private half goes to the pod, the
+	// public half to the database, so connections can verify they reached
+	// this sandbox and no other (D29).
+	hostKeyPEM, hostPub, err := sshx.GenerateHostKey()
+	if err != nil {
+		return store.Sandbox{}, err
+	}
 
 	sb, err := s.store.CreateSandbox(ctx, store.NewSandbox{
-		ID:           newID(),
-		UserID:       user.ID,
-		Image:        req.Image,
-		SSHPublicKey: key,
-		TTLSeconds:   int(ttl / time.Second),
+		ID:            newID(),
+		UserID:        user.ID,
+		Image:         req.Image,
+		SSHPublicKey:  key,
+		HostPublicKey: hostPub,
+		TTLSeconds:    int(ttl / time.Second),
 	})
 	if err != nil {
 		return store.Sandbox{}, err
 	}
 
-	if err := s.pods.Create(ctx, sb); err != nil {
+	if err := s.pods.Create(ctx, sb, hostKeyPEM); err != nil {
 		s.log.Error("create sandbox pod", "sandbox", sb.ID, "err", err)
 		// Use a fresh context: if the client hung up, still record the failure.
 		if _, markErr := s.store.MarkSandboxEnded(context.WithoutCancel(ctx), sb.ID,

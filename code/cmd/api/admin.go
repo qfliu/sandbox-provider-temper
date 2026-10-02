@@ -6,9 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"os"
+	"strings"
 
 	"github.com/qfliu/sandbox-provider-temper/code/internal/config"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/db"
+	"github.com/qfliu/sandbox-provider-temper/code/internal/sshx"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
 
@@ -104,4 +108,57 @@ func openStore(ctx context.Context) (*store.Store, func(), error) {
 		return nil, nil, err
 	}
 	return store.New(pool), pool.Close, nil
+}
+
+// runCheckSSH connects to a sandbox exactly as the platform does (internal
+// key + pinned host key) and prints who answered. --addr overrides the
+// recorded pod IP, e.g. to check that another sandbox's address is refused.
+// Must run where pod IPs are reachable (inside the cluster).
+func runCheckSSH(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("check-ssh", flag.ContinueOnError)
+	id := fs.String("sandbox", "", "sandbox id (required)")
+	addr := fs.String("addr", "", "connect here instead of the recorded pod IP")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *id == "" {
+		return errors.New("check-ssh: --sandbox is required")
+	}
+	signer, err := sshx.LoadSigner(os.Getenv("SANDBOX_INTERNAL_KEY_FILE"))
+	if err != nil {
+		return err
+	}
+	s, done, err := openStore(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
+
+	sb, err := s.GetSandbox(ctx, *id)
+	if err != nil {
+		return fmt.Errorf("sandbox %s: %w", *id, err)
+	}
+	target := *addr
+	if target == "" {
+		if sb.PodIP == "" {
+			return fmt.Errorf("sandbox %s has no pod IP yet (status %s)", sb.ID, sb.Status)
+		}
+		target = net.JoinHostPort(sb.PodIP, "22")
+	}
+	client, err := sshx.Dialer{Signer: signer}.Dial(ctx, target, sb.HostPublicKey)
+	if err != nil {
+		return fmt.Errorf("connect to %s at %s: %w", sb.ID, target, err)
+	}
+	defer client.Close()
+	sess, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+	whoami, err := sess.Output("echo $(whoami)@$(hostname) kernel $(uname -r)")
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "OK %s at %s: host key verified, %s\n", sb.ID, target, strings.TrimSpace(string(whoami)))
+	return nil
 }

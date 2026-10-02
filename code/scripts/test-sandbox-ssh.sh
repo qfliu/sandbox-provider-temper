@@ -11,14 +11,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-KEYS="$ROOT/.devenv/state/test-keys"
+KEYS="$ROOT/.devenv/state/internal-key"
 mkdir -p "$KEYS"
-[ -f "$KEYS/internal" ] || ssh-keygen -q -t ed25519 -N "" -C sandbox-internal -f "$KEYS/internal"
+[ -f "$KEYS/id" ] || ssh-keygen -q -t ed25519 -N "" -C sandbox-internal -f "$KEYS/id"
 
 kubectl create secret generic sandbox-internal-key \
-  --from-file=authorized_keys="$KEYS/internal.pub" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  --from-file=authorized_keys="$KEYS/id.pub" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl create secret generic sandbox-internal-key-private \
-  --from-file=id="$KEYS/internal" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  --from-file=id="$KEYS/id" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 kubectl delete pod sb-manual ssh-client --ignore-not-found --wait=true >/dev/null
 start=$(date +%s)

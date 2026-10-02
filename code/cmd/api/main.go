@@ -6,6 +6,7 @@
 //	api                                     serve the API (default)
 //	api create-user --name NAME [--admin]   create a user and print their first API key
 //	api create-key --user NAME [--name L]   print an additional API key for a user
+//	api check-ssh --sandbox ID [--addr A]   SSH into a sandbox the way the platform does
 package main
 
 import (
@@ -23,6 +24,7 @@ import (
 	"github.com/qfliu/sandbox-provider-temper/code/internal/httpapi"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/k8s"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/sandbox"
+	"github.com/qfliu/sandbox-provider-temper/code/internal/sshx"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
 
@@ -37,8 +39,10 @@ func main() {
 		err = runCreateUser(context.Background(), os.Args[2:], os.Stdout)
 	case "create-key":
 		err = runCreateKey(context.Background(), os.Args[2:], os.Stdout)
+	case "check-ssh":
+		err = runCheckSSH(context.Background(), os.Args[2:], os.Stdout)
 	default:
-		err = fmt.Errorf("unknown command %q (want serve, create-user or create-key)", cmd)
+		err = fmt.Errorf("unknown command %q (want serve, create-user, create-key or check-ssh)", cmd)
 	}
 	if err != nil {
 		log.Error("api exited", "err", err)
@@ -74,6 +78,12 @@ func serve(log *slog.Logger) error {
 		return err
 	}
 	log.Info("database ready", "migrations_applied", applied)
+
+	// Load the internal key now so a missing or bad key fails at startup,
+	// not on the first exec (step 2.7 uses it).
+	if _, err := sshx.LoadSigner(cfg.Sandbox.InternalKeyFile); err != nil {
+		return err
+	}
 
 	kube, err := k8s.NewClientset()
 	if err != nil {
