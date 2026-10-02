@@ -30,9 +30,10 @@ type ValidationError struct{ Msg string }
 
 func (e *ValidationError) Error() string { return e.Msg }
 
-// ErrUnavailable means Kubernetes refused or failed to create the pod
-// (HTTP 503). The sandbox row is marked failed with the reason.
-var ErrUnavailable = errors.New("could not start sandbox")
+// ErrUnavailable means Kubernetes refused or failed a pod operation (HTTP
+// 503). On create the row is marked failed; on delete it stays "deleting"
+// and the reconcile retries.
+var ErrUnavailable = errors.New("kubernetes unavailable")
 
 // Pods starts and stops sandbox pods (implemented by k8s.Pods; faked in tests).
 type Pods interface {
@@ -143,13 +144,20 @@ func (s *Service) Delete(ctx context.Context, user store.User, id string) (store
 	if !store.IsLive(sb.Status) {
 		return sb, nil
 	}
+	// Finish the delete even if the client hangs up mid-way; a half-done
+	// delete would leave the pod running while the row says "deleting".
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+
 	// Mark first, so the status syncer sees an intended deletion rather
 	// than a lost pod when the pod disappears.
 	if err := s.store.MarkSandboxDeleting(ctx, sb.ID); err != nil {
 		return store.Sandbox{}, err
 	}
 	if err := s.pods.Delete(ctx, sb.PodName); err != nil {
-		return store.Sandbox{}, fmt.Errorf("delete pod %s: %w", sb.PodName, err)
+		// The row stays "deleting"; the reconcile retries the pod delete.
+		s.log.Error("delete sandbox pod", "sandbox", sb.ID, "err", err)
+		return store.Sandbox{}, ErrUnavailable
 	}
 	s.ssh.Drop(sb.ID)
 	reason := "deleted by owner"

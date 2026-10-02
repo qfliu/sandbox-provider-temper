@@ -220,7 +220,7 @@ Nine reviewer agents reviewed PRs #1 and #3–#10 (PR #2 was docs-only). Only fi
 | ID | Finding | Verified | Status |
 |---|---|---|---|
 | H1 | Reconcile treated any DB error as "sandbox gone" → could delete a live sandbox's pod/Secret | code (`syncer.go`) | ✅ fixed (fails closed: only "not found" or an ended status counts as gone) |
-| M5 | Interrupted delete left row `deleting` with pod still running; reconcile never retried | code | ⏳ |
+| M5 | Interrupted delete left row `deleting` with pod still running; reconcile never retried | code | ✅ fixed (delete finishes even if the client hangs up; pod-delete failure → 503 and the reconcile retries the pod delete) |
 | M6 | Crash-looping sandbox stays `pending`/`running` (restartPolicy Always hides failures) | code | ⏳ |
 | H3 | No admission control on `sandboxes`: a compromised API could create privileged non-gVisor pods | cluster (no PSA labels/policies) | ⏳ |
 | M3 | HTTP server has no timeouts (slowloris) | code | ⏳ |

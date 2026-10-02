@@ -244,3 +244,52 @@ func TestStillLiveFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+// A delete whose pod deletion failed stays "deleting" (503 to the caller),
+// and the next reconcile deletes the pod; once it's gone the row ends.
+func TestInterruptedDeleteIsRetried(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	sb := f.newSandbox(t, true)
+
+	f.pods.failDelete = true
+	if _, err := f.svc.Delete(ctx, f.alice, sb.ID); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("delete with failing Kubernetes: err = %v, want ErrUnavailable", err)
+	}
+	if got := f.status(t, sb.ID).Status; got != store.StatusDeleting {
+		t.Fatalf("status %q, want deleting", got)
+	}
+
+	f.pods.failDelete = false
+	y := f.syncer()
+	y.SetCache(fakeCache{sandboxPod(sb.ID, readyPod)}) // pod still running
+	if err := y.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.pods.deleted) != 1 || f.pods.deleted[0] != sb.ID {
+		t.Fatalf("reconcile should retry the pod delete, deleted = %v", f.pods.deleted)
+	}
+
+	y.SetCache(fakeCache{}) // pod now gone
+	if err := y.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.status(t, sb.ID).Status; got != store.StatusDeleted {
+		t.Fatalf("after the pod is gone: status %q, want deleted", got)
+	}
+}
+
+func TestReconcileDoesNotRedeleteTerminatingPod(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	sb := f.newSandbox(t, true)
+	f.st.MarkSandboxDeleting(ctx, sb.ID)
+
+	now := metav1.Now()
+	y := f.syncer()
+	y.SetCache(fakeCache{sandboxPod(sb.ID, func(p *corev1.Pod) { p.DeletionTimestamp = &now })})
+	y.Reconcile(ctx)
+	if len(f.pods.deleted) != 0 {
+		t.Fatalf("pod already terminating was deleted again: %v", f.pods.deleted)
+	}
+}
