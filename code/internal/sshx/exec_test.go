@@ -124,27 +124,64 @@ func TestPoolReusesAndRedials(t *testing.T) {
 	p := NewPool(Dialer{Signer: signer})
 	ctx := context.Background()
 
-	a, err := p.Get(ctx, "sb-1", srv.addr, hostPub)
+	a, relA, err := p.Get(ctx, "sb-1", srv.addr, hostPub)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _ := p.Get(ctx, "sb-1", srv.addr, hostPub)
+	relA()
+	b, relB, _ := p.Get(ctx, "sb-1", srv.addr, hostPub)
+	relB()
 	if a != b || srv.dials.Load() != 1 {
 		t.Fatalf("second Get should reuse the connection (dials=%d)", srv.dials.Load())
 	}
 
 	p.Drop("sb-1")
-	if _, err := p.Get(ctx, "sb-1", srv.addr, hostPub); err != nil || srv.dials.Load() != 2 {
+	if _, _, err := p.Get(ctx, "sb-1", srv.addr, hostPub); err != nil || srv.dials.Load() != 2 {
 		t.Fatalf("after Drop, Get should redial (dials=%d, err=%v)", srv.dials.Load(), err)
 	}
 
 	// A different recorded host key for the same id (the sandbox was
 	// replaced) must not reuse the old connection, and must be verified.
 	_, otherPub, _ := GenerateHostKey()
-	if _, err := p.Get(ctx, "sb-1", srv.addr, otherPub); err == nil {
+	if _, _, err := p.Get(ctx, "sb-1", srv.addr, otherPub); err == nil {
 		t.Fatal("pool reused or accepted a connection with the wrong host key")
 	}
 	if p.Len() != 0 {
 		t.Fatalf("stale connection kept: len=%d", p.Len())
+	}
+}
+
+// CloseIdle must never close a connection a request is still using, even if
+// that request has outlasted the idle timeout (review finding H2).
+func TestCloseIdleSkipsConnectionsInUse(t *testing.T) {
+	signer := newClientSigner(t)
+	hostPEM, hostPub, _ := GenerateHostKey()
+	srv := startServer(t, hostPEM, signer.PublicKey(), nil)
+	p := NewPool(Dialer{Signer: signer})
+	p.idle = 50 * time.Millisecond
+
+	c, release, err := p.Get(context.Background(), "sb-1", srv.addr, hostPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond) // a "long exec", past the idle timeout
+	p.CloseIdle()
+	if p.Len() != 1 {
+		t.Fatal("connection in use was closed as idle")
+	}
+	if _, _, err := c.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+		t.Fatalf("in-use connection is dead: %v", err)
+	}
+
+	release()
+	release() // releasing twice must not go negative
+	p.CloseIdle()
+	if p.Len() != 1 {
+		t.Fatal("idle time must count from release, not from Get")
+	}
+	time.Sleep(100 * time.Millisecond)
+	p.CloseIdle()
+	if p.Len() != 0 {
+		t.Fatal("released connection idle past the timeout should be closed")
 	}
 }

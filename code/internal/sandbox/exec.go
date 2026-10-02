@@ -97,11 +97,12 @@ func (s *Service) withSSH(ctx context.Context, user store.User, id string, fn fu
 		return &NotRunningError{Status: sb.Status}
 	}
 
-	client, err := s.ssh.Get(ctx, sb.ID, net.JoinHostPort(sb.PodIP, "22"), sb.HostPublicKey)
+	client, release, err := s.ssh.Get(ctx, sb.ID, net.JoinHostPort(sb.PodIP, "22"), sb.HostPublicKey)
 	if err != nil {
 		s.log.Error("ssh connect", "sandbox", sb.ID, "err", err)
 		return ErrUnreachable
 	}
+	defer release()
 	if err := s.store.TouchSandbox(ctx, sb.ID); err != nil {
 		s.log.Warn("record sandbox activity", "sandbox", sb.ID, "err", err)
 	}
