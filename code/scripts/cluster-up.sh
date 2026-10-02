@@ -32,6 +32,8 @@ done
 
 echo "==> namespaces and the internal SSH key"
 kubectl apply -f "$ROOT/code/deploy/dev/namespaces.yaml" >/dev/null
+# Admission guard rails for sandbox pods (gVisor required, no SA token).
+kubectl apply -f "$ROOT/code/deploy/dev/sandbox-pod-policy.yaml" >/dev/null
 # Platform-internal SSH key (D7): sandbox sshd trusts only this public key;
 # the API and gateway log in with the private half.
 KEYS="$ROOT/.devenv/state/internal-key"

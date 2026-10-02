@@ -9,3 +9,10 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: sandboxes        # sandbox pods only (untrusted code)
+  labels:
+    # Pod Security Admission (built into Kubernetes): reject privileged pods,
+    # host namespaces, hostPath, extra capabilities, etc. "restricted" isn't
+    # possible because sandbox sshd runs as root. See also
+    # sandbox-pod-policy.yaml for the gVisor requirement (H3).
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
