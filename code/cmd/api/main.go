@@ -91,6 +91,12 @@ func serve(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Background workers (SSH pool, pod watcher, status syncer) get their own
+	// context, cancelled only AFTER the HTTP server has drained: in-flight
+	// execs need their SSH connections until they finish (review finding M4).
+	bg, stopBackground := context.WithCancel(context.Background())
+	defer stopBackground()
+
 	pool, err := db.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
@@ -109,7 +115,7 @@ func serve(log *slog.Logger) error {
 		return err
 	}
 	sshPool := sshx.NewPool(sshx.Dialer{Signer: signer})
-	go sshPool.Run(ctx) // closes idle connections; closes all on shutdown
+	go sshPool.Run(bg) // closes idle connections; closes all once drained
 
 	kube, err := k8s.NewClientset()
 	if err != nil {
@@ -120,17 +126,17 @@ func serve(log *slog.Logger) error {
 	sandboxes := sandbox.NewService(st, pods, sshPool, cfg.Sandbox, log)
 
 	// Keep sandbox statuses in line with their pods (live events + a
-	// periodic reconcile). Both stop when ctx is cancelled at shutdown.
+	// periodic reconcile). Both stop once the server has drained.
 	syncer := sandbox.NewSyncer(st, pods, log)
 	watcher, err := k8s.NewWatcher(kube, cfg.Sandbox.Namespace, syncer)
 	if err != nil {
 		return err
 	}
-	if err := watcher.Start(ctx); err != nil {
+	if err := watcher.Start(bg); err != nil {
 		return err
 	}
 	syncer.SetCache(watcher)
-	go syncer.Run(ctx)
+	go syncer.Run(bg)
 	log.Info("sandbox status sync started", "namespace", cfg.Sandbox.Namespace)
 
 	srv := newHTTPServer(cfg.ListenAddr, httpapi.NewHandler(httpapi.Deps{
@@ -152,15 +158,20 @@ func serve(log *slog.Logger) error {
 	case <-ctx.Done():
 	}
 
-	// Let in-flight requests finish, but not forever.
-	log.Info("shutting down")
+	// Stop accepting new requests and let in-flight ones finish, but not
+	// forever. Running out of time is an expected outcome of shutting down
+	// (e.g. a 10-minute exec), not a crash: close what's left and exit 0.
+	log.Info("shutting down", "drain_timeout", cfg.ShutdownTimeout)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return err
+		log.Warn("drain timed out; closing remaining connections", "err", err)
+		srv.Close()
 	}
+	stopBackground() // only now close SSH connections and stop the syncer
 	if err := <-errCh; !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	log.Info("shutdown complete")
 	return nil
 }

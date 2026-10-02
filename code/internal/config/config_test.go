@@ -15,7 +15,7 @@ func TestLoadAPIDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ListenAddr != ":8080" || cfg.ShutdownTimeout != 10*time.Second {
+	if cfg.ListenAddr != ":8080" || cfg.ShutdownTimeout != 25*time.Second {
 		t.Fatalf("got %+v, want defaults", cfg)
 	}
 }

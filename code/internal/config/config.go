@@ -44,8 +44,10 @@ type Sandbox struct {
 // LoadAPI reads API settings from the environment, applying defaults.
 func LoadAPI() (API, error) {
 	cfg := API{
-		ListenAddr:      getenv("API_LISTEN_ADDR", ":8080"),
-		ShutdownTimeout: 10 * time.Second,
+		ListenAddr: getenv("API_LISTEN_ADDR", ":8080"),
+		// Drain window on SIGTERM; fits inside Kubernetes' default 30 s
+		// terminationGracePeriodSeconds before it force-kills the pod.
+		ShutdownTimeout: 25 * time.Second,
 		Sandbox: Sandbox{
 			Namespace:         getenv("SANDBOX_NAMESPACE", "sandboxes"),
 			ImageRepo:         getenv("SANDBOX_IMAGE_REPO", "sandbox/"),
