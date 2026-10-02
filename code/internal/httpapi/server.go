@@ -17,9 +17,10 @@ type Pinger interface {
 
 // Deps are the services the HTTP handlers need.
 type Deps struct {
-	Log  *slog.Logger
-	DB   Pinger
-	Auth Authenticator
+	Log       *slog.Logger
+	DB        Pinger
+	Auth      Authenticator
+	Sandboxes SandboxService
 }
 
 // NewHandler returns the API's root handler with all routes registered.
@@ -30,6 +31,10 @@ type Deps struct {
 func NewHandler(d Deps) http.Handler {
 	v1 := http.NewServeMux()
 	v1.HandleFunc("GET /v1/me", handleMe)
+	v1.HandleFunc("POST /v1/sandboxes", handleCreateSandbox(d.Log, d.Sandboxes))
+	v1.HandleFunc("GET /v1/sandboxes", handleListSandboxes(d.Log, d.Sandboxes))
+	v1.HandleFunc("GET /v1/sandboxes/{id}", handleGetSandbox(d.Log, d.Sandboxes))
+	v1.HandleFunc("DELETE /v1/sandboxes/{id}", handleDeleteSandbox(d.Log, d.Sandboxes))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
