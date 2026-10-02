@@ -84,7 +84,7 @@ func newFixture(t *testing.T) fixture {
 	}
 	st := store.New(pool)
 	pods := &fakePods{}
-	cfg := config.Sandbox{DefaultTTL: time.Hour, MaxTTL: 24 * time.Hour}
+	cfg := config.Sandbox{DefaultTTL: time.Hour, MaxTTL: 24 * time.Hour, IdleTimeout: 30 * time.Minute}
 	f := fixture{
 		svc:  NewService(st, pods, sshx.NewPool(sshx.Dialer{}), cfg, slog.New(slog.NewTextHandler(io.Discard, nil))),
 		pods: pods,

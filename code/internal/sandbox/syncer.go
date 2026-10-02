@@ -108,8 +108,13 @@ func (y *Syncer) podMissing(ctx context.Context, sb store.Sandbox, fromReconcile
 		if !fromReconcile {
 			return // the delete request in progress records the final status
 		}
-		// The delete request didn't finish (e.g. the API restarted mid-way).
-		status, reason = store.StatusDeleted, "deleted (completed by reconciler)"
+		// The delete request (or reaper) didn't finish, e.g. the API
+		// restarted mid-way. Keep a reason it already recorded ("expired",
+		// "idle").
+		status, reason = store.StatusDeleted, sb.StatusReason
+		if reason == "" {
+			reason = "deleted (completed by reconciler)"
+		}
 	case store.IsLive(sb.Status):
 		// A deletion event proves the pod existed and is gone. Only the
 		// reconcile can't tell "gone" from "not created/cached yet".

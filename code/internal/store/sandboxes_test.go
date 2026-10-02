@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
 func newSandbox(userID string, n int) NewSandbox {
@@ -113,5 +114,86 @@ func TestListAndMarkEnded(t *testing.T) {
 	all, _ := s.ListSandboxes(ctx, alice.ID, true)
 	if len(live) != 1 || len(all) != 2 {
 		t.Fatalf("alice: live=%d all=%d, want 1 and 2 (bob's must not appear)", len(live), len(all))
+	}
+}
+
+func TestClaimForReaping(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	mk := func(n int) string {
+		sb, err := s.CreateSandbox(ctx, newSandbox(alice.ID, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sb.ID
+	}
+	expired, idle, active, deleting, ended := mk(1), mk(2), mk(3), mk(4), mk(5)
+	s.pool.Exec(ctx, "UPDATE sandboxes SET expires_at = now() - interval '1 second' WHERE id = $1", expired)
+	s.pool.Exec(ctx, "UPDATE sandboxes SET last_activity_at = now() - interval '31 minutes' WHERE id = ANY($1)",
+		[]string{idle, deleting, ended})
+	s.MarkSandboxDeleting(ctx, deleting)
+	s.MarkSandboxEnded(ctx, ended, StatusDeleted, "earlier")
+
+	claimed, err := s.ClaimForReaping(ctx, 30*time.Minute, "idle: no activity for 30m0s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, sb := range claimed {
+		got[sb.ID] = sb.StatusReason
+		if sb.Status != StatusDeleting {
+			t.Errorf("%s claimed with status %q, want deleting", sb.ID, sb.Status)
+		}
+	}
+	if len(got) != 2 || got[expired] != "expired: TTL reached" || got[idle] != "idle: no activity for 30m0s" {
+		t.Fatalf("claimed %v; want only the expired and idle sandboxes with their reasons", got)
+	}
+	if _, ok := got[active]; ok {
+		t.Fatal("an active sandbox was claimed")
+	}
+	again, _ := s.ClaimForReaping(ctx, 30*time.Minute, "idle")
+	if len(again) != 0 {
+		t.Fatalf("second claim re-claimed %d sandboxes", len(again))
+	}
+}
+
+// Two replicas reaping at the same moment must never both claim a sandbox.
+func TestClaimForReapingIsExclusive(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	s.pool.Exec(ctx, "UPDATE users SET max_sandboxes = 50 WHERE id = $1", alice.ID)
+	for i := 0; i < 40; i++ {
+		s.CreateSandbox(ctx, newSandbox(alice.ID, i))
+	}
+	s.pool.Exec(ctx, "UPDATE sandboxes SET expires_at = now() - interval '1 second'")
+
+	var mu sync.Mutex
+	seen := map[string]int{}
+	var wg sync.WaitGroup
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			claimed, err := s.ClaimForReaping(ctx, time.Hour, "idle")
+			if err != nil {
+				t.Error(err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			for _, sb := range claimed {
+				seen[sb.ID]++
+			}
+		}()
+	}
+	wg.Wait()
+	if len(seen) != 40 {
+		t.Fatalf("claimed %d distinct sandboxes, want 40", len(seen))
+	}
+	for id, n := range seen {
+		if n != 1 {
+			t.Fatalf("%s claimed %d times", id, n)
+		}
 	}
 }

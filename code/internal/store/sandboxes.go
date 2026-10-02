@@ -187,3 +187,32 @@ func (s *Store) TouchSandbox(ctx context.Context, id string) error {
 		WHERE id = $1 AND last_activity_at < now() - interval '10 seconds'`, id)
 	return err
 }
+
+// ClaimForReaping atomically picks live sandboxes that are past their TTL or
+// idle longer than idleFor, marks them "deleting" with the reason, and
+// returns them. Because the claim is a single UPDATE, several API replicas
+// reaping at once never claim the same sandbox twice. The reason is stored
+// now so whoever finishes the delete (the reaper, or the reconcile after a
+// failure) records it.
+func (s *Store) ClaimForReaping(ctx context.Context, idleFor time.Duration, idleReason string) ([]Sandbox, error) {
+	rows, err := s.pool.Query(ctx, `
+		UPDATE sandboxes SET status = 'deleting', status_reason = CASE
+			WHEN expires_at <= now() THEN 'expired: TTL reached'
+			ELSE $2 END
+		WHERE status IN ('pending', 'running')
+		  AND (expires_at <= now() OR last_activity_at <= now() - make_interval(secs => $1::double precision))
+		RETURNING `+sandboxColumns, idleFor.Seconds(), idleReason)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []Sandbox{}
+	for rows.Next() {
+		sb, err := scanSandbox(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, sb)
+	}
+	return list, rows.Err()
+}
