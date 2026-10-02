@@ -34,8 +34,12 @@ type PodState struct {
 }
 
 // Container wait reasons that won't fix themselves, so the sandbox is failed
-// rather than left pending forever.
+// rather than left pending (or "running" but unreachable) forever.
+//
+// Sandbox pods restart crashed containers (the workspace survives a restart,
+// D8), so one crash is fine; CrashLoopBackOff means it keeps crashing.
 var fatalWaitReasons = map[string]bool{
+	"CrashLoopBackOff":           true,
 	"ErrImagePull":               true,
 	"ImagePullBackOff":           true,
 	"InvalidImageName":           true,
@@ -59,7 +63,11 @@ func StateOf(pod *corev1.Pod) PodState {
 	}
 	for _, cs := range pod.Status.ContainerStatuses {
 		if w := cs.State.Waiting; w != nil && fatalWaitReasons[w.Reason] {
-			return PodState{Phase: PodFailed, Reason: strings.TrimSpace(w.Reason + ": " + w.Message)}
+			reason := strings.TrimSpace(w.Reason + ": " + w.Message)
+			if t := cs.LastTerminationState.Terminated; t != nil {
+				reason += fmt.Sprintf(" (last exit code %d, %d restarts)", t.ExitCode, cs.RestartCount)
+			}
+			return PodState{Phase: PodFailed, Reason: reason}
 		}
 	}
 	if pod.Status.Phase == corev1.PodRunning && isReady(pod) {

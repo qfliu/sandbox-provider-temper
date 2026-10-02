@@ -54,6 +54,20 @@ func TestStateOf(t *testing.T) {
 				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "OOMKilled"}},
 			}}
 		}), PodFailed, "code 137 (OOMKilled)"},
+		{"crash looping", podWith(func(p *corev1.Pod) {
+			p.Status.Phase = corev1.PodRunning
+			p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+				RestartCount: 4,
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+					Reason: "CrashLoopBackOff", Message: "back-off 40s restarting failed container"}},
+				LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 255}},
+			}}
+		}), PodFailed, "CrashLoopBackOff: back-off 40s restarting failed container (last exit code 255, 4 restarts)"},
+		{"restarted once, running again", podWith(func(p *corev1.Pod) {
+			ready(p)
+			p.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 1,
+				State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}
+		}), PodReady, ""},
 		{"succeeded", podWith(func(p *corev1.Pod) { p.Status.Phase = corev1.PodSucceeded }), PodFailed, "exited"},
 		{"being deleted", podWith(func(p *corev1.Pod) { ready(p); p.DeletionTimestamp = &now }), PodTerminating, ""},
 	} {
