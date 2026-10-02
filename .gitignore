@@ -1,0 +1,4 @@
+# Project-local toolchain and state (see code/scripts/bootstrap-tools.sh, env.sh)
+.devenv/
+# Build output
+code/bin/
