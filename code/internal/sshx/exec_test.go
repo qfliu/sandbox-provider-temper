@@ -43,12 +43,12 @@ func TestRunReturnsOutputAndExitCode(t *testing.T) {
 }
 
 func TestRunMissingExitStatus(t *testing.T) {
-	// The session ended without an exit status well before the limit (e.g.
-	// sshd died): exit -1, but not a timeout.
+	// The session ended without an exit status well before the limit (sshd
+	// or the connection died): an error, not a fake "exit -1" result.
 	c, _ := connect(t, func(string) execReply { return execReply{noExitStatus: true} })
-	res, err := Run(context.Background(), c, "crash", "", time.Minute)
-	if err != nil || res.TimedOut || res.ExitCode != -1 {
-		t.Fatalf("got %+v, %v; want exit -1, not timed out", res, err)
+	res, err := Run(context.Background(), c, "sleep 20", "", time.Minute)
+	if !errors.Is(err, ErrNoExitStatus) {
+		t.Fatalf("got %+v, %v; want ErrNoExitStatus", res, err)
 	}
 }
 

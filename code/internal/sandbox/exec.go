@@ -112,8 +112,11 @@ func (s *Service) withSSH(ctx context.Context, user store.User, id string, fn fu
 		return nil
 	}
 	// Tell a dead connection apart from an ordinary failure (missing file,
-	// permission denied, cancelled request) by pinging it.
-	if _, _, pingErr := client.SendRequest("keepalive@openssh.com", true, nil); pingErr != nil {
+	// permission denied, cancelled request) by pinging it. A command that
+	// lost its exit status always counts as a lost connection: drop it so
+	// the next call redials.
+	_, _, pingErr := client.SendRequest("keepalive@openssh.com", true, nil)
+	if pingErr != nil || errors.Is(err, sshx.ErrNoExitStatus) {
 		s.ssh.Drop(sb.ID)
 		s.log.Error("ssh connection lost", "sandbox", sb.ID, "err", err)
 		return ErrUnreachable

@@ -25,6 +25,11 @@ type ExecResult struct {
 	DurationMS int64  `json:"duration_ms"`
 }
 
+// ErrNoExitStatus means the command's session ended without reporting how
+// the command exited, before its time limit: the SSH connection or the
+// sandbox's sshd went away mid-command.
+var ErrNoExitStatus = errors.New("command ended without an exit status (connection lost)")
+
 // timeoutExitCode is what coreutils `timeout` exits with when it kills.
 const timeoutExitCode = 124
 
@@ -72,10 +77,14 @@ func Run(ctx context.Context, client *ssh.Client, command, workdir string, limit
 	case errors.As(runErr, &exitErr):
 		res.ExitCode = exitErr.ExitStatus()
 	case errors.As(runErr, &missing):
-		// No exit status: killed by our deadline, or sshd died mid-command.
-		// Only call it a timeout if the time limit really passed.
-		res.ExitCode, res.TimedOut = -1, time.Since(start) >= limit
-		return res, nil
+		// No exit status. Past the time limit, that's our deadline killing
+		// it: a timeout. Before it, the connection or sshd died mid-command,
+		// which is an error, not a result (review finding M2).
+		if time.Since(start) >= limit {
+			res.ExitCode, res.TimedOut = -1, true
+			return res, nil
+		}
+		return ExecResult{}, ErrNoExitStatus
 	default:
 		return ExecResult{}, fmt.Errorf("run command: %w", runErr)
 	}
