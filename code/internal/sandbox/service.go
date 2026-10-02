@@ -47,13 +47,15 @@ type Pods interface {
 type Service struct {
 	store *store.Store
 	pods  Pods
+	ssh   *sshx.Pool
 	cfg   config.Sandbox
 	log   *slog.Logger
 }
 
-// NewService returns a Service.
-func NewService(s *store.Store, pods Pods, cfg config.Sandbox, log *slog.Logger) *Service {
-	return &Service{store: s, pods: pods, cfg: cfg, log: log}
+// NewService returns a Service. sshPool connects to sandboxes for exec and
+// file transfer.
+func NewService(s *store.Store, pods Pods, sshPool *sshx.Pool, cfg config.Sandbox, log *slog.Logger) *Service {
+	return &Service{store: s, pods: pods, ssh: sshPool, cfg: cfg, log: log}
 }
 
 // CreateRequest is the body of POST /v1/sandboxes.
@@ -149,6 +151,7 @@ func (s *Service) Delete(ctx context.Context, user store.User, id string) (store
 	if err := s.pods.Delete(ctx, sb.PodName); err != nil {
 		return store.Sandbox{}, fmt.Errorf("delete pod %s: %w", sb.PodName, err)
 	}
+	s.ssh.Drop(sb.ID)
 	reason := "deleted by owner"
 	if sb.UserID != user.ID {
 		reason = "deleted by admin " + user.Name

@@ -7,7 +7,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-TAG="$(git -C "$ROOT" rev-parse --short HEAD)-$(date +%s)"
+# <commit>[-dirty]-<time>: "-dirty" flags builds with uncommitted changes, so
+# the commit in the tag never misdescribes what's running.
+DIRTY="$(git -C "$ROOT" diff --quiet HEAD -- code || echo -dirty)"
+TAG="$(git -C "$ROOT" rev-parse --short HEAD)${DIRTY}-$(date +%s)"
 LOG="$ROOT/.devenv/state/tmp/api-build.log"
 
 echo "==> building sandbox/api:$TAG"

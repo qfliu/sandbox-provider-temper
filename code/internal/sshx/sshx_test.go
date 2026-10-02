@@ -2,80 +2,11 @@ package sshx
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"golang.org/x/crypto/ssh"
 )
-
-// startServer runs a tiny in-process SSH server with the given host key that
-// accepts only clientKey, answering every "exec" with "ok".
-func startServer(t *testing.T, hostKeyPEM []byte, clientKey ssh.PublicKey) string {
-	t.Helper()
-	hostSigner, err := ssh.ParsePrivateKey(hostKeyPEM)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := &ssh.ServerConfig{
-		PublicKeyCallback: func(_ ssh.ConnMetadata, k ssh.PublicKey) (*ssh.Permissions, error) {
-			if string(k.Marshal()) == string(clientKey.Marshal()) {
-				return nil, nil
-			}
-			return nil, os.ErrPermission
-		},
-	}
-	cfg.AddHostKey(hostSigner)
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { ln.Close() })
-	go func() {
-		for {
-			nc, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				_, chans, reqs, err := ssh.NewServerConn(nc, cfg)
-				if err != nil {
-					return
-				}
-				go ssh.DiscardRequests(reqs)
-				for nch := range chans {
-					ch, creqs, _ := nch.Accept()
-					go func() {
-						for r := range creqs {
-							r.Reply(r.Type == "exec", nil)
-							if r.Type == "exec" {
-								ch.Write([]byte("ok"))
-								ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{0}))
-								ch.Close()
-							}
-						}
-					}()
-				}
-			}()
-		}
-	}()
-	return ln.Addr().String()
-}
-
-func newClientSigner(t *testing.T) ssh.Signer {
-	t.Helper()
-	_, priv, _ := ed25519.GenerateKey(rand.Reader)
-	s, err := ssh.NewSignerFromKey(priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
-}
 
 func TestDialAcceptsOnlyTheRecordedHostKey(t *testing.T) {
 	client := newClientSigner(t)
@@ -83,7 +14,7 @@ func TestDialAcceptsOnlyTheRecordedHostKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr := startServer(t, hostPEM, client.PublicKey())
+	addr := startServer(t, hostPEM, client.PublicKey(), nil).addr
 	d := Dialer{Signer: client}
 
 	c, err := d.Dial(context.Background(), addr, hostPub)
@@ -110,7 +41,7 @@ func TestDialAcceptsOnlyTheRecordedHostKey(t *testing.T) {
 
 func TestDialRejectedWithoutTheInternalKey(t *testing.T) {
 	hostPEM, hostPub, _ := GenerateHostKey()
-	addr := startServer(t, hostPEM, newClientSigner(t).PublicKey())
+	addr := startServer(t, hostPEM, newClientSigner(t).PublicKey(), nil).addr
 
 	if _, err := (Dialer{Signer: newClientSigner(t)}).Dial(context.Background(), addr, hostPub); err == nil {
 		t.Fatal("server accepted a client key it doesn't trust")

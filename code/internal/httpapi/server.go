@@ -35,6 +35,9 @@ func NewHandler(d Deps) http.Handler {
 	v1.HandleFunc("GET /v1/sandboxes", handleListSandboxes(d.Log, d.Sandboxes))
 	v1.HandleFunc("GET /v1/sandboxes/{id}", handleGetSandbox(d.Log, d.Sandboxes))
 	v1.HandleFunc("DELETE /v1/sandboxes/{id}", handleDeleteSandbox(d.Log, d.Sandboxes))
+	v1.HandleFunc("POST /v1/sandboxes/{id}/exec", handleExec(d.Log, d.Sandboxes))
+	v1.HandleFunc("PUT /v1/sandboxes/{id}/files", handleUpload(d.Log, d.Sandboxes))
+	v1.HandleFunc("GET /v1/sandboxes/{id}/files", handleDownload(d.Log, d.Sandboxes))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
