@@ -226,7 +226,7 @@ Nine reviewer agents reviewed PRs #1 and #3–#10 (PR #2 was docs-only). Only fi
 | M3 | HTTP server has no timeouts (slowloris) | code | ✅ fixed (ReadHeaderTimeout 10 s, IdleTimeout 2 min, 64 KiB headers; no global read/write timeout so long execs/uploads still work) |
 | M4 | Shutdown not graceful: SSH pool closes on SIGTERM before draining; shutdown deadline exits as an error | code | ✅ fixed (SSH pool/syncer stop only after the HTTP server drains; drain timeout → warn + close, exit 0; drain window 25 s within the 30 s grace period) |
 | M8 | `last_used_at` write failure turns a valid API key into a 500 | code | ✅ fixed (last_used_at write is best-effort: logged warning, 2 s timeout, key still authenticates) |
-| H2 | Idle-connection cleanup can close a connection mid-exec (5 min idle < 10 min max exec) | code | ⏳ |
+| H2 | Idle-connection cleanup can close a connection mid-exec (5 min idle < 10 min max exec) | code | ✅ fixed (pool counts in-use requests via a release func; idle cleanup skips in-use connections; idle measured from last release) |
 | M2 | Dead SSH connection reported as a normal exit (`-1`, 200) and kept in the pool | code | ⏳ |
 | M1 | Command force-killed after ignoring SIGTERM reports `exit 137, timed_out:false` | **cluster** | ⏳ |
 | M9 | Failed upload destroys the previous file (opened with `O_TRUNC`) | code | ⏳ |
