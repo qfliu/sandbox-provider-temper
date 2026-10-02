@@ -15,6 +15,9 @@ type API struct {
 	// ShutdownTimeout bounds how long in-flight requests get to finish on
 	// SIGTERM before the server exits.
 	ShutdownTimeout time.Duration
+	// DatabaseURL is the Postgres connection string (required), e.g.
+	// postgres://user:pass@host:5432/sandbox?sslmode=disable
+	DatabaseURL string
 }
 
 // LoadAPI reads API settings from the environment, applying defaults.
@@ -22,6 +25,10 @@ func LoadAPI() (API, error) {
 	cfg := API{
 		ListenAddr:      getenv("API_LISTEN_ADDR", ":8080"),
 		ShutdownTimeout: 10 * time.Second,
+		DatabaseURL:     os.Getenv("DATABASE_URL"),
+	}
+	if cfg.DatabaseURL == "" {
+		return API{}, fmt.Errorf("DATABASE_URL is required")
 	}
 	if v := os.Getenv("API_SHUTDOWN_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)

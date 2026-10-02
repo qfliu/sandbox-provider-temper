@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/qfliu/sandbox-provider-temper/code/internal/config"
+	"github.com/qfliu/sandbox-provider-temper/code/internal/db"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/httpapi"
 )
 
@@ -29,14 +30,26 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
-	srv := &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: httpapi.NewHandler(log),
-	}
-
 	// Stop on Ctrl-C locally or SIGTERM from Kubernetes.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	pool, err := db.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	applied, err := db.Migrate(ctx, pool)
+	if err != nil {
+		return err
+	}
+	log.Info("database ready", "migrations_applied", applied)
+
+	srv := &http.Server{
+		Addr:    cfg.ListenAddr,
+		Handler: httpapi.NewHandler(log, pool),
+	}
 
 	errCh := make(chan error, 1)
 	go func() {

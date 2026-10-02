@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Runs the Go tests with database tests enabled, against the cluster's
+# Postgres via a temporary port-forward (tests use throwaway schemas).
+#
+# Usage (from the project root): source ./env.sh && ./code/scripts/test-db.sh
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+PORT="${PG_LOCAL_PORT:-15432}"
+PW="$(cat "$ROOT/.devenv/state/postgres-password")"
+
+kubectl -n sandbox-system port-forward svc/postgres "$PORT:5432" >/dev/null 2>&1 &
+PF=$!
+trap 'kill $PF 2>/dev/null' EXIT
+for _ in $(seq 1 20); do nc -z 127.0.0.1 "$PORT" 2>/dev/null && break; sleep 0.25; done
+
+cd "$ROOT/code"
+TEST_DATABASE_URL="postgres://sandbox:$PW@127.0.0.1:$PORT/sandbox?sslmode=disable" \
+  go test -count=1 ./... "$@"
