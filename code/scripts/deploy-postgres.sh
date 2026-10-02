@@ -9,7 +9,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PWFILE="$ROOT/.devenv/state/postgres-password"
 
-[ -s "$PWFILE" ] || openssl rand -hex 24 > "$PWFILE"
+[ -s "$PWFILE" ] || openssl rand -hex 24 | tr -d '\n' > "$PWFILE"
 
 kubectl apply -f - >/dev/null <<'EOF'
 apiVersion: v1
@@ -17,7 +17,7 @@ kind: Namespace
 metadata: {name: sandbox-system}
 EOF
 kubectl -n sandbox-system create secret generic postgres-credentials \
-  --from-literal=username=sandbox --from-file=password="$PWFILE" \
+  --from-literal=username=sandbox --from-literal=password="$(tr -d '\n' < "$PWFILE")" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 kubectl apply -f "$ROOT/code/deploy/dev/postgres.yaml" >/dev/null

@@ -1,0 +1,6 @@
+# Only Go sources go into the API image build context.
+bin/
+images/
+deploy/
+scripts/
+**/*_test.go

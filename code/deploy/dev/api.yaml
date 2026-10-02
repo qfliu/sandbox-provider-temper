@@ -1,0 +1,104 @@
+# The control plane API inside the cluster (D30). Applied by
+# code/scripts/deploy-api.sh, which substitutes the image tag.
+#
+# Needs Secrets postgres-credentials (deploy-postgres.sh) and
+# sandbox-internal-key-private (cluster-up.sh) in sandbox-system.
+
+# --- Identity and least-privilege permissions -------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-api
+  namespace: sandbox-system
+---
+# Only what the API needs, and only in the sandboxes namespace: manage sandbox
+# pods and their host-key Secrets. Nothing cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sandbox-api
+  namespace: sandboxes
+rules:
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [get, list, watch, create, delete]
+- apiGroups: [""]
+  resources: [secrets]
+  verbs: [get, list, create, update, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sandbox-api
+  namespace: sandboxes
+subjects:
+- kind: ServiceAccount
+  name: sandbox-api
+  namespace: sandbox-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sandbox-api
+---
+# --- The API itself ----------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-api
+  namespace: sandbox-system
+spec:
+  replicas: 2   # stateless; migrations, status sync and quota are replica-safe
+  selector:
+    matchLabels: {app: sandbox-api}
+  template:
+    metadata:
+      labels: {app: sandbox-api}
+    spec:
+      serviceAccountName: sandbox-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532          # lets the non-root user read the mounted key
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+      - name: api
+        image: sandbox/api:IMAGE_TAG
+        imagePullPolicy: IfNotPresent
+        ports:
+        - {name: http, containerPort: 8080}
+        env:
+        - name: POSTGRES_PASSWORD
+          valueFrom: {secretKeyRef: {name: postgres-credentials, key: password}}
+        - name: DATABASE_URL     # $(VAR) expands the env var defined above
+          value: postgres://sandbox:$(POSTGRES_PASSWORD)@postgres.sandbox-system:5432/sandbox?sslmode=disable
+        - {name: SANDBOX_INTERNAL_KEY_FILE, value: /keys/id}
+        readinessProbe:
+          httpGet: {path: /readyz, port: http}
+          periodSeconds: 5
+        livenessProbe:
+          httpGet: {path: /healthz, port: http}
+          periodSeconds: 10
+        resources:
+          requests: {cpu: 100m, memory: 128Mi}
+          limits:   {cpu: "1", memory: 512Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+        volumeMounts:
+        - {name: internal-key, mountPath: /keys, readOnly: true}
+      volumes:
+      - name: internal-key
+        secret:
+          secretName: sandbox-internal-key-private
+          defaultMode: 0440      # group-readable for fsGroup, nobody else
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-api
+  namespace: sandbox-system
+spec:
+  selector: {app: sandbox-api}
+  ports:
+  - {name: http, port: 80, targetPort: http}
