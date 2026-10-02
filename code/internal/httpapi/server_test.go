@@ -16,7 +16,11 @@ type fakeDB struct{ err error }
 func (f fakeDB) Ping(context.Context) error { return f.err }
 
 func newTestHandler(db Pinger) http.Handler {
-	return NewHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), db)
+	return NewHandler(Deps{
+		Log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DB:   db,
+		Auth: fakeAuth{},
+	})
 }
 
 func get(h http.Handler, path string) *httptest.ResponseRecorder {

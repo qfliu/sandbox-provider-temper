@@ -2,53 +2,13 @@ package db
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/qfliu/sandbox-provider-temper/code/internal/dbtest"
 )
 
-// testPool connects to TEST_DATABASE_URL inside a fresh, throwaway schema so
-// tests never touch real data. Skips when TEST_DATABASE_URL isn't set; see
-// code/scripts/test-db.sh.
-func testPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping database test")
-	}
-	ctx := context.Background()
-	schema := fmt.Sprintf("test_%d", time.Now().UnixNano())
-
-	admin, err := Open(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
-		admin.Close()
-	})
-
-	cfg, err := pgxpool.ParseConfig(url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
 func TestMigrateIsIdempotent(t *testing.T) {
-	pool := testPool(t)
+	pool := dbtest.RawPool(t)
 	ctx := context.Background()
 
 	first, err := Migrate(ctx, pool)
@@ -68,7 +28,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 }
 
 func TestSchemaConstraints(t *testing.T) {
-	pool := testPool(t)
+	pool := dbtest.RawPool(t)
 	ctx := context.Background()
 	if _, err := Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
