@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -155,13 +156,9 @@ func (y *Syncer) Reconcile(ctx context.Context) error {
 	// isLive re-checks the database for anything not in our snapshot: a
 	// sandbox created after we listed already has its Secret (and maybe its
 	// pod), and deleting those would break it.
-	isLive := func(id string) bool {
-		if liveIDs[id] {
-			return true
-		}
-		sb, err := y.store.GetSandbox(ctx, id)
-		return err == nil && store.IsLive(sb.Status)
-	}
+	isLive := stillLive(liveIDs, func(id string) (store.Sandbox, error) {
+		return y.store.GetSandbox(ctx, id)
+	}, y.log)
 	for id, pod := range byID {
 		if pod.DeletionTimestamp != nil || isLive(id) {
 			continue
@@ -176,6 +173,28 @@ func (y *Syncer) Reconcile(ctx context.Context) error {
 		y.log.Info("deleted orphan host key secret", "secret", name)
 	}
 	return err
+}
+
+// stillLive returns a check for "does this sandbox still need its pod and
+// Secret?". It fails closed: only a definite answer from the database (no
+// such row, or an ended status) counts as dead. Any other error, such as a
+// timeout, counts as live, so a database blip can never make the reconcile
+// delete a running sandbox's pod; the next pass retries.
+func stillLive(snapshot map[string]bool, get func(id string) (store.Sandbox, error), log *slog.Logger) func(string) bool {
+	return func(id string) bool {
+		if snapshot[id] {
+			return true
+		}
+		sb, err := get(id)
+		if errors.Is(err, store.ErrNotFound) {
+			return false
+		}
+		if err != nil {
+			log.Warn("can't confirm sandbox is gone; keeping its resources", "sandbox", id, "err", err)
+			return true
+		}
+		return store.IsLive(sb.Status)
+	}
 }
 
 // Run reconciles immediately and then every ReconcileInterval until ctx ends.

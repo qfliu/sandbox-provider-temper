@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -212,4 +213,34 @@ type cleanupHook struct {
 func (c cleanupHook) CleanupSecrets(ctx context.Context, isLive func(string) bool) ([]string, error) {
 	c.before()
 	return c.fakePods.CleanupSecrets(ctx, isLive)
+}
+
+func TestStillLiveFailsClosed(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	rows := map[string]store.Sandbox{
+		"sb-running": {Status: store.StatusRunning},
+		"sb-deleted": {Status: store.StatusDeleted},
+	}
+	get := func(id string) (store.Sandbox, error) {
+		if id == "sb-dberror" {
+			return store.Sandbox{}, errors.New("connection reset by peer")
+		}
+		if sb, ok := rows[id]; ok {
+			return sb, nil
+		}
+		return store.Sandbox{}, store.ErrNotFound
+	}
+	isLive := stillLive(map[string]bool{"sb-snapshot": true}, get, log)
+
+	for id, want := range map[string]bool{
+		"sb-snapshot": true,  // in the listed snapshot
+		"sb-running":  true,  // created after the snapshot
+		"sb-deleted":  false, // definitely ended
+		"sb-missing":  false, // no such row
+		"sb-dberror":  true,  // unknown: must NOT be treated as dead
+	} {
+		if got := isLive(id); got != want {
+			t.Errorf("isLive(%s) = %v, want %v", id, got, want)
+		}
+	}
 }

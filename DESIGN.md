@@ -210,3 +210,25 @@ Update checkboxes as work progresses. **Workflow:** one branch and one PR **per 
 ### Optional (outside the time budget)
 - [ ] Cloud deployment (D10 step 2): user creates an AWS/Azure account; choose managed Kubernetes vs. k3s on VMs; Terraform; deploy, load test, tear down
 - [ ] Tailscale sidecar for the gateway/API (D16 option 1)
+
+---
+
+## 8. Code Review Findings (2026-10-02)
+
+Nine reviewer agents reviewed PRs #1 and #3–#10 (PR #2 was docs-only). Only findings **verified** in the code or on the cluster are being fixed, **one PR each**, stacked in this order. The rest are listed as deferred until reproduced.
+
+| ID | Finding | Verified | Status |
+|---|---|---|---|
+| H1 | Reconcile treated any DB error as "sandbox gone" → could delete a live sandbox's pod/Secret | code (`syncer.go`) | ✅ fixed (fails closed: only "not found" or an ended status counts as gone) |
+| M5 | Interrupted delete left row `deleting` with pod still running; reconcile never retried | code | ⏳ |
+| M6 | Crash-looping sandbox stays `pending`/`running` (restartPolicy Always hides failures) | code | ⏳ |
+| H3 | No admission control on `sandboxes`: a compromised API could create privileged non-gVisor pods | cluster (no PSA labels/policies) | ⏳ |
+| M3 | HTTP server has no timeouts (slowloris) | code | ⏳ |
+| M4 | Shutdown not graceful: SSH pool closes on SIGTERM before draining; shutdown deadline exits as an error | code | ⏳ |
+| M8 | `last_used_at` write failure turns a valid API key into a 500 | code | ⏳ |
+| H2 | Idle-connection cleanup can close a connection mid-exec (5 min idle < 10 min max exec) | code | ⏳ |
+| M2 | Dead SSH connection reported as a normal exit (`-1`, 200) and kept in the pool | code | ⏳ |
+| M1 | Command force-killed after ignoring SIGTERM reports `exit 137, timed_out:false` | **cluster** | ⏳ |
+| M9 | Failed upload destroys the previous file (opened with `O_TRUNC`) | code | ⏳ |
+
+**Deferred (not reproduced, only inferred from the code):** delete-during-create race (M7), missing startupProbe (M10), scripts not checking `env.sh` was sourced (M11), checksums fetched from the same source / tools unverified (M12), plus ~30 low/nit items (index coverage, digest pinning, 401 wording, stale D14 text, etc.). **Already planned for Phase 5:** NetworkPolicies and sandbox pod securityContext hardening.
