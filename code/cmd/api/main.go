@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/qfliu/sandbox-provider-temper/code/internal/config"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/db"
@@ -55,6 +56,29 @@ func subcommand() string {
 		return ""
 	}
 	return os.Args[1]
+}
+
+// HTTP server limits (review finding M3). There's deliberately no overall
+// ReadTimeout/WriteTimeout: exec may run 10 minutes and uploads stream up to
+// 100 MiB, so per-request limits live in the handlers instead.
+const (
+	// readHeaderTimeout stops slow-header ("slowloris") clients from holding
+	// connections open forever.
+	readHeaderTimeout = 10 * time.Second
+	// idleTimeout closes keep-alive connections nobody is using.
+	idleTimeout = 2 * time.Minute
+	// maxHeaderBytes caps request headers (Go's default is 1 MiB).
+	maxHeaderBytes = 64 << 10
+)
+
+func newHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
+	}
 }
 
 func serve(log *slog.Logger) error {
@@ -109,15 +133,12 @@ func serve(log *slog.Logger) error {
 	go syncer.Run(ctx)
 	log.Info("sandbox status sync started", "namespace", cfg.Sandbox.Namespace)
 
-	srv := &http.Server{
-		Addr: cfg.ListenAddr,
-		Handler: httpapi.NewHandler(httpapi.Deps{
-			Log:       log,
-			DB:        pool,
-			Auth:      st,
-			Sandboxes: sandboxes,
-		}),
-	}
+	srv := newHTTPServer(cfg.ListenAddr, httpapi.NewHandler(httpapi.Deps{
+		Log:       log,
+		DB:        pool,
+		Auth:      st,
+		Sandboxes: sandboxes,
+	}))
 
 	errCh := make(chan error, 1)
 	go func() {
