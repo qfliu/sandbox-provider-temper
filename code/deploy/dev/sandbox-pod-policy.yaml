@@ -1,0 +1,38 @@
+# Admission policy for the sandboxes namespace (review finding H3).
+#
+# The API's ServiceAccount may create pods there. Without this policy, a
+# compromised API (or a mistaken admin) could create a pod that skips gVisor,
+# i.e. untrusted code on the node's real kernel. Kubernetes evaluates these
+# rules itself (ValidatingAdmissionPolicy, built in since 1.30), for every
+# client, before a pod is stored.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: sandbox-pods
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: [v1]
+      operations: [CREATE, UPDATE]
+      resources: [pods]
+  validations:
+  - expression: "has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor'"
+    message: "sandbox pods must run under gVisor (runtimeClassName: gvisor)"
+  - expression: "has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false"
+    message: "sandbox pods must not mount a service account token"
+  - expression: "has(object.metadata.labels) && 'app.kubernetes.io/managed-by' in object.metadata.labels && object.metadata.labels['app.kubernetes.io/managed-by'] == 'sandbox-api'"
+    message: "pods in the sandboxes namespace must be created by the sandbox API"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: sandbox-pods
+spec:
+  policyName: sandbox-pods
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: sandboxes
