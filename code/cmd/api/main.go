@@ -80,7 +80,22 @@ func serve(log *slog.Logger) error {
 		return err
 	}
 	st := store.New(pool)
-	sandboxes := sandbox.NewService(st, k8s.NewPods(kube, cfg.Sandbox), cfg.Sandbox, log)
+	pods := k8s.NewPods(kube, cfg.Sandbox)
+	sandboxes := sandbox.NewService(st, pods, cfg.Sandbox, log)
+
+	// Keep sandbox statuses in line with their pods (live events + a
+	// periodic reconcile). Both stop when ctx is cancelled at shutdown.
+	syncer := sandbox.NewSyncer(st, pods, log)
+	watcher, err := k8s.NewWatcher(kube, cfg.Sandbox.Namespace, syncer)
+	if err != nil {
+		return err
+	}
+	if err := watcher.Start(ctx); err != nil {
+		return err
+	}
+	syncer.SetCache(watcher)
+	go syncer.Run(ctx)
+	log.Info("sandbox status sync started", "namespace", cfg.Sandbox.Namespace)
 
 	srv := &http.Server{
 		Addr: cfg.ListenAddr,

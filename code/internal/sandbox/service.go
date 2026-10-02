@@ -129,6 +129,11 @@ func (s *Service) Delete(ctx context.Context, user store.User, id string) (store
 	if !store.IsLive(sb.Status) {
 		return sb, nil
 	}
+	// Mark first, so the status syncer sees an intended deletion rather
+	// than a lost pod when the pod disappears.
+	if err := s.store.MarkSandboxDeleting(ctx, sb.ID); err != nil {
+		return store.Sandbox{}, err
+	}
 	if err := s.pods.Delete(ctx, sb.PodName); err != nil {
 		return store.Sandbox{}, fmt.Errorf("delete pod %s: %w", sb.PodName, err)
 	}

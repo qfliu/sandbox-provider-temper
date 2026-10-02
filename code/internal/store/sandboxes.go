@@ -139,3 +139,40 @@ func (s *Store) MarkSandboxEnded(ctx context.Context, id, status, reason string)
 	}
 	return sb, err
 }
+
+// MarkSandboxRunning records that a sandbox's pod is ready and where it is.
+// Only pending/running rows change, so a late event can't revive a sandbox
+// that is being deleted or has ended.
+func (s *Store) MarkSandboxRunning(ctx context.Context, id, podIP string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE sandboxes SET status = 'running', pod_ip = $2
+		WHERE id = $1 AND status IN ('pending', 'running')
+		AND (status <> 'running' OR pod_ip <> $2)`, id, podIP)
+	return err
+}
+
+// MarkSandboxDeleting flags a sandbox whose pod is about to be deleted on
+// purpose, so the pod disappearing isn't mistaken for a lost sandbox.
+func (s *Store) MarkSandboxDeleting(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE sandboxes SET status = 'deleting'
+		WHERE id = $1 AND status IN ('pending', 'running')`, id)
+	return err
+}
+
+// ListLiveSandboxes returns every live sandbox across all users.
+func (s *Store) ListLiveSandboxes(ctx context.Context) ([]Sandbox, error) {
+	rows, err := s.pool.Query(ctx, "SELECT "+sandboxColumns+` FROM sandboxes
+		WHERE status IN ('pending', 'running', 'deleting')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []Sandbox{}
+	for rows.Next() {
+		sb, err := scanSandbox(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, sb)
+	}
+	return list, rows.Err()
+}
