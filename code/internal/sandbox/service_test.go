@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/qfliu/sandbox-provider-temper/code/internal/config"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/db"
@@ -23,16 +24,34 @@ const validKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEv765TaxvHJjfGEoUUNbzPT0z
 // onDelete to run something (like a watcher event) during a delete.
 type fakePods struct {
 	created, deleted []string
+	hostKeys         map[string][]byte
 	failCreate       bool
 	onDelete         func(name string)
+	secrets          []string // sandbox ids that have a host-key Secret
+	cleanedSecrets   []string
 }
 
-func (f *fakePods) Create(_ context.Context, sb store.Sandbox) error {
+func (f *fakePods) Create(_ context.Context, sb store.Sandbox, hostKeyPEM []byte) error {
 	if f.failCreate {
 		return errors.New("admission webhook said no")
 	}
 	f.created = append(f.created, sb.PodName)
+	if f.hostKeys == nil {
+		f.hostKeys = map[string][]byte{}
+	}
+	f.hostKeys[sb.ID] = hostKeyPEM
 	return nil
+}
+
+func (f *fakePods) CleanupSecrets(_ context.Context, isLive func(string) bool) ([]string, error) {
+	var deleted []string
+	for _, id := range f.secrets {
+		if !isLive(id) {
+			deleted = append(deleted, id+"-hostkey")
+		}
+	}
+	f.cleanedSecrets = deleted
+	return deleted, nil
 }
 
 func (f *fakePods) Delete(_ context.Context, name string) error {
@@ -87,6 +106,15 @@ func TestCreate(t *testing.T) {
 	}
 	if len(f.pods.created) != 1 || f.pods.created[0] != sb.ID {
 		t.Fatalf("pods created = %v", f.pods.created)
+	}
+	// The pod got the private host key whose public half is in the database.
+	signer, err := ssh.ParsePrivateKey(f.pods.hostKeys[sb.ID])
+	if err != nil {
+		t.Fatalf("pod host key: %v", err)
+	}
+	stored, _ := f.st.GetSandbox(context.Background(), sb.ID)
+	if got := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))); got != stored.HostPublicKey {
+		t.Fatalf("pod host key %q doesn't match stored %q", got, stored.HostPublicKey)
 	}
 }
 

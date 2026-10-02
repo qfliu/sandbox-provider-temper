@@ -152,12 +152,18 @@ func (y *Syncer) Reconcile(ctx context.Context) error {
 			y.podMissing(ctx, sb, true)
 		}
 	}
-	for id, pod := range byID {
-		if liveIDs[id] || pod.DeletionTimestamp != nil {
-			continue
+	// isLive re-checks the database for anything not in our snapshot: a
+	// sandbox created after we listed already has its Secret (and maybe its
+	// pod), and deleting those would break it.
+	isLive := func(id string) bool {
+		if liveIDs[id] {
+			return true
 		}
-		// Re-check: the sandbox may have been created after we listed.
-		if sb, err := y.store.GetSandbox(ctx, id); err == nil && store.IsLive(sb.Status) {
+		sb, err := y.store.GetSandbox(ctx, id)
+		return err == nil && store.IsLive(sb.Status)
+	}
+	for id, pod := range byID {
+		if pod.DeletionTimestamp != nil || isLive(id) {
 			continue
 		}
 		y.log.Info("deleting orphan pod", "pod", pod.Name)
@@ -165,7 +171,11 @@ func (y *Syncer) Reconcile(ctx context.Context) error {
 			y.log.Error("delete orphan pod", "pod", pod.Name, "err", err)
 		}
 	}
-	return nil
+	deleted, err := y.pods.CleanupSecrets(ctx, isLive)
+	for _, name := range deleted {
+		y.log.Info("deleted orphan host key secret", "secret", name)
+	}
+	return err
 }
 
 // Run reconciles immediately and then every ReconcileInterval until ctx ends.

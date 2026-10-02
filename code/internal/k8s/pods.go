@@ -20,8 +20,8 @@ import (
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
 
-// Labels on every sandbox pod, so they can be found (and later targeted by
-// NetworkPolicies) without the database.
+// Labels on every sandbox pod and host-key Secret, so they can be found
+// (and later targeted by NetworkPolicies) without the database.
 const (
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	LabelComponent = "app.kubernetes.io/component"
@@ -29,6 +29,9 @@ const (
 	LabelOwner     = "sandbox.dev/owner"
 	managedByValue = "sandbox-api"
 )
+
+// HostKeyFile is the key inside a sandbox's host-key Secret.
+const HostKeyFile = "ssh_host_ed25519_key"
 
 // NewClientset connects to Kubernetes: with the pod's service account when
 // running in the cluster, otherwise with KUBECONFIG (like kubectl).
@@ -47,7 +50,8 @@ func NewClientset() (kubernetes.Interface, error) {
 	return kubernetes.NewForConfig(cfg)
 }
 
-// Pods creates and deletes sandbox pods in one namespace.
+// Pods creates and deletes sandbox pods (and their host-key Secrets) in one
+// namespace.
 type Pods struct {
 	client kubernetes.Interface
 	cfg    config.Sandbox
@@ -58,21 +62,90 @@ func NewPods(client kubernetes.Interface, cfg config.Sandbox) *Pods {
 	return &Pods{client: client, cfg: cfg}
 }
 
-// Create starts the pod for a sandbox.
-func (p *Pods) Create(ctx context.Context, sb store.Sandbox) error {
-	_, err := p.client.CoreV1().Pods(p.cfg.Namespace).Create(ctx, BuildPod(sb, p.cfg), metav1.CreateOptions{})
-	return err
+// HostKeySecretName is the Secret holding a sandbox's private host key.
+func HostKeySecretName(sandboxID string) string { return sandboxID + "-hostkey" }
+
+// Create starts a sandbox: its host-key Secret first (the pod mounts it),
+// then the pod, then makes the pod the Secret's owner so Kubernetes deletes
+// the Secret together with the pod (D29).
+func (p *Pods) Create(ctx context.Context, sb store.Sandbox, hostKeyPEM []byte) error {
+	secrets := p.client.CoreV1().Secrets(p.cfg.Namespace)
+	secret, err := secrets.Create(ctx, BuildHostKeySecret(sb, p.cfg, hostKeyPEM), metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("create host key secret: %w", err)
+	}
+	pod, err := p.client.CoreV1().Pods(p.cfg.Namespace).Create(ctx, BuildPod(sb, p.cfg), metav1.CreateOptions{})
+	if err != nil {
+		secrets.Delete(context.WithoutCancel(ctx), secret.Name, metav1.DeleteOptions{})
+		return err
+	}
+	secret.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: "v1", Kind: "Pod", Name: pod.Name, UID: pod.UID,
+	}}
+	// Not fatal if this fails: the reconcile's CleanupSecrets removes the
+	// Secret once the sandbox ends.
+	secrets.Update(ctx, secret, metav1.UpdateOptions{})
+	return nil
 }
 
-// Delete removes a sandbox pod. A pod that is already gone is not an error.
+// Delete removes a sandbox pod and its host-key Secret. Already-gone objects
+// are not an error.
 func (p *Pods) Delete(ctx context.Context, podName string) error {
 	grace := int64(5)
 	err := p.client.CoreV1().Pods(p.cfg.Namespace).Delete(ctx, podName,
 		metav1.DeleteOptions{GracePeriodSeconds: &grace})
-	if apierrors.IsNotFound(err) {
-		return nil
+	if err != nil && !apierrors.IsNotFound(err) {
+		return err
 	}
-	return err
+	err = p.client.CoreV1().Secrets(p.cfg.Namespace).Delete(ctx, HostKeySecretName(podName), metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+// CleanupSecrets deletes host-key Secrets whose sandbox isn't live, catching
+// any the owner reference missed. Returns the names deleted.
+func (p *Pods) CleanupSecrets(ctx context.Context, isLive func(sandboxID string) bool) ([]string, error) {
+	list, err := p.client.CoreV1().Secrets(p.cfg.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: LabelManagedBy + "=" + managedByValue,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var deleted []string
+	for _, s := range list.Items {
+		if isLive(s.Labels[LabelSandboxID]) {
+			continue
+		}
+		err := p.client.CoreV1().Secrets(p.cfg.Namespace).Delete(ctx, s.Name, metav1.DeleteOptions{})
+		if err != nil && !apierrors.IsNotFound(err) {
+			return deleted, err
+		}
+		deleted = append(deleted, s.Name)
+	}
+	return deleted, nil
+}
+
+func labelsFor(sb store.Sandbox, component string) map[string]string {
+	return map[string]string{
+		LabelManagedBy: managedByValue,
+		LabelComponent: component,
+		LabelSandboxID: sb.ID,
+		LabelOwner:     sb.UserID,
+	}
+}
+
+// BuildHostKeySecret returns the Secret carrying a sandbox's private host key.
+func BuildHostKeySecret(sb store.Sandbox, cfg config.Sandbox, hostKeyPEM []byte) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      HostKeySecretName(sb.ID),
+			Namespace: cfg.Namespace,
+			Labels:    labelsFor(sb, "sandbox-hostkey"),
+		},
+		Data: map[string][]byte{HostKeyFile: hostKeyPEM},
+	}
 }
 
 // DeadlineGrace is how long past its TTL a sandbox pod may run before the
@@ -87,18 +160,14 @@ func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 	no := false
 	grace := int64(5)
 	keyMode := int32(0o444)
+	hostKeyMode := int32(0o400) // sshd refuses host keys others can read
 	deadline := int64(sb.TTLSeconds + DeadlineGrace)
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      sb.PodName,
 			Namespace: cfg.Namespace,
-			Labels: map[string]string{
-				LabelManagedBy: managedByValue,
-				LabelComponent: "sandbox",
-				LabelSandboxID: sb.ID,
-				LabelOwner:     sb.UserID,
-			},
+			Labels:    labelsFor(sb, "sandbox"),
 		},
 		Spec: corev1.PodSpec{
 			RuntimeClassName:              ptr("gvisor"), // D4: gVisor isolation
@@ -129,6 +198,7 @@ func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 				VolumeMounts: []corev1.VolumeMount{
 					{Name: "home", MountPath: "/home/user"},
 					{Name: "internal-key", MountPath: "/etc/sandbox", ReadOnly: true},
+					{Name: "host-key", MountPath: "/etc/sandbox-hostkey", ReadOnly: true},
 				},
 			}},
 			Volumes: []corev1.Volume{
@@ -138,11 +208,18 @@ func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 						SizeLimit: ptr(resource.MustParse("5Gi")),
 					}},
 				},
-				{ // D7: the only key sandbox sshd trusts
+				{ // D7: the only client key sandbox sshd trusts
 					Name: "internal-key",
 					VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
 						SecretName:  cfg.InternalKeySecret,
 						DefaultMode: &keyMode,
+					}},
+				},
+				{ // D29: this sandbox's own host key, so the API can verify it
+					Name: "host-key",
+					VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+						SecretName:  HostKeySecretName(sb.ID),
+						DefaultMode: &hostKeyMode,
 					}},
 				},
 			},

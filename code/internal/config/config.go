@@ -37,6 +37,8 @@ type Sandbox struct {
 	// InternalKeySecret is the Secret holding the platform-internal SSH
 	// public key that sandbox sshd trusts (D7).
 	InternalKeySecret string
+	// InternalKeyFile is the matching private key the API logs in with.
+	InternalKeyFile string
 }
 
 // LoadAPI reads API settings from the environment, applying defaults.
@@ -51,7 +53,11 @@ func LoadAPI() (API, error) {
 			DefaultTTL:        time.Hour,
 			MaxTTL:            24 * time.Hour,
 			InternalKeySecret: getenv("SANDBOX_INTERNAL_KEY_SECRET", "sandbox-internal-key"),
+			InternalKeyFile:   os.Getenv("SANDBOX_INTERNAL_KEY_FILE"),
 		},
+	}
+	if cfg.Sandbox.InternalKeyFile == "" {
+		return API{}, fmt.Errorf("SANDBOX_INTERNAL_KEY_FILE is required (the platform's private SSH key)")
 	}
 	durations := []struct {
 		env string

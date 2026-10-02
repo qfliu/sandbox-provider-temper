@@ -44,6 +44,15 @@ func TestBuildPodIsolation(t *testing.T) {
 	if c.Resources.Limits.Cpu().IsZero() || c.Resources.Limits.Memory().IsZero() {
 		t.Fatal("pod must have CPU and memory limits")
 	}
+	var hostKeyVol bool
+	for _, v := range spec.Volumes {
+		if v.Secret != nil && v.Secret.SecretName == "sb-abc-hostkey" && *v.Secret.DefaultMode == 0o400 {
+			hostKeyVol = true
+		}
+	}
+	if !hostKeyVol {
+		t.Fatal("pod must mount its own host key secret, readable only by its owner")
+	}
 	if pod.Name != "sb-abc" || pod.Namespace != "sandboxes" ||
 		pod.Labels[LabelSandboxID] != "sb-abc" || pod.Labels[LabelOwner] != "u1" {
 		t.Fatalf("unexpected metadata %+v", pod.ObjectMeta)
@@ -55,16 +64,42 @@ func TestPodsCreateAndDelete(t *testing.T) {
 	pods := NewPods(client, testCfg)
 	ctx := context.Background()
 
-	if err := pods.Create(ctx, testSandbox); err != nil {
+	if err := pods.Create(ctx, testSandbox, []byte("PRIVATE KEY")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.CoreV1().Pods("sandboxes").Get(ctx, "sb-abc", metav1.GetOptions{}); err != nil {
+	pod, err := client.CoreV1().Pods("sandboxes").Get(ctx, "sb-abc", metav1.GetOptions{})
+	if err != nil {
 		t.Fatalf("pod not created: %v", err)
+	}
+	secret, err := client.CoreV1().Secrets("sandboxes").Get(ctx, "sb-abc-hostkey", metav1.GetOptions{})
+	if err != nil || string(secret.Data[HostKeyFile]) != "PRIVATE KEY" {
+		t.Fatalf("host key secret = %v, %v", secret, err)
+	}
+	if len(secret.OwnerReferences) != 1 || secret.OwnerReferences[0].Name != pod.Name {
+		t.Fatalf("secret should be owned by the pod: %+v", secret.OwnerReferences)
 	}
 	if err := pods.Delete(ctx, "sb-abc"); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := client.CoreV1().Secrets("sandboxes").Get(ctx, "sb-abc-hostkey", metav1.GetOptions{}); err == nil {
+		t.Fatal("secret survived delete")
 	}
 	if err := pods.Delete(ctx, "sb-abc"); err != nil {
 		t.Fatalf("deleting an already-deleted pod should succeed: %v", err)
+	}
+}
+
+func TestCleanupSecrets(t *testing.T) {
+	client := fake.NewClientset()
+	pods := NewPods(client, testCfg)
+	ctx := context.Background()
+	for _, id := range []string{"sb-live", "sb-dead"} {
+		client.CoreV1().Secrets("sandboxes").Create(ctx,
+			BuildHostKeySecret(store.Sandbox{ID: id}, testCfg, nil), metav1.CreateOptions{})
+	}
+
+	deleted, err := pods.CleanupSecrets(ctx, func(id string) bool { return id == "sb-live" })
+	if err != nil || len(deleted) != 1 || deleted[0] != "sb-dead-hostkey" {
+		t.Fatalf("deleted %v, %v; want only sb-dead-hostkey", deleted, err)
 	}
 }
