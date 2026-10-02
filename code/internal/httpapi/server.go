@@ -15,12 +15,27 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
+// Deps are the services the HTTP handlers need.
+type Deps struct {
+	Log  *slog.Logger
+	DB   Pinger
+	Auth Authenticator
+}
+
 // NewHandler returns the API's root handler with all routes registered.
-func NewHandler(log *slog.Logger, db Pinger) http.Handler {
+//
+// /healthz and /readyz are public (Kubernetes probes them). Everything under
+// /v1/ requires an API key, including unknown /v1 paths, so the API doesn't
+// reveal which routes exist to unauthenticated callers.
+func NewHandler(d Deps) http.Handler {
+	v1 := http.NewServeMux()
+	v1.HandleFunc("GET /v1/me", handleMe)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
-	mux.HandleFunc("GET /readyz", handleReadyz(log, db))
-	return logRequests(log, mux)
+	mux.HandleFunc("GET /readyz", handleReadyz(d.Log, d.DB))
+	mux.Handle("/v1/", requireAuth(d.Log, d.Auth, v1))
+	return logRequests(d.Log, mux)
 }
 
 // handleHealthz reports liveness: the process is up. Kubernetes restarts the
@@ -44,10 +59,17 @@ func handleReadyz(log *slog.Logger, db Pinger) http.HandlerFunc {
 	}
 }
 
+// writeError sends {"error": "..."}, the shape of every API error.
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false) // this is an API, not HTML: keep "<key>" readable
+	_ = enc.Encode(v)
 }
 
 // logRequests logs one line per request with its method, path and status.

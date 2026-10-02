@@ -25,11 +25,12 @@ func LoadAPI() (API, error) {
 	cfg := API{
 		ListenAddr:      getenv("API_LISTEN_ADDR", ":8080"),
 		ShutdownTimeout: 10 * time.Second,
-		DatabaseURL:     os.Getenv("DATABASE_URL"),
 	}
-	if cfg.DatabaseURL == "" {
-		return API{}, fmt.Errorf("DATABASE_URL is required")
+	url, err := DatabaseURL()
+	if err != nil {
+		return API{}, err
 	}
+	cfg.DatabaseURL = url
 	if v := os.Getenv("API_SHUTDOWN_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -38,6 +39,15 @@ func LoadAPI() (API, error) {
 		cfg.ShutdownTimeout = d
 	}
 	return cfg, nil
+}
+
+// DatabaseURL returns the required DATABASE_URL setting.
+func DatabaseURL() (string, error) {
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		return "", fmt.Errorf("DATABASE_URL is required")
+	}
+	return url, nil
 }
 
 func getenv(key, fallback string) string {
