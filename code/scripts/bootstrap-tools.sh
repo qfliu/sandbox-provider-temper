@@ -10,9 +10,6 @@ GO_VERSION=1.27.1
 KUBECTL_VERSION=v1.37.1
 HELM_VERSION=v4.3.0
 MINIKUBE_VERSION=v1.39.0
-COLIMA_VERSION=v0.10.3
-LIMA_VERSION=2.2.0
-DOCKER_VERSION=29.8.2
 VFKIT_VERSION=v0.6.4
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -24,11 +21,10 @@ TMPD="$ROOT/.devenv/tmp"
 mkdir -p "$TMPD"
 
 case "$(uname -s)-$(uname -m)" in
-  Darwin-arm64)  OS=darwin; ARCH=arm64; CAP_OS=Darwin; DOCKER_ARCH=aarch64 ;;
-  Darwin-x86_64) OS=darwin; ARCH=amd64; CAP_OS=Darwin; DOCKER_ARCH=x86_64 ;;
+  Darwin-arm64)  OS=darwin; ARCH=arm64 ;;
+  Darwin-x86_64) OS=darwin; ARCH=amd64 ;;
   *) echo "unsupported platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
 esac
-LIMA_ARCH=$([ "$ARCH" = arm64 ] && echo arm64 || echo x86_64)
 
 fetch() { curl -fL --retry 3 --progress-bar "$1" -o "$2"; }
 have() { [ -x "$1" ] && echo "  already installed: $(basename "$1")"; }
@@ -64,29 +60,6 @@ echo "==> vfkit $VFKIT_VERSION"
 if ! have "$BIN/vfkit"; then
   fetch "https://github.com/crc-org/vfkit/releases/download/${VFKIT_VERSION}/vfkit" "$BIN/vfkit"
   chmod +x "$BIN/vfkit"
-fi
-
-# lima provides the Linux VM (via macOS Virtualization.framework); colima
-# wraps it to run a Docker engine. Lima needs its bin/ and share/ dirs kept
-# together, so it gets its own prefix.
-echo "==> lima $LIMA_VERSION"
-if ! have "$TOOLS/lima/bin/limactl"; then
-  mkdir -p "$TOOLS/lima"
-  fetch "https://github.com/lima-vm/lima/releases/download/v${LIMA_VERSION}/lima-${LIMA_VERSION}-${CAP_OS}-${LIMA_ARCH}.tar.gz" $TMPD/lima.tgz.$$
-  tar -xzf $TMPD/lima.tgz.$$ -C "$TOOLS/lima" && rm $TMPD/lima.tgz.$$
-fi
-
-echo "==> colima $COLIMA_VERSION"
-if ! have "$BIN/colima"; then
-  fetch "https://github.com/abiosoft/colima/releases/download/${COLIMA_VERSION}/colima-${CAP_OS}-${LIMA_ARCH}" "$BIN/colima"
-  chmod +x "$BIN/colima"
-fi
-
-echo "==> docker cli $DOCKER_VERSION"
-if ! have "$BIN/docker"; then
-  fetch "https://download.docker.com/mac/static/stable/${DOCKER_ARCH}/docker-${DOCKER_VERSION}.tgz" $TMPD/docker.tgz.$$
-  tar -xzf $TMPD/docker.tgz.$$ -C "$TMPD" docker/docker
-  mv $TMPD/docker/docker "$BIN/docker" && rm -rf $TMPD/docker.tgz.$$ $TMPD/docker
 fi
 
 # Go writes telemetry counters to ~/Library/Application Support/go and has

@@ -52,11 +52,17 @@ fi
 #    runsc finds its sidecar binaries in gvisor-bin/ next to its real path,
 #    which is /data/gvisor (symlinks resolve through /proc/self/exe).
 echo "==> configuring containerd"
+#    runsc.toml: allow-suid lets setuid binaries (sudo) work inside the
+#    sandbox (D22); gVisor ignores SUID bits by default.
 minikube ssh -- 'set -e
   sudo ln -sf /data/gvisor/runsc /usr/bin/runsc
   sudo ln -sf /data/gvisor/containerd-shim-runsc-v1 /usr/bin/containerd-shim-runsc-v1
-  if ! grep -q "runtimes.runsc\]" /etc/containerd/config.toml; then
-    printf "\n[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runsc]\n  runtime_type = \"io.containerd.runsc.v1\"\n" \
+  printf "[runsc_config]\n  allow-suid = \"true\"\n" | sudo tee /etc/containerd/runsc.toml >/dev/null
+  if ! grep -q "runtimes.runsc.options\]" /etc/containerd/config.toml; then
+    grep -q "runtimes.runsc\]" /etc/containerd/config.toml || \
+      printf "\n[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runsc]\n  runtime_type = \"io.containerd.runsc.v1\"\n" \
+        | sudo tee -a /etc/containerd/config.toml >/dev/null
+    printf "\n[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runsc.options]\n  TypeUrl = \"io.containerd.runsc.v1.options\"\n  ConfigPath = \"/etc/containerd/runsc.toml\"\n" \
       | sudo tee -a /etc/containerd/config.toml >/dev/null
     sudo systemctl restart containerd
   fi'

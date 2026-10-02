@@ -1,0 +1,24 @@
+# Key-only SSH for the sandbox. Only the platform-internal key is trusted
+# (D7); users' own keys are checked at the SSH gateway (D6).
+Port 22
+ListenAddress 0.0.0.0
+
+PermitRootLogin no
+AllowUsers user
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile /etc/sandbox/authorized_keys
+
+# The key file is mounted from a Secret, whose perms/ownership don't satisfy
+# StrictModes' checks on the user's home dir.
+StrictModes no
+
+UsePAM no
+PrintMotd no
+X11Forwarding no
+AllowTcpForwarding no
+AllowAgentForwarding no
+PermitTunnel no
+
+Subsystem sftp /usr/lib/openssh/sftp-server
