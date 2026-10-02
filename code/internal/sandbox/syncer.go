@@ -148,6 +148,15 @@ func (y *Syncer) Reconcile(ctx context.Context) error {
 	for _, sb := range live {
 		liveIDs[sb.ID] = true
 		if pod, ok := byID[sb.ID]; ok {
+			if sb.Status == store.StatusDeleting && pod.DeletionTimestamp == nil {
+				// A delete request marked the row but didn't get the pod
+				// deleted (Kubernetes error, API restart): retry it.
+				y.log.Info("retrying interrupted delete", "sandbox", sb.ID)
+				if err := y.pods.Delete(ctx, pod.Name); err != nil {
+					y.log.Error("retry pod delete", "sandbox", sb.ID, "err", err)
+				}
+				continue
+			}
 			y.apply(ctx, pod)
 		} else {
 			y.podMissing(ctx, sb, true)

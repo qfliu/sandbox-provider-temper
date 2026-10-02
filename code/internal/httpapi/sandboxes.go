@@ -176,7 +176,7 @@ func writeServiceError(log *slog.Logger, w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrQuotaExceeded):
 		writeError(w, http.StatusTooManyRequests, "sandbox quota exceeded: delete a sandbox first")
 	case errors.Is(err, sandbox.ErrUnavailable):
-		writeError(w, http.StatusServiceUnavailable, "could not start sandbox, try again")
+		writeError(w, http.StatusServiceUnavailable, "cluster busy or unavailable, try again")
 	default:
 		log.Error("request failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")

@@ -27,6 +27,7 @@ type fakePods struct {
 	created, deleted []string
 	hostKeys         map[string][]byte
 	failCreate       bool
+	failDelete       bool
 	onDelete         func(name string)
 	secrets          []string // sandbox ids that have a host-key Secret
 	cleanedSecrets   []string
@@ -56,6 +57,9 @@ func (f *fakePods) CleanupSecrets(_ context.Context, isLive func(string) bool) (
 }
 
 func (f *fakePods) Delete(_ context.Context, name string) error {
+	if f.failDelete {
+		return errors.New("etcd timeout")
+	}
 	f.deleted = append(f.deleted, name)
 	if f.onDelete != nil {
 		f.onDelete(name)
