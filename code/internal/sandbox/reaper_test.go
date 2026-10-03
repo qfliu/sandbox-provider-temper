@@ -14,8 +14,8 @@ func TestReapDeletesExpiredAndIdleSandboxes(t *testing.T) {
 	expired := f.newSandbox(t, false)
 	idle := f.newSandbox(t, false)
 	active := f.newSandbox(t, false)
-	f.pool.Exec(ctx, "UPDATE sandboxes SET expires_at = now() - interval '1 second' WHERE id = $1", expired.ID)
-	f.pool.Exec(ctx, "UPDATE sandboxes SET last_activity_at = now() - interval '31 minutes' WHERE id = $1", idle.ID)
+	mustExec(t, f, "UPDATE sandboxes SET expires_at = now() - interval '1 second' WHERE id = $1", expired.ID)
+	mustExec(t, f, "UPDATE sandboxes SET last_activity_at = now() - interval '31 minutes' WHERE id = $1", idle.ID)
 
 	n, err := f.svc.Reap(ctx)
 	if err != nil || n != 2 {
@@ -33,8 +33,12 @@ func TestReapDeletesExpiredAndIdleSandboxes(t *testing.T) {
 	if got := f.status(t, active.ID).Status; got != store.StatusPending {
 		t.Fatalf("active sandbox: status %q, want untouched", got)
 	}
-	if len(f.pods.deleted) != 2 {
-		t.Fatalf("pods deleted = %v, want the two reaped ones", f.pods.deleted)
+	deleted := map[string]bool{}
+	for _, name := range f.pods.deleted {
+		deleted[name] = true
+	}
+	if len(f.pods.deleted) != 2 || !deleted[expired.ID] || !deleted[idle.ID] {
+		t.Fatalf("pods deleted = %v, want exactly %s and %s", f.pods.deleted, expired.ID, idle.ID)
 	}
 }
 
@@ -44,7 +48,7 @@ func TestReapFailureIsFinishedByReconcileWithReason(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	sb := f.newSandbox(t, true)
-	f.pool.Exec(ctx, "UPDATE sandboxes SET expires_at = now() - interval '1 second' WHERE id = $1", sb.ID)
+	mustExec(t, f, "UPDATE sandboxes SET expires_at = now() - interval '1 second' WHERE id = $1", sb.ID)
 
 	f.pods.failDelete = true
 	if _, err := f.svc.Reap(ctx); err != nil {
