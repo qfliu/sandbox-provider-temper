@@ -2,7 +2,12 @@ package db
 
 import (
 	"context"
+	"fmt"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/qfliu/sandbox-provider-temper/code/internal/dbtest"
 )
@@ -59,5 +64,67 @@ func TestSchemaConstraints(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, "INSERT INTO users (name) VALUES ('alice')"); err == nil {
 		t.Fatal("duplicate user name was accepted")
+	}
+}
+
+// The platform's role needs no superuser rights (D47): a plain role that
+// owns its schema can run every migration, and can't do what only
+// superusers can (shell commands from SQL, creating roles).
+func TestMigrateAsPlainOwner(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping database test")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	role, schema := "test_app_"+suffix, "test_app_"+suffix
+	for _, q := range []string{
+		"CREATE ROLE " + role + " NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE",
+		"CREATE SCHEMA " + schema + " AUTHORIZATION " + role,
+	} {
+		if _, err := admin.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+		admin.Exec(context.Background(), "DROP OWNED BY "+role)
+		admin.Exec(context.Background(), "DROP ROLE "+role)
+	})
+
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	cfg.ConnConfig.RuntimeParams["role"] = role // act as the plain role
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	if super, err := IsSuperuser(ctx, pool); err != nil || super {
+		t.Fatalf("IsSuperuser = %v, %v; want false for the plain role", super, err)
+	}
+	if super, err := IsSuperuser(ctx, admin); err != nil || !super {
+		t.Fatalf("IsSuperuser(admin) = %v, %v; the test database URL should be a superuser", super, err)
+	}
+	if applied, err := Migrate(ctx, pool); err != nil || len(applied) == 0 {
+		t.Fatalf("migrations as a plain owner: %v, %v", applied, err)
+	}
+	for _, q := range []string{
+		"COPY (SELECT 1) TO PROGRAM 'true'",
+		"CREATE ROLE evil_" + suffix + " SUPERUSER",
+		"ALTER ROLE " + role + " SUPERUSER",
+	} {
+		if _, err := pool.Exec(ctx, q); err == nil || !strings.Contains(err.Error(), "permission denied") && !strings.Contains(err.Error(), "must be superuser") {
+			t.Errorf("as the platform role, %q: err = %v; want refused", q, err)
+		}
 	}
 }

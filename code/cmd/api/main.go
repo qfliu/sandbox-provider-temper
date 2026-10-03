@@ -109,6 +109,9 @@ func serve(log *slog.Logger) error {
 		return err
 	}
 	log.Info("database ready", "migrations_applied", applied)
+	if super, err := db.IsSuperuser(ctx, pool); err == nil && super {
+		log.Warn("connected to Postgres as a superuser; use the sandbox_app role (D47)")
+	}
 
 	// The internal key the API logs into sandboxes with (D7).
 	signer, err := sshx.LoadSigner(cfg.Sandbox.InternalKeyFile)

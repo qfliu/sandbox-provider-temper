@@ -39,6 +39,15 @@ func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
+// IsSuperuser reports whether the pool's role is a Postgres superuser. The
+// API should connect as a plain owner role (sandbox_app, D47), so an SQL bug
+// can't take over the database server.
+func IsSuperuser(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
+	var super bool
+	err := pool.QueryRow(ctx, "SELECT rolsuper FROM pg_roles WHERE rolname = current_user").Scan(&super)
+	return super, err
+}
+
 // Migrate applies every migration in migrations/ that hasn't run yet, in
 // filename order, each in its own transaction. Applied versions are recorded
 // in schema_migrations. Safe to call on every startup.
