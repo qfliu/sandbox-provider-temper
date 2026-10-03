@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -246,9 +247,9 @@ func TestClaimForReapingIsExclusive(t *testing.T) {
 	}
 }
 
-// touch_sandbox (migration 0003) may only set now(), only on running
-// sandboxes, at most every 10 s, and isn't executable by everyone.
-func TestTouchSandboxFunction(t *testing.T) {
+// API activity: TouchSandbox only moves running sandboxes, at most every
+// 10 s.
+func TestTouchSandbox(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	alice, _ := s.CreateUser(ctx, "alice", false)
@@ -257,38 +258,153 @@ func TestTouchSandboxFunction(t *testing.T) {
 	mustExec(t, s, "UPDATE sandboxes SET status = 'running' WHERE id = $1", running.ID)
 	mustExec(t, s, "UPDATE sandboxes SET last_activity_at = now() - interval '1 hour'")
 
-	idle := func(id string) float64 {
-		var secs float64
-		if err := s.pool.QueryRow(ctx, "SELECT extract(epoch FROM now() - last_activity_at) FROM sandboxes WHERE id = $1", id).Scan(&secs); err != nil {
-			t.Fatal(err)
-		}
-		return secs
-	}
 	if err := s.TouchSandbox(ctx, running.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.TouchSandbox(ctx, pending.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got := idle(running.ID); got > 5 {
+	if got := idleSecs(t, s, running.ID); got > 5 {
 		t.Fatalf("running sandbox not touched (idle %.0fs)", got)
 	}
-	if got := idle(pending.ID); got < 3500 {
+	if got := idleSecs(t, s, pending.ID); got < 3500 {
 		t.Fatalf("non-running sandbox was touched (idle %.0fs)", got)
 	}
 
 	// Throttle: a second touch right away doesn't move it again.
 	mustExec(t, s, "UPDATE sandboxes SET last_activity_at = now() - interval '5 seconds' WHERE id = $1", running.ID)
 	s.TouchSandbox(ctx, running.ID)
-	if got := idle(running.ID); got < 4 {
+	if got := idleSecs(t, s, running.ID); got < 4 {
 		t.Fatalf("touched again within 10s (idle %.0fs)", got)
 	}
+}
 
-	var public bool
-	if err := s.pool.QueryRow(ctx, "SELECT has_function_privilege('public', 'touch_sandbox(text)', 'EXECUTE')").Scan(&public); err != nil {
+// idleSecs is how long ago the sandbox was last used, as every reader
+// (API responses, the reaper) sees it: API or SSH activity, whichever is
+// newer.
+func idleSecs(t *testing.T, s *Store, id string) float64 {
+	t.Helper()
+	sb, err := s.GetSandbox(context.Background(), id)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if public {
-		t.Fatal("touch_sandbox is executable by PUBLIC; it must only be granted explicitly")
+	return time.Since(sb.LastActivityAt).Seconds()
+}
+
+// SSH activity (D36) counts for readers and the reaper, is throttled, and
+// a bogus value written with stolen gateway credentials can neither break
+// reads nor get a sandbox reaped.
+func TestSSHActivity(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	sb, _ := s.CreateSandbox(ctx, newSandbox(alice.ID, 1))
+	mustExec(t, s, "UPDATE sandboxes SET status = 'running', last_activity_at = now() - interval '1 hour' WHERE id = $1", sb.ID)
+	claimed := func() bool {
+		t.Helper()
+		list, err := s.ClaimForReaping(ctx, 30*time.Minute, "idle")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range list {
+			if c.ID == sb.ID {
+				mustExec(t, s, "UPDATE sandboxes SET status = 'running', status_reason = '' WHERE id = $1", sb.ID)
+				return true
+			}
+		}
+		return false
+	}
+
+	if err := s.RecordSSHActivity(ctx, sb.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := idleSecs(t, s, sb.ID); got > 5 {
+		t.Fatalf("SSH activity not seen by readers (idle %.0fs)", got)
+	}
+	if claimed() {
+		t.Fatal("sandbox in SSH use was reaped")
+	}
+
+	// Throttle: a second write within 10 s doesn't move it.
+	mustExec(t, s, "UPDATE ssh_activity SET last_seen_at = now() - interval '5 seconds'")
+	s.RecordSSHActivity(ctx, sb.ID)
+	if got := idleSecs(t, s, sb.ID); got < 4 {
+		t.Fatalf("recorded again within 10s (idle %.0fs)", got)
+	}
+
+	// Far-future value: reads still work and see "now", not the future.
+	mustExec(t, s, "UPDATE ssh_activity SET last_seen_at = 'infinity'")
+	if got := idleSecs(t, s, sb.ID); got < -5 || got > 5 {
+		t.Fatalf("infinity not capped at now (idle %.0fs)", got)
+	}
+	// Ancient value: can't make a recently used sandbox look idle…
+	mustExec(t, s, "UPDATE ssh_activity SET last_seen_at = '-infinity'")
+	mustExec(t, s, "UPDATE sandboxes SET last_activity_at = now() WHERE id = $1", sb.ID)
+	if claimed() {
+		t.Fatal("an ancient SSH time got a recently used sandbox reaped")
+	}
+	// …and a sandbox idle on both counts is reaped as usual.
+	mustExec(t, s, "UPDATE sandboxes SET last_activity_at = now() - interval '1 hour' WHERE id = $1", sb.ID)
+	if !claimed() {
+		t.Fatal("idle sandbox not reaped")
+	}
+
+	if err := s.RecordSSHActivity(ctx, "sb-000000000000"); err == nil {
+		t.Fatal("recorded SSH activity for a sandbox that doesn't exist")
+	}
+}
+
+// The gateway's database role (deploy-gateway.sh grants) must not be able to
+// change the sandboxes table, and doesn't need to: recording SSH activity
+// works with its own grants alone. Runs as a throwaway role with exactly
+// those grants.
+func TestGatewayRoleCannotChangeSandboxes(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	sb, _ := s.CreateSandbox(ctx, newSandbox(alice.ID, 1))
+
+	role := fmt.Sprintf("test_gateway_%d", time.Now().UnixNano())
+	var schema string
+	if err := s.pool.QueryRow(ctx, "SELECT current_schema()").Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s, "CREATE ROLE "+role+" NOLOGIN")
+	t.Cleanup(func() {
+		s.pool.Exec(context.Background(), "DROP OWNED BY "+role)
+		s.pool.Exec(context.Background(), "DROP ROLE "+role)
+	})
+	mustExec(t, s, "GRANT USAGE ON SCHEMA "+schema+" TO "+role)
+	mustExec(t, s, "GRANT SELECT ON sandboxes TO "+role)
+	mustExec(t, s, "GRANT SELECT, INSERT, UPDATE ON ssh_activity TO "+role)
+
+	// asGateway runs q as the role, in a transaction that is rolled back.
+	asGateway := func(q string, args ...any) error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+role); err != nil {
+			t.Fatal(err)
+		}
+		_, err = tx.Exec(ctx, q, args...)
+		return err
+	}
+	for _, q := range []string{
+		"UPDATE sandboxes SET last_activity_at = '-infinity'",
+		"UPDATE sandboxes SET status = 'deleting'",
+		"DELETE FROM sandboxes",
+		"SELECT * FROM users",
+		"SELECT * FROM api_keys",
+	} {
+		if err := asGateway(q); err == nil || !strings.Contains(err.Error(), "permission denied") {
+			t.Errorf("as the gateway role, %q: err = %v; want permission denied", q, err)
+		}
+	}
+	if err := asGateway(`INSERT INTO ssh_activity (sandbox_id, last_seen_at) VALUES ($1, now())
+		ON CONFLICT (sandbox_id) DO UPDATE SET last_seen_at = now()
+		WHERE ssh_activity.last_seen_at < now() - interval '10 seconds'`, sb.ID); err != nil {
+		t.Fatalf("the gateway role can't record SSH activity: %v", err)
 	}
 }

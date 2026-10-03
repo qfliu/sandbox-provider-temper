@@ -40,7 +40,7 @@ spec:
         env:
         - name: POSTGRES_PASSWORD
           valueFrom: {secretKeyRef: {name: postgres-gateway-credentials, key: password}}
-        - name: DATABASE_URL     # narrow role: SELECT on sandboxes + EXECUTE touch_sandbox() only
+        - name: DATABASE_URL     # narrow role: SELECT on sandboxes; write ssh_activity only
           value: postgres://sandbox_gateway:$(POSTGRES_PASSWORD)@postgres.sandbox-system:5432/sandbox?sslmode=disable
         - {name: GATEWAY_LISTEN_ADDR, value: ":2222"}
         - {name: GATEWAY_HOST_KEY_FILE, value: /keys/host/ssh_host_ed25519_key}
@@ -87,6 +87,11 @@ metadata:
   namespace: sandbox-system
 spec:
   type: NodePort
+  # Local: no SNAT, so the gateway sees (and logs) the client's real IP, not
+  # the node's (Phase 3 batch review). Traffic only goes to gateway pods on
+  # the node it arrived at; fine on one minikube node, and in a cloud the
+  # LoadBalancer health-checks nodes so it only sends to ones with a pod.
+  externalTrafficPolicy: Local
   selector: {app: sandbox-gateway}
   ports:
   - {name: ssh, port: 22, targetPort: ssh, nodePort: 30022}
