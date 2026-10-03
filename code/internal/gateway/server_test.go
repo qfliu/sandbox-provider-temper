@@ -80,7 +80,7 @@ func dial(addr, user string, hostKey ssh.PublicKey, client ssh.Signer) error {
 
 func TestPresentsConfiguredHostKey(t *testing.T) {
 	host := signer(t)
-	addr := start(t, New(host, noSandboxes{}, quietLog()))
+	addr := start(t, New(host, noSandboxes{}, nil, quietLog()))
 
 	// Pinning the right host key gets past the handshake to authentication…
 	err := dial(addr, "sb-0123456789ab", host.PublicKey(), signer(t))
@@ -145,7 +145,7 @@ func waitClosed(t *testing.T, r *bufio.Reader, conn net.Conn, limit time.Duratio
 // A client that connects and never speaks must be disconnected at the
 // handshake deadline, not hold a connection forever.
 func TestStalledClientIsDisconnected(t *testing.T) {
-	srv := New(signer(t), noSandboxes{}, quietLog())
+	srv := New(signer(t), noSandboxes{}, nil, quietLog())
 	srv.handshakeTimeout = 300 * time.Millisecond
 	conn, err := net.Dial("tcp", start(t, srv))
 	if err != nil {
@@ -163,7 +163,7 @@ func TestShutdownClosesOpenConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancel, done := serve(New(signer(t), noSandboxes{}, quietLog()), ln)
+	cancel, done := serve(New(signer(t), noSandboxes{}, nil, quietLog()), ln)
 
 	conn, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {
@@ -187,7 +187,7 @@ func TestShutdownClosesOpenConnections(t *testing.T) {
 // A connection that is accepted after shutdown has started (the race where
 // it misses the close-all sweep) must be closed, not tracked.
 func TestConnectionArrivingDuringShutdownIsClosed(t *testing.T) {
-	srv := New(signer(t), noSandboxes{}, quietLog())
+	srv := New(signer(t), noSandboxes{}, nil, quietLog())
 	srv.shutdown()
 
 	client, server := net.Pipe()
@@ -223,7 +223,7 @@ func TestAcceptErrorsAreRetried(t *testing.T) {
 	ln := &flakyListener{Listener: inner}
 	ln.failures.Store(3)
 	host := signer(t)
-	cancel, done := serve(New(host, noSandboxes{}, quietLog()), ln)
+	cancel, done := serve(New(host, noSandboxes{}, nil, quietLog()), ln)
 	defer cancel()
 
 	select { // give the 3 failures (5+10+20 ms backoff) time to happen

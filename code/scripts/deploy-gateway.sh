@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Builds the platform image (API + gateway) inside minikube and rolls out the
+# SSH gateway to sandbox-system. Also creates the gateway's own read-only
+# Postgres role (SELECT on sandboxes only). Run after deploy-postgres.sh and
+# deploy-api.sh (the API creates the tables). Idempotent.
+#
+# Usage (from the project root): source ./env.sh && ./code/scripts/deploy-gateway.sh
+# Then reach it from your Mac:   kubectl -n sandbox-system port-forward svc/sandbox-gateway 2222:22
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+: "${KUBECONFIG:?source ./env.sh first}"
+mkdir -p "$ROOT/.devenv/state/tmp"
+DIRTY="$(git -C "$ROOT" diff --quiet HEAD -- code || echo -dirty)"
+TAG="$(git -C "$ROOT" rev-parse --short HEAD)${DIRTY}-$(date +%s)"
+LOG="$ROOT/.devenv/state/tmp/gateway-build.log"
+
+echo "==> read-only database role for the gateway"
+PWFILE="$ROOT/.devenv/state/postgres-gateway-password"
+[ -s "$PWFILE" ] || (umask 077 && openssl rand -hex 24 | tr -d '\n' >"$PWFILE")
+GWPW="$(cat "$PWFILE")"
+kubectl -n sandbox-system exec -i postgres-0 -- psql -q -v ON_ERROR_STOP=1 -U sandbox -d sandbox >/dev/null <<SQL
+DO \$\$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'sandbox_gateway') THEN
+    CREATE ROLE sandbox_gateway LOGIN;
+  END IF;
+END \$\$;
+ALTER ROLE sandbox_gateway PASSWORD '$GWPW';
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM sandbox_gateway;
+GRANT USAGE ON SCHEMA public TO sandbox_gateway;
+GRANT SELECT ON sandboxes TO sandbox_gateway;
+SQL
+kubectl -n sandbox-system create secret generic postgres-gateway-credentials \
+  --from-literal=password="$GWPW" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+echo "==> building sandbox/api:$TAG (API + gateway)"
+minikube image build -t "sandbox/api:$TAG" "$ROOT/code" >"$LOG" 2>&1 \
+  || { tail -30 "$LOG"; echo "image build failed; full log: $LOG" >&2; exit 1; }
+
+echo "==> deploying"
+sed "s|sandbox/api:IMAGE_TAG|sandbox/api:$TAG|" "$ROOT/code/deploy/dev/gateway.yaml" | kubectl apply -f - >/dev/null
+kubectl -n sandbox-system rollout status deployment/sandbox-gateway --timeout=180s >/dev/null
+kubectl -n sandbox-system get pods -l app=sandbox-gateway -o wide | cut -c1-90
+echo "==> sandbox-gateway ready (sandbox-system/sandbox-gateway:22)"

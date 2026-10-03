@@ -7,8 +7,10 @@
 //	GATEWAY_LISTEN_ADDR     listen address (default :2222)
 //	GATEWAY_HOST_KEY_FILE   the gateway's own SSH host key (required); keep it
 //	                        stable so users' known_hosts entries stay valid
-//	DATABASE_URL            Postgres, to look up sandboxes (required; read-only
-//	                        use: the API owns the schema and its migrations)
+//	DATABASE_URL            Postgres, to look up sandboxes (required); use a
+//	                        role that can only read the sandboxes table
+//	SANDBOX_INTERNAL_KEY_FILE  the platform-internal private key the gateway
+//	                        logs into sandboxes with (required, D7)
 package main
 
 import (
@@ -55,6 +57,10 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	internalKey, err := sshx.LoadSigner(os.Getenv("SANDBOX_INTERNAL_KEY_FILE"))
+	if err != nil {
+		return err
+	}
 
 	// Stop on Ctrl-C locally or SIGTERM from Kubernetes. After the first
 	// signal, stop capturing them, so a second Ctrl-C force-quits a
@@ -75,7 +81,8 @@ func run(log *slog.Logger) error {
 	}
 	log.Info("gateway listening", "addr", ln.Addr().String(),
 		"host_key", ssh.FingerprintSHA256(hostKey.PublicKey()))
-	if err := gateway.New(hostKey, store.New(pool), log).Serve(ctx, ln); err != nil {
+	upstream := sshx.Dialer{Signer: internalKey}
+	if err := gateway.New(hostKey, store.New(pool), upstream, log).Serve(ctx, ln); err != nil {
 		return err
 	}
 	log.Info("gateway stopped")
