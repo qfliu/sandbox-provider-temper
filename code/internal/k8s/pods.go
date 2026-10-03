@@ -200,7 +200,7 @@ func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 				SecurityContext: SandboxSecurityContext(),
 				ReadinessProbe: &corev1.Probe{
 					ProbeHandler:  corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(22)}},
-					PeriodSeconds: 2,
+					PeriodSeconds: 1, // "running" as soon as sshd answers (load test, D48)
 				},
 				VolumeMounts: []corev1.VolumeMount{
 					{Name: "home", MountPath: "/home/user"},
