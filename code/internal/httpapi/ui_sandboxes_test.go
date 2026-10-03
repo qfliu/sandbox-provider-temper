@@ -259,6 +259,8 @@ func TestSSHCommand(t *testing.T) {
 		"gw.example.com:22":  "ssh sb-x@gw.example.com",
 		"gw.example.com":     "ssh sb-x@gw.example.com",
 		"":                   "ssh sb-x@<gateway>",
+		":30022":             "ssh sb-x@<gateway>", // `minikube ip` failed
+		"SSH_GATEWAY_ADDR":   "ssh sb-x@<gateway>", // manifest applied without deploy-api.sh
 	} {
 		if got := sshCommand("sb-x", gateway); got != want {
 			t.Errorf("sshCommand(%q) = %q, want %q", gateway, got, want)
@@ -289,5 +291,69 @@ func TestUIServesScripts(t *testing.T) {
 		if rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Content-Type"), "javascript") {
 			t.Errorf("%s = %d %q", f, rec.Code, rec.Header().Get("Content-Type"))
 		}
+	}
+}
+
+// Only the offered lifetimes are accepted: a missing or bogus value must
+// not silently become the 1 h default.
+func TestUICreateRejectsBadLifetime(t *testing.T) {
+	svc := aliceAndBob()
+	h := sandboxUI(svc, "")
+	for _, ttl := range []string{"", "abc", "3", "-1", "1000"} {
+		rec := uiDo(h, http.MethodPost, "/ui/sandboxes", url.Values{
+			"image": {"ubuntu-dev"}, "ssh_public_key": {"ssh-ed25519 AAAAkey"}, "ttl_hours": {ttl},
+		}, alice)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "pick a lifetime") {
+			t.Errorf("ttl_hours=%q: %d, want 400 asking for a lifetime", ttl, rec.Code)
+		}
+	}
+	if len(svc.created) != 0 {
+		t.Fatalf("created %v", svc.created)
+	}
+}
+
+func TestUntil(t *testing.T) {
+	if got := until(time.Now().Add(-90 * time.Minute)); got != "expired" {
+		t.Errorf("until(past) = %q, want expired", got)
+	}
+	if got := until(time.Now().Add(50*time.Minute + 10*time.Second)); got != "in 50m" {
+		t.Errorf("until(+50m) = %q", got)
+	}
+}
+
+// The status card (the htmx refresh) carries the Delete button and its own
+// polling, so both disappear in place once the sandbox ends.
+func TestUIStatusPartial(t *testing.T) {
+	h := sandboxUI(aliceAndBob(), "")
+	live := uiDo(h, http.MethodGet, "/ui/sandboxes/sb-alice0000001/status", nil, alice).Body.String()
+	if !strings.Contains(live, `hx-get="/ui/sandboxes/sb-alice0000001/status"`) || !strings.Contains(live, "/delete") {
+		t.Errorf("live status partial lacks polling or delete:\n%s", live)
+	}
+	if strings.Contains(live, "<html") {
+		t.Error("status partial is a whole page")
+	}
+	ended := uiDo(h, http.MethodGet, "/ui/sandboxes/sb-alice0000old/status", nil, alice).Body.String()
+	if strings.Contains(ended, "hx-get") || strings.Contains(ended, "/delete") {
+		t.Errorf("ended status partial still polls or offers delete:\n%s", ended)
+	}
+}
+
+// The new state-changing routes are covered by the CSRF protection too.
+func TestUISandboxRoutesRefuseCrossSitePOSTs(t *testing.T) {
+	svc := aliceAndBob()
+	h := sandboxUI(svc, "")
+	for _, path := range []string{"/ui/sandboxes", "/ui/sandboxes/sb-alice0000001/delete"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("image=ubuntu-dev&ssh_public_key=ssh-ed25519+AAAA&ttl_hours=1"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		req.AddCookie(alice)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("cross-site POST %s = %d, want 403", path, rec.Code)
+		}
+	}
+	if len(svc.created) != 0 || len(svc.deleted) != 0 {
+		t.Fatalf("cross-site POSTs changed state: created %v, deleted %v", svc.created, svc.deleted)
 	}
 }

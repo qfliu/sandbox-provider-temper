@@ -1,15 +1,9 @@
 {{define "content"}}
 <p><a href="/ui/">← All sandboxes</a></p>
-<div class="head">
-  <h1><code>{{.Sandbox.ID}}</code></h1>
-  {{if live .Sandbox.Status}}
-  <form method="post" action="/ui/sandboxes/{{.Sandbox.ID}}/delete">
-    <button class="danger" data-confirm="Delete {{.Sandbox.ID}}? Its files are lost.">Delete</button>
-  </form>
-  {{end}}
-</div>
+<h1><code>{{.Sandbox.ID}}</code></h1>
 {{template "status" .}}
 
+{{if live .Sandbox.Status}}
 <section class="card">
   <h2>Connect</h2>
   <div class="copy">
@@ -18,4 +12,5 @@
   </div>
   <p class="hint">Use the private key that matches the public key this sandbox was created with{{if not .GatewaySet}}, and replace <code>&lt;gateway&gt;</code> with the SSH gateway's address{{end}}.</p>
 </section>
+{{end}}
 {{end}}

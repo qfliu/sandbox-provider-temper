@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -73,8 +74,18 @@ var ttlChoices = []int{1, 2, 4, 8, 24}
 var templateFuncs = template.FuncMap{
 	"live":  func(status string) bool { return store.IsLive(status) },
 	"ago":   func(t time.Time) string { return humanDuration(time.Since(t)) + " ago" },
-	"until": func(t time.Time) string { return "in " + humanDuration(time.Until(t)) },
+	"until": until,
 	"stamp": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") },
+}
+
+// until is "in 52m", or "expired" once t has passed (a live sandbox can be
+// briefly past its expiry until the reaper's next run).
+func until(t time.Time) string {
+	d := time.Until(t)
+	if d <= 0 {
+		return "expired"
+	}
+	return "in " + humanDuration(d)
 }
 
 // humanDuration rounds d for display: "under a minute", "5m", "2h 5m".
@@ -296,10 +307,18 @@ func (u *ui) create(w http.ResponseWriter, r *http.Request) {
 		Image:        r.PostFormValue("image"),
 		SSHPublicKey: strings.TrimSpace(r.PostFormValue("ssh_public_key")),
 	}
-	form.TTLHours, _ = strconv.Atoi(r.PostFormValue("ttl_hours"))
-	sb, err := u.sandboxes.Create(r.Context(), user, sandbox.CreateRequest{
-		Image: form.Image, SSHPublicKey: form.SSHPublicKey, TTLSeconds: form.TTLHours * 3600,
-	})
+	var err error
+	form.TTLHours, err = strconv.Atoi(r.PostFormValue("ttl_hours"))
+	var sb store.Sandbox
+	if err != nil || !slices.Contains(ttlChoices, form.TTLHours) {
+		// Only the offered lifetimes: a missing or bogus value must not
+		// silently become the default (0 means "default" to the service).
+		err = &sandbox.ValidationError{Msg: "pick a lifetime from the list"}
+	} else {
+		sb, err = u.sandboxes.Create(r.Context(), user, sandbox.CreateRequest{
+			Image: form.Image, SSHPublicKey: form.SSHPublicKey, TTLSeconds: form.TTLHours * 3600,
+		})
+	}
 	if err != nil {
 		status, msg := serviceError(u.log, err)
 		p, listErr := u.listPage(r)
@@ -321,7 +340,7 @@ func (u *ui) detailPage(r *http.Request) (page, error) {
 	sb, err := u.sandboxes.Get(r.Context(), user, r.PathValue("id"))
 	return page{
 		Title: sb.ID, User: &user, Sandbox: sb,
-		SSHCommand: sshCommand(sb.ID, u.gateway), GatewaySet: u.gateway != "",
+		SSHCommand: sshCommand(sb.ID, u.gateway), GatewaySet: gatewaySet(u.gateway),
 	}, err
 }
 
@@ -363,16 +382,27 @@ func (u *ui) fail(w http.ResponseWriter, r *http.Request, err error) {
 	http.Error(w, msg, status)
 }
 
+// gatewaySet reports whether the gateway address is usable: not empty, not
+// ":30022" (a failed `minikube ip`), and not the manifest's unreplaced
+// placeholder.
+func gatewaySet(gateway string) bool {
+	host, _, err := net.SplitHostPort(gateway)
+	if err != nil {
+		host = gateway
+	}
+	return host != "" && host != "SSH_GATEWAY_ADDR"
+}
+
 // sshCommand is what a user types to reach the sandbox through the gateway
 // (D6, D38): "ssh -p 30022 sb-…@192.168.64.2", or a placeholder host when
 // the gateway's address isn't configured.
 func sshCommand(id, gateway string) string {
-	if gateway == "" {
-		return "ssh " + id + "@<gateway>"
-	}
 	host, port, err := net.SplitHostPort(gateway)
 	if err != nil {
-		return "ssh " + id + "@" + gateway
+		host, port = gateway, "22"
+	}
+	if !gatewaySet(gateway) {
+		return "ssh " + id + "@<gateway>"
 	}
 	if port == "22" {
 		return "ssh " + id + "@" + host

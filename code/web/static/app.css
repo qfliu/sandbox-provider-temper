@@ -61,3 +61,4 @@ textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-siz
 button.secondary { color: var(--accent); background: none; border: 1px solid var(--border); }
 button.danger { background: var(--danger); }
 h1 code { font-size: inherit; }
+.actions { margin-top: 16px; }
