@@ -22,6 +22,9 @@ type API struct {
 	Sandbox Sandbox
 }
 
+// MaxExecTimeout is the longest a single exec may run (timeout_seconds cap).
+const MaxExecTimeout = 10 * time.Minute
+
 // Sandbox holds settings for sandbox pods.
 type Sandbox struct {
 	// Namespace is where sandbox pods run, apart from platform services (D26).
@@ -34,6 +37,13 @@ type Sandbox struct {
 	// what users may ask for (D9).
 	DefaultTTL time.Duration
 	MaxTTL     time.Duration
+	// IdleTimeout: sandboxes with no exec, file transfer or SSH for this
+	// long are reaped (D9). Must exceed MaxExecTimeout, because activity is
+	// recorded when a command starts: a shorter idle limit could reap a
+	// sandbox in the middle of a long command.
+	IdleTimeout time.Duration
+	// ReaperInterval is how often expired/idle sandboxes are checked for.
+	ReaperInterval time.Duration
 	// InternalKeySecret is the Secret holding the platform-internal SSH
 	// public key that sandbox sshd trusts (D7).
 	InternalKeySecret string
@@ -54,6 +64,8 @@ func LoadAPI() (API, error) {
 			ImageTag:          getenv("SANDBOX_IMAGE_TAG", "0.1"),
 			DefaultTTL:        time.Hour,
 			MaxTTL:            24 * time.Hour,
+			IdleTimeout:       30 * time.Minute,
+			ReaperInterval:    30 * time.Second,
 			InternalKeySecret: getenv("SANDBOX_INTERNAL_KEY_SECRET", "sandbox-internal-key"),
 			InternalKeyFile:   os.Getenv("SANDBOX_INTERNAL_KEY_FILE"),
 		},
@@ -68,6 +80,8 @@ func LoadAPI() (API, error) {
 		{"API_SHUTDOWN_TIMEOUT", &cfg.ShutdownTimeout},
 		{"SANDBOX_DEFAULT_TTL", &cfg.Sandbox.DefaultTTL},
 		{"SANDBOX_MAX_TTL", &cfg.Sandbox.MaxTTL},
+		{"SANDBOX_IDLE_TIMEOUT", &cfg.Sandbox.IdleTimeout},
+		{"REAPER_INTERVAL", &cfg.Sandbox.ReaperInterval},
 	}
 	for _, d := range durations {
 		if v := os.Getenv(d.env); v != "" {
@@ -75,8 +89,15 @@ func LoadAPI() (API, error) {
 			if err != nil {
 				return API{}, fmt.Errorf("%s: %w", d.env, err)
 			}
+			if parsed <= 0 {
+				return API{}, fmt.Errorf("%s must be positive, got %s", d.env, v)
+			}
 			*d.dst = parsed
 		}
+	}
+	if cfg.Sandbox.IdleTimeout <= MaxExecTimeout {
+		return API{}, fmt.Errorf("SANDBOX_IDLE_TIMEOUT (%s) must exceed the longest exec (%s), or a long command could be reaped as idle",
+			cfg.Sandbox.IdleTimeout, MaxExecTimeout)
 	}
 	if cfg.Sandbox.DefaultTTL > cfg.Sandbox.MaxTTL {
 		return API{}, fmt.Errorf("SANDBOX_DEFAULT_TTL (%s) exceeds SANDBOX_MAX_TTL (%s)",

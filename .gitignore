@@ -2,3 +2,6 @@
 .devenv/
 # Build output
 code/bin/
+
+# macOS Finder metadata
+.DS_Store

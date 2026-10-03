@@ -138,7 +138,10 @@ func serve(log *slog.Logger) error {
 	}
 	syncer.SetCache(watcher)
 	go syncer.Run(bg)
-	log.Info("sandbox status sync started", "namespace", cfg.Sandbox.Namespace)
+	// Delete sandboxes past their TTL or idle too long (D9).
+	go sandboxes.RunReaper(bg, cfg.Sandbox.ReaperInterval)
+	log.Info("sandbox status sync and reaper started", "namespace", cfg.Sandbox.Namespace,
+		"idle_timeout", cfg.Sandbox.IdleTimeout, "reaper_interval", cfg.Sandbox.ReaperInterval)
 
 	srv := newHTTPServer(cfg.ListenAddr, httpapi.NewHandler(httpapi.Deps{
 		Log:       log,

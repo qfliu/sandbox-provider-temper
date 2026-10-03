@@ -61,3 +61,34 @@ func TestLoadAPIRequiresInternalKeyFile(t *testing.T) {
 		t.Fatal("expected an error when SANDBOX_INTERNAL_KEY_FILE is missing")
 	}
 }
+
+func TestLoadAPIReaperSettings(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	t.Setenv("SANDBOX_INTERNAL_KEY_FILE", "/keys/id")
+	t.Setenv("SANDBOX_IDLE_TIMEOUT", "")
+	t.Setenv("REAPER_INTERVAL", "")
+	cfg, err := LoadAPI()
+	if err != nil || cfg.Sandbox.IdleTimeout != 30*time.Minute || cfg.Sandbox.ReaperInterval != 30*time.Second {
+		t.Fatalf("defaults: %+v, %v", cfg.Sandbox, err)
+	}
+
+	t.Setenv("REAPER_INTERVAL", "0s")
+	if _, err := LoadAPI(); err == nil {
+		t.Fatal("a zero interval would make the ticker panic; must be rejected")
+	}
+	t.Setenv("REAPER_INTERVAL", "")
+	t.Setenv("SANDBOX_IDLE_TIMEOUT", "-5m")
+	if _, err := LoadAPI(); err == nil {
+		t.Fatal("negative idle timeout must be rejected")
+	}
+	for _, v := range []string{"5m", "10m"} { // not longer than the 10 min max exec
+		t.Setenv("SANDBOX_IDLE_TIMEOUT", v)
+		if _, err := LoadAPI(); err == nil {
+			t.Fatalf("SANDBOX_IDLE_TIMEOUT=%s would let a long exec be reaped; must be rejected", v)
+		}
+	}
+	t.Setenv("SANDBOX_IDLE_TIMEOUT", "11m")
+	if _, err := LoadAPI(); err != nil {
+		t.Fatalf("11m exceeds the max exec and should be accepted: %v", err)
+	}
+}

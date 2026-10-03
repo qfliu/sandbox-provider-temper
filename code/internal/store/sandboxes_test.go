@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func newSandbox(userID string, n int) NewSandbox {
@@ -113,5 +115,133 @@ func TestListAndMarkEnded(t *testing.T) {
 	all, _ := s.ListSandboxes(ctx, alice.ID, true)
 	if len(live) != 1 || len(all) != 2 {
 		t.Fatalf("alice: live=%d all=%d, want 1 and 2 (bob's must not appear)", len(live), len(all))
+	}
+}
+
+// mustExec runs setup SQL and fails the test if it errors, so a broken
+// setup can't make a test pass for the wrong reason.
+func mustExec(t *testing.T, s *Store, sql string, args ...any) {
+	t.Helper()
+	if _, err := s.pool.Exec(context.Background(), sql, args...); err != nil {
+		t.Fatalf("setup %q: %v", sql, err)
+	}
+}
+
+func TestClaimForReaping(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	mk := func(n int) string {
+		sb, err := s.CreateSandbox(ctx, newSandbox(alice.ID, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sb.ID
+	}
+	expired, idle, both, active, deleting, ended := mk(1), mk(2), mk(3), mk(4), mk(5), mk(6)
+	mustExec(t, s, "UPDATE sandboxes SET expires_at = now() - interval '1 second' WHERE id = ANY($1)",
+		[]string{expired, both})
+	mustExec(t, s, "UPDATE sandboxes SET last_activity_at = now() - interval '31 minutes' WHERE id = ANY($1)",
+		[]string{idle, both, deleting, ended})
+	if err := s.MarkSandboxDeleting(ctx, deleting); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MarkSandboxEnded(ctx, ended, StatusDeleted, "earlier"); err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := s.ClaimForReaping(ctx, 30*time.Minute, "idle: no activity for 30m0s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, sb := range claimed {
+		got[sb.ID] = sb.StatusReason
+		if sb.Status != StatusDeleting {
+			t.Errorf("%s claimed with status %q, want deleting", sb.ID, sb.Status)
+		}
+	}
+	want := map[string]string{
+		expired: "expired: TTL reached",
+		idle:    "idle: no activity for 30m0s",
+		both:    "expired: TTL reached", // expiry wins when both apply
+	}
+	if len(got) != len(want) {
+		t.Fatalf("claimed %v; want %v", got, want)
+	}
+	for id, reason := range want {
+		if got[id] != reason {
+			t.Errorf("%s: reason %q, want %q", id, got[id], reason)
+		}
+	}
+	if _, ok := got[active]; ok {
+		t.Fatal("an active sandbox was claimed")
+	}
+	again, err := s.ClaimForReaping(ctx, 30*time.Minute, "idle")
+	if err != nil || len(again) != 0 {
+		t.Fatalf("second claim re-claimed %d sandboxes (%v)", len(again), err)
+	}
+}
+
+// Replicas reaping at the same moment must never both claim a sandbox. To
+// make the race real (not just likely), another transaction first locks
+// every row; the claimers all start, block on those locks, and are released
+// together onto the same rows.
+func TestClaimForReapingIsExclusive(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	mustExec(t, s, "UPDATE users SET max_sandboxes = 50 WHERE id = $1", alice.ID)
+	for i := 0; i < 40; i++ {
+		if _, err := s.CreateSandbox(ctx, newSandbox(alice.ID, i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustExec(t, s, "UPDATE sandboxes SET expires_at = now() - interval '1 second'")
+
+	gate, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gate.Exec(ctx, "SELECT 1 FROM sandboxes FOR UPDATE"); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	seen := map[string]int{}
+	var returned atomic.Int32
+	var wg sync.WaitGroup
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			claimed, err := s.ClaimForReaping(ctx, time.Hour, "idle")
+			returned.Add(1)
+			if err != nil {
+				t.Error(err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			for _, sb := range claimed {
+				seen[sb.ID]++
+			}
+		}()
+	}
+	time.Sleep(300 * time.Millisecond) // let all four reach the lock
+	if n := returned.Load(); n != 0 {
+		t.Fatalf("%d claimers finished while the rows were locked; they weren't racing", n)
+	}
+	if err := gate.Commit(ctx); err != nil { // release all four at once
+		t.Fatal(err)
+	}
+	wg.Wait()
+
+	if len(seen) != 40 {
+		t.Fatalf("claimed %d distinct sandboxes, want 40", len(seen))
+	}
+	for id, n := range seen {
+		if n != 1 {
+			t.Fatalf("%s claimed %d times", id, n)
+		}
 	}
 }
