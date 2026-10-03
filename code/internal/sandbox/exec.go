@@ -11,13 +11,14 @@ import (
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/qfliu/sandbox-provider-temper/code/internal/config"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/sshx"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
 
 const (
 	defaultExecTimeout = 60 * time.Second
-	maxExecTimeout     = 10 * time.Minute
+	maxExecTimeout     = config.MaxExecTimeout
 )
 
 // NotRunningError means the sandbox exists but can't take commands yet (or

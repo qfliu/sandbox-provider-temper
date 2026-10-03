@@ -81,4 +81,14 @@ func TestLoadAPIReaperSettings(t *testing.T) {
 	if _, err := LoadAPI(); err == nil {
 		t.Fatal("negative idle timeout must be rejected")
 	}
+	for _, v := range []string{"5m", "10m"} { // not longer than the 10 min max exec
+		t.Setenv("SANDBOX_IDLE_TIMEOUT", v)
+		if _, err := LoadAPI(); err == nil {
+			t.Fatalf("SANDBOX_IDLE_TIMEOUT=%s would let a long exec be reaped; must be rejected", v)
+		}
+	}
+	t.Setenv("SANDBOX_IDLE_TIMEOUT", "11m")
+	if _, err := LoadAPI(); err != nil {
+		t.Fatalf("11m exceeds the max exec and should be accepted: %v", err)
+	}
 }

@@ -22,6 +22,9 @@ type API struct {
 	Sandbox Sandbox
 }
 
+// MaxExecTimeout is the longest a single exec may run (timeout_seconds cap).
+const MaxExecTimeout = 10 * time.Minute
+
 // Sandbox holds settings for sandbox pods.
 type Sandbox struct {
 	// Namespace is where sandbox pods run, apart from platform services (D26).
@@ -35,7 +38,9 @@ type Sandbox struct {
 	DefaultTTL time.Duration
 	MaxTTL     time.Duration
 	// IdleTimeout: sandboxes with no exec, file transfer or SSH for this
-	// long are reaped (D9). Must exceed the longest exec (10 min).
+	// long are reaped (D9). Must exceed MaxExecTimeout, because activity is
+	// recorded when a command starts: a shorter idle limit could reap a
+	// sandbox in the middle of a long command.
 	IdleTimeout time.Duration
 	// ReaperInterval is how often expired/idle sandboxes are checked for.
 	ReaperInterval time.Duration
@@ -89,6 +94,10 @@ func LoadAPI() (API, error) {
 			}
 			*d.dst = parsed
 		}
+	}
+	if cfg.Sandbox.IdleTimeout <= MaxExecTimeout {
+		return API{}, fmt.Errorf("SANDBOX_IDLE_TIMEOUT (%s) must exceed the longest exec (%s), or a long command could be reaped as idle",
+			cfg.Sandbox.IdleTimeout, MaxExecTimeout)
 	}
 	if cfg.Sandbox.DefaultTTL > cfg.Sandbox.MaxTTL {
 		return API{}, fmt.Errorf("SANDBOX_DEFAULT_TTL (%s) exceeds SANDBOX_MAX_TTL (%s)",
