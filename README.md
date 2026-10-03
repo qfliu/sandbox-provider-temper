@@ -32,7 +32,7 @@ the VM all live in `./.devenv`.
 ./down.sh    # stop the VM (./up.sh resumes); --delete removes it, --purge also ./.devenv
 ```
 
-`up.sh` takes about 6 minutes from a fresh clone (half of it downloads) and
+`up.sh` takes about 6 minutes from a fresh clone (downloads included) and
 about 1.5 minutes when run again. It is safe to re-run after a code change. The
 admin API key is saved to `.devenv/state/admin-api-key` and never printed.
 
@@ -103,8 +103,8 @@ flowchart LR
     pod or its node; a lost sandbox is marked `lost`, not recreated.
 - **Guard rails in the cluster**:
   - An admission policy rejects any pod in the sandboxes namespace that isn't
-    gVisor, mounts a token, adds capabilities or skips limits, even if the
-    request comes from the API.
+    gVisor, mounts a token, adds capabilities beyond the ones sshd and sudo
+    need, or skips limits, even if the request comes from the API.
   - Pod Security `baseline` applies on top.
   - NetworkPolicies let sandboxes reach DNS and the public internet only. Only
     the API and gateway may reach a sandbox, on port 22.
@@ -135,19 +135,25 @@ Notes:
   - `ssh_public_key` is the only key the gateway accepts for this sandbox.
 - **Exec**
   - `command` runs in `bash -c` as `user`, who has passwordless `sudo`.
-  - `timeout_seconds` can be up to 600 (default 60); a timeout gives exit code
-    124 and `timed_out: true`.
+  - `timeout_seconds` can be up to 600 (default 60); a command that runs out
+    of time is stopped and returns `timed_out: true` (exit code 124, or 137 if
+    it ignored SIGTERM).
   - stdout and stderr are capped at 1 MiB each (`truncated: true`).
-- **Lifetime**: a sandbox ends on `DELETE`, after 30 minutes with no API call
-  or SSH session, or when `ttl_seconds` runs out.
+- **Lifetime**: a sandbox ends on `DELETE`, after 30 minutes idle, or when
+  `ttl_seconds` runs out. Idle means no exec, no file transfer and no SSH
+  session; reading its status doesn't count, so an agent that only polls is
+  still reaped.
 - **Status**:
   - Live: `pending` → `running` (→ `deleting`).
   - Ended: `deleted`, `failed` (couldn't start) or `lost` (the pod disappeared).
   - `status_reason` says why. Ended sandboxes stay listed for history.
 - **Status codes**:
   - 400: invalid input.
-  - 404: not yours or no such sandbox.
+  - 401: missing, unknown or revoked API key.
+  - 403: the sandbox's own file permissions refused a file operation.
+  - 404: not yours, no such sandbox, or no such file.
   - 409: not running yet or anymore.
+  - 413: upload over 100 MiB.
   - 429: quota reached.
   - 502: the sandbox didn't answer.
   - 503: the cluster is busy.
@@ -165,7 +171,8 @@ ssh sb-1a2b3c4d5e6f@gateway.example.com                          # behind a Load
 
 To pin the gateway's host key instead of trusting the first connection:
 `kubectl -n sandbox-system exec deploy/sandbox-gateway -- /api public-key /keys/host/ssh_host_ed25519_key`
-prints the line for `known_hosts` (`deploy.sh` prints it too).
+prints it (`ssh-ed25519 AAAA…`). Put `[host]:port ` in front of it for a
+`known_hosts` line; `deploy.sh` prints the whole line.
 
 ## Measured
 
@@ -180,7 +187,7 @@ already on the node:
 | First `ubuntu-dev` sandbox on a node **without** the pre-pull | ~5.5 s (4.8–5.1 s of it is the image download + unpack, from a registry on the same VM) |
 | … **with** the pre-pull DaemonSet | 0.6 s |
 | `up.sh` from a fresh clone / again (VM stopped) | 305–367 s / 84 s |
-| `helm upgrade --install` on a cluster with gVisor and images | ~20 s |
+| `deploy.sh` (platform image build + `helm upgrade --install`) on a cluster with gVisor and images | ~20 s |
 
 Capacity on this VM is about 10 sandboxes (250m CPU requested each); past
 that, creates succeed but stay `pending` until room frees up (D48). The
