@@ -30,6 +30,10 @@ type Deps struct {
 	Keys KeyService
 	// Admin lists all users and sandboxes for the dashboard's admin view.
 	Admin AdminService
+	// MaxTTL and IdleTimeout are the sandbox limits (config), so the
+	// dashboard offers only allowed lifetimes and states the idle timeout.
+	// Zero means the defaults (24 h, 30 min).
+	MaxTTL, IdleTimeout time.Duration
 }
 
 // AdminService reads platform-wide data for admins (implemented by
@@ -68,9 +72,11 @@ func NewHandler(d Deps) http.Handler {
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /readyz", handleReadyz(d.Log, d.DB))
 	mux.Handle("/v1/", requireAuth(d.Log, d.Auth, v1))
-	ui := newUI(d.Log, d.Auth, d.Sandboxes, d.Keys, d.Admin, d.SSHGateway).routes()
-	mux.Handle("/ui", ui)
-	mux.Handle("/ui/", ui)
+	ui := newUI(d.Log, d.Auth, d.Sandboxes, d.Keys, d.Admin, d.SSHGateway)
+	ui.setLimits(d.MaxTTL, d.IdleTimeout)
+	uiRoutes := ui.routes()
+	mux.Handle("/ui", uiRoutes)
+	mux.Handle("/ui/", uiRoutes)
 	return logRequests(d.Log, mux)
 }
 

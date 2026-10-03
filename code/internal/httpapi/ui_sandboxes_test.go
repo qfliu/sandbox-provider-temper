@@ -357,3 +357,29 @@ func TestUISandboxRoutesRefuseCrossSitePOSTs(t *testing.T) {
 		t.Fatalf("cross-site POSTs changed state: created %v, deleted %v", svc.created, svc.deleted)
 	}
 }
+
+// The create form follows the configured limits: only lifetimes up to
+// MaxTTL are offered or accepted, and the idle hint states IdleTimeout.
+func TestUICreateFormFollowsConfig(t *testing.T) {
+	svc := aliceAndBob()
+	h := NewHandler(Deps{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DB: fakeDB{}, Auth: uiAuth{},
+		Sandboxes: svc, MaxTTL: 8 * time.Hour, IdleTimeout: 10 * time.Minute})
+	body := uiDo(h, http.MethodGet, "/ui/", nil, alice).Body.String()
+	if !strings.Contains(body, `<option value="8"`) || strings.Contains(body, `<option value="24"`) {
+		t.Error("lifetimes not limited to MaxTTL 8h")
+	}
+	if !strings.Contains(body, "after 10m without use") {
+		t.Error("idle hint doesn't state the configured timeout")
+	}
+	rec := uiDo(h, http.MethodPost, "/ui/sandboxes", url.Values{
+		"image": {"ubuntu-dev"}, "ssh_public_key": {"ssh-ed25519 AAAAkey"}, "ttl_hours": {"24"},
+	}, alice)
+	if rec.Code != http.StatusBadRequest || len(svc.created) != 0 {
+		t.Fatalf("24h with MaxTTL 8h = %d (created %v), want 400", rec.Code, svc.created)
+	}
+	// Defaults when unset.
+	def := uiDo(sandboxUI(aliceAndBob(), ""), http.MethodGet, "/ui/", nil, alice).Body.String()
+	if !strings.Contains(def, `<option value="24"`) || !strings.Contains(def, "after 30m without use") {
+		t.Error("defaults not applied when limits are unset")
+	}
+}
