@@ -88,6 +88,7 @@ blocked "Kubernetes API"        kubernetes.default 443
 blocked "another sandbox's sshd" "$B_IP" 22
 blocked "node (kubelet)"        "$NODE_IP" 10250
 blocked "node (API server)"     "$NODE_IP" 8443
+blocked "gateway NodePort"      "$NODE_IP" 30022 # step 3.6; a sandbox must not loop back in
 blocked "cloud metadata"        169.254.169.254 80
 
 printf "\ninto a sandbox\n"
