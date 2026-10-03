@@ -161,3 +161,17 @@ func TestUIAdminSaysWhenListIsCut(t *testing.T) {
 		t.Fatal("the extra row was shown")
 	}
 }
+
+// When a refresh can no longer see its sandbox (e.g. a demoted admin on
+// another user's detail page), the page leaves instead of freezing on stale
+// data: htmx doesn't swap error responses, so a bare 404 would keep it.
+func TestUIStatusRefreshLosesAccess(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/ui/sandboxes/sb-bob000000001/status", nil)
+	req.Header.Set("HX-Request", "true")
+	req.AddCookie(alice) // not bob, not an admin
+	rec := httptest.NewRecorder()
+	adminUI(aliceAndBob()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound || rec.Header().Get("HX-Redirect") != "/ui/" {
+		t.Fatalf("= %d HX-Redirect %q, want 404 + HX-Redirect /ui/", rec.Code, rec.Header().Get("HX-Redirect"))
+	}
+}
