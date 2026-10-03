@@ -8,7 +8,9 @@
 //	GATEWAY_HOST_KEY_FILE   the gateway's own SSH host key (required); keep it
 //	                        stable so users' known_hosts entries stay valid
 //	DATABASE_URL            Postgres, to look up sandboxes (required); use a
-//	                        role that can only read the sandboxes table
+//	                        role that can read sandboxes and read/write
+//	                        ssh_activity, nothing else (D36; reading a
+//	                        sandbox also reads ssh_activity)
 //	SANDBOX_INTERNAL_KEY_FILE  the platform-internal private key the gateway
 //	                        logs into sandboxes with (required, D7)
 package main
