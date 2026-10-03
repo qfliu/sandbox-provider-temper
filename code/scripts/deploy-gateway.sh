@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds the platform image (API + gateway) inside minikube and rolls out the
 # SSH gateway to sandbox-system. Also creates the gateway's own narrow
-# Postgres role: SELECT on sandboxes, plus UPDATE of its last_activity_at
-# column only. Run after deploy-postgres.sh and deploy-api.sh (the API
+# Postgres role: SELECT on sandboxes, plus EXECUTE on touch_sandbox() (it
+# can't UPDATE anything). Run after deploy-postgres.sh and deploy-api.sh (the API
 # creates the tables). Idempotent.
 #
 # Usage (from the project root): source ./env.sh && ./code/scripts/deploy-gateway.sh
@@ -36,9 +36,11 @@ ALTER ROLE sandbox_gateway PASSWORD :'pw';
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM sandbox_gateway;
 GRANT USAGE ON SCHEMA public TO sandbox_gateway;
 GRANT SELECT ON sandboxes TO sandbox_gateway;
--- SSH sessions count as activity for the idle reaper (D36): the gateway may
--- update exactly this one column, nothing else.
-GRANT UPDATE (last_activity_at) ON sandboxes TO sandbox_gateway;
+-- SSH sessions count as activity for the idle reaper (D36). The role gets no
+-- UPDATE at all (REVOKE ALL above also drops any earlier column grant), only
+-- the touch_sandbox() function, which can merely set now() on a running
+-- sandbox (migration 0003).
+GRANT EXECUTE ON FUNCTION touch_sandbox(text) TO sandbox_gateway;
 SQL
 } | kubectl -n sandbox-system exec -i postgres-0 -- psql -q -v ON_ERROR_STOP=1 -U sandbox -d sandbox >/dev/null
 kubectl -n sandbox-system create secret generic postgres-gateway-credentials \

@@ -245,3 +245,50 @@ func TestClaimForReapingIsExclusive(t *testing.T) {
 		}
 	}
 }
+
+// touch_sandbox (migration 0003) may only set now(), only on running
+// sandboxes, at most every 10 s, and isn't executable by everyone.
+func TestTouchSandboxFunction(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	running, _ := s.CreateSandbox(ctx, newSandbox(alice.ID, 1))
+	pending, _ := s.CreateSandbox(ctx, newSandbox(alice.ID, 2))
+	mustExec(t, s, "UPDATE sandboxes SET status = 'running' WHERE id = $1", running.ID)
+	mustExec(t, s, "UPDATE sandboxes SET last_activity_at = now() - interval '1 hour'")
+
+	idle := func(id string) float64 {
+		var secs float64
+		if err := s.pool.QueryRow(ctx, "SELECT extract(epoch FROM now() - last_activity_at) FROM sandboxes WHERE id = $1", id).Scan(&secs); err != nil {
+			t.Fatal(err)
+		}
+		return secs
+	}
+	if err := s.TouchSandbox(ctx, running.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TouchSandbox(ctx, pending.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := idle(running.ID); got > 5 {
+		t.Fatalf("running sandbox not touched (idle %.0fs)", got)
+	}
+	if got := idle(pending.ID); got < 3500 {
+		t.Fatalf("non-running sandbox was touched (idle %.0fs)", got)
+	}
+
+	// Throttle: a second touch right away doesn't move it again.
+	mustExec(t, s, "UPDATE sandboxes SET last_activity_at = now() - interval '5 seconds' WHERE id = $1", running.ID)
+	s.TouchSandbox(ctx, running.ID)
+	if got := idle(running.ID); got < 4 {
+		t.Fatalf("touched again within 10s (idle %.0fs)", got)
+	}
+
+	var public bool
+	if err := s.pool.QueryRow(ctx, "SELECT has_function_privilege('public', 'touch_sandbox(text)', 'EXECUTE')").Scan(&public); err != nil {
+		t.Fatal(err)
+	}
+	if public {
+		t.Fatal("touch_sandbox is executable by PUBLIC; it must only be granted explicitly")
+	}
+}

@@ -60,7 +60,7 @@ func (s *Server) proxySessions(sconn *ssh.ServerConn, chans <-chan ssh.NewChanne
 	go func() { up.Wait(); sconn.Close() }()
 	go s.watchSandbox(ctx, sconn, id)
 	go s.keepalive(ctx, sconn)
-	act := &activity{s: s, id: id}
+	act := &activity{s: s, id: id, kick: make(chan struct{}, 1)}
 	go act.run(ctx)
 
 	for nch := range chans {
@@ -68,30 +68,36 @@ func (s *Server) proxySessions(sconn *ssh.ServerConn, chans <-chan ssh.NewChanne
 			nch.Reject(ssh.Prohibited, "only sessions are allowed (no port forwarding)")
 			continue
 		}
-		go func() {
-			act.sessionOpened(ctx)
-			defer act.sessionClosed()
-			s.proxyChannel(nch, up, id)
-		}()
+		go s.proxyChannel(nch, up, id, act)
 	}
 }
 
-// activity records SSH use of a sandbox for the idle reaper: once when a
-// session opens, then every touchInterval while at least one session is
-// open. A connection with no open session doesn't count (D36).
+// activity records SSH use of a sandbox for the idle reaper (D36): when a
+// session is established and every touchInterval while at least one is
+// open. A connection with no open session doesn't count. Touches happen on
+// the run goroutine, so opening a session never waits on the database, and
+// at most every touchMinGap, so opening many sessions doesn't hammer it.
 type activity struct {
-	s      *Server
-	id     string
-	mu     sync.Mutex
-	open   int
-	warned bool
+	s    *Server
+	id   string
+	kick chan struct{} // "a session just opened"; buffered 1
+
+	mu        sync.Mutex
+	open      int
+	lastTouch time.Time
+	warned    bool
 }
 
-func (a *activity) sessionOpened(ctx context.Context) {
+// sessionOpened counts an established session and asks for a touch
+// without blocking.
+func (a *activity) sessionOpened() {
 	a.mu.Lock()
 	a.open++
 	a.mu.Unlock()
-	a.touch(ctx)
+	select {
+	case a.kick <- struct{}{}:
+	default: // a touch is already pending
+	}
 }
 
 func (a *activity) sessionClosed() {
@@ -108,11 +114,12 @@ func (a *activity) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-a.kick:
 		}
 		a.mu.Lock()
-		open := a.open
+		due := a.open > 0 && time.Since(a.lastTouch) >= a.s.touchMinGap
 		a.mu.Unlock()
-		if open > 0 {
+		if due {
 			a.touch(ctx)
 		}
 	}
@@ -121,14 +128,16 @@ func (a *activity) run(ctx context.Context) {
 func (a *activity) touch(ctx context.Context) {
 	tctx, cancel := context.WithTimeout(ctx, lookupTimeout)
 	defer cancel()
-	if err := a.s.sandboxes.TouchSandbox(tctx, a.id); err != nil && ctx.Err() == nil {
-		a.mu.Lock()
-		first := !a.warned
+	err := a.s.sandboxes.TouchSandbox(tctx, a.id)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err == nil {
+		a.lastTouch = time.Now()
+		return
+	}
+	if ctx.Err() == nil && !a.warned { // once per connection
 		a.warned = true
-		a.mu.Unlock()
-		if first { // once per connection
-			a.s.log.Warn("could not record SSH activity", "sandbox", a.id, "err", err)
-		}
+		a.s.log.Warn("could not record SSH activity", "sandbox", a.id, "err", err)
 	}
 }
 
@@ -136,7 +145,7 @@ func (a *activity) touch(ctx context.Context) {
 // sandbox: stdin, stdout, stderr and channel requests both ways (pty-req,
 // window-change, env, shell, exec, subsystem, signal; exit-status and
 // exit-signal coming back).
-func (s *Server) proxyChannel(nch ssh.NewChannel, up *ssh.Client, id string) {
+func (s *Server) proxyChannel(nch ssh.NewChannel, up *ssh.Client, id string, act *activity) {
 	upCh, upReqs, err := up.OpenChannel(nch.ChannelType(), nch.ExtraData())
 	if err != nil {
 		var oce *ssh.OpenChannelError
@@ -152,6 +161,9 @@ func (s *Server) proxyChannel(nch ssh.NewChannel, up *ssh.Client, id string) {
 		upCh.Close()
 		return
 	}
+	// Count it only now that both sides of the session exist.
+	act.sessionOpened()
+	defer act.sessionClosed()
 	defer upCh.Close()
 	defer downCh.Close()
 

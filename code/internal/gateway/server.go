@@ -66,6 +66,7 @@ type Server struct {
 	keepaliveInterval time.Duration // how often the client is pinged
 	rejectGrace       time.Duration // how long a connection to an unavailable sandbox stays open
 	touchInterval     time.Duration // how often an open session records activity
+	touchMinGap       time.Duration // never touch a sandbox more often than this
 
 	mu      sync.Mutex
 	closing bool // set once shutdown starts; new connections are refused
@@ -87,6 +88,7 @@ func New(hostKey ssh.Signer, sandboxes SandboxLookup, upstream Upstream, log *sl
 		keepaliveInterval: 30 * time.Second,
 		rejectGrace:       5 * time.Second,
 		touchInterval:     time.Minute,
+		touchMinGap:       10 * time.Second,
 		conns:             map[net.Conn]struct{}{},
 	}
 }

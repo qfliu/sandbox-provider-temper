@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -19,13 +20,21 @@ import (
 // fakeSandboxes serves sandboxes from a map; "sb-0000000000db" simulates a
 // database error. It counts lookups.
 type fakeSandboxes struct {
-	mu      sync.Mutex
-	rows    map[string]store.Sandbox
-	lookups atomic.Int32
-	touches atomic.Int32
+	mu         sync.Mutex
+	rows       map[string]store.Sandbox
+	lookups    atomic.Int32
+	touches    atomic.Int32
+	touchDelay time.Duration
 }
 
-func (f *fakeSandboxes) TouchSandbox(context.Context, string) error {
+func (f *fakeSandboxes) TouchSandbox(ctx context.Context, _ string) error {
+	if f.touchDelay > 0 { // a slow database
+		select {
+		case <-time.After(f.touchDelay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	f.touches.Add(1)
 	return nil
 }

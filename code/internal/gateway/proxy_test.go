@@ -371,34 +371,116 @@ func TestUnavailableSandboxConnectionIsClosed(t *testing.T) {
 	}
 }
 
-// Open SSH sessions count as activity, so the idle reaper doesn't delete a
-// sandbox someone is working in over SSH (batch review of #22–#26).
-func TestOpenSessionRecordsActivity(t *testing.T) {
-	p := newProxyFixture(t, func(s *Server) { s.touchInterval = 50 * time.Millisecond })
-	c := p.client(t)
-	if n := p.rows.touches.Load(); n != 0 {
-		t.Fatalf("%d touches before any session; a bare connection shouldn't count", n)
+// openShell opens a session with stdin held open (with no stdin, Go's
+// client sends EOF at once and the fake shell would exit immediately).
+func openShell(t *testing.T, c *ssh.Client) *ssh.Session {
+	t.Helper()
+	sess, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	sess, _ := c.NewSession()
-	// Keep stdin open: with no stdin, Go's client sends EOF at once and the
-	// fake shell would exit immediately, ending the session.
-	stdin, _ := sess.StdinPipe()
-	defer stdin.Close()
+	if _, err := sess.StdinPipe(); err != nil {
+		t.Fatal(err)
+	}
 	if err := sess.Shell(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(300 * time.Millisecond)
-	during := p.rows.touches.Load()
-	if during < 3 {
-		t.Fatalf("%d touches during an open session of ~300ms (interval 50ms), want several", during)
+	return sess
+}
+
+// waitStable waits until touches stop changing, then returns the count.
+func waitStable(rows *fakeSandboxes) int32 {
+	prev := rows.touches.Load()
+	for i := 0; i < 50; i++ {
+		time.Sleep(100 * time.Millisecond)
+		n := rows.touches.Load()
+		if n == prev {
+			return n
+		}
+		prev = n
+	}
+	return prev
+}
+
+func fastTouches(s *Server) {
+	s.touchInterval = 50 * time.Millisecond
+	s.touchMinGap = 10 * time.Millisecond
+}
+
+// Open SSH sessions count as activity, so the idle reaper doesn't delete a
+// sandbox someone is working in over SSH (batch review of #22–#26).
+func TestOpenSessionRecordsActivity(t *testing.T) {
+	p := newProxyFixture(t, fastTouches)
+	c := p.client(t)
+	time.Sleep(200 * time.Millisecond) // several ticks with no session
+	if n := p.rows.touches.Load(); n != 0 {
+		t.Fatalf("%d touches with no session open; a bare connection shouldn't count", n)
 	}
 
+	sess := openShell(t, c)
+	time.Sleep(300 * time.Millisecond)
+	if during := p.rows.touches.Load(); during < 3 {
+		t.Fatalf("%d touches during an open session of ~300ms (interval 50ms), want several", during)
+	}
 	sess.Close()
-	time.Sleep(150 * time.Millisecond)
-	after := p.rows.touches.Load()
+	after := waitStable(p.rows)
 	time.Sleep(300 * time.Millisecond)
 	if n := p.rows.touches.Load(); n != after {
 		t.Fatalf("touches kept going after the session closed (%d → %d)", after, n)
+	}
+}
+
+// The open-session count must handle several sessions on one connection.
+func TestTwoSessionsOneCloses(t *testing.T) {
+	p := newProxyFixture(t, fastTouches)
+	c := p.client(t)
+	a, b := openShell(t, c), openShell(t, c)
+	time.Sleep(150 * time.Millisecond)
+
+	a.Close()
+	time.Sleep(100 * time.Millisecond)
+	mid := p.rows.touches.Load()
+	time.Sleep(300 * time.Millisecond)
+	if n := p.rows.touches.Load(); n <= mid {
+		t.Fatalf("touches stopped (%d → %d) while one session was still open", mid, n)
+	}
+
+	b.Close()
+	after := waitStable(p.rows)
+	time.Sleep(300 * time.Millisecond)
+	if n := p.rows.touches.Load(); n != after {
+		t.Fatalf("touches continued after both sessions closed (%d → %d)", after, n)
+	}
+}
+
+// Opening a session must not wait on the database (review finding on #27).
+func TestSessionOpenDoesNotWaitOnDatabase(t *testing.T) {
+	p := newProxyFixture(t)
+	p.rows.touchDelay = 3 * time.Second
+	c := p.client(t)
+	start := time.Now()
+	sess, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := sess.Output("hello")
+	if err != nil || string(out) != "ran: hello\n" {
+		t.Fatalf("exec = %q, %v", out, err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("session took %s with a 3s-slow database; it waited on the touch", d)
+	}
+}
+
+// Many sessions opened at once cause at most one touch per touchMinGap.
+func TestManySessionsAreThrottled(t *testing.T) {
+	p := newProxyFixture(t) // default: touch at most every 10 s
+	c := p.client(t)
+	for i := 0; i < 20; i++ {
+		s, _ := c.NewSession()
+		s.Output("x")
+	}
+	if n := waitStable(p.rows); n != 1 {
+		t.Fatalf("%d touches for 20 quick sessions, want 1 (throttled)", n)
 	}
 }
