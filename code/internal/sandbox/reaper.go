@@ -8,6 +8,10 @@ import (
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
 
+// reapDeleteTimeout bounds each pod delete during a reap (a var so tests can
+// shorten it).
+var reapDeleteTimeout = 30 * time.Second
+
 // Reap deletes every live sandbox that is past its TTL or has been idle
 // (no exec, file transfer or SSH) longer than the idle timeout (D9). It
 // returns how many it reaped.
@@ -24,7 +28,12 @@ func (s *Service) Reap(ctx context.Context) (int, error) {
 	}
 	for _, sb := range claimed {
 		s.ssh.Drop(sb.ID)
-		if err := s.pods.Delete(ctx, sb.PodName); err != nil {
+		// Bound each delete, so one hung Kubernetes call can't stall the
+		// rest of the reap; the reconcile retries whatever times out.
+		delCtx, cancel := context.WithTimeout(ctx, reapDeleteTimeout)
+		err := s.pods.Delete(delCtx, sb.PodName)
+		cancel()
+		if err != nil {
 			s.log.Error("reap: delete pod (reconcile will retry)", "sandbox", sb.ID, "err", err)
 			continue
 		}

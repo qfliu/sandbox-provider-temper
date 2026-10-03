@@ -28,6 +28,7 @@ type fakePods struct {
 	hostKeys         map[string][]byte
 	failCreate       bool
 	failDelete       bool
+	hangDelete       map[string]bool // pod names whose delete blocks until ctx ends
 	onDelete         func(name string)
 	secrets          []string // sandbox ids that have a host-key Secret
 	cleanedSecrets   []string
@@ -56,7 +57,11 @@ func (f *fakePods) CleanupSecrets(_ context.Context, isLive func(string) bool) (
 	return deleted, nil
 }
 
-func (f *fakePods) Delete(_ context.Context, name string) error {
+func (f *fakePods) Delete(ctx context.Context, name string) error {
+	if f.hangDelete[name] {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	if f.failDelete {
 		return errors.New("etcd timeout")
 	}

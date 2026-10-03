@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
@@ -59,5 +60,42 @@ func TestReapFailureIsFinishedByReconcileWithReason(t *testing.T) {
 	y.Reconcile(ctx)
 	if got := f.status(t, sb.ID); got.Status != store.StatusDeleted || got.StatusReason != "expired: TTL reached" {
 		t.Fatalf("after reconcile: %q / %q, want deleted with the reaper's reason", got.Status, got.StatusReason)
+	}
+}
+
+// A hung pod delete must not stall the rest of the reap.
+func TestReapBoundsEachPodDelete(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	stuck := f.newSandbox(t, true)
+	ok := f.newSandbox(t, true)
+	mustExec(t, f, "UPDATE sandboxes SET expires_at = now() - interval '1 second' WHERE id = ANY($1)",
+		[]string{stuck.ID, ok.ID})
+
+	defer func(old time.Duration) { reapDeleteTimeout = old }(reapDeleteTimeout)
+	reapDeleteTimeout = 100 * time.Millisecond
+	f.pods.hangDelete = map[string]bool{stuck.ID: true}
+
+	start := time.Now()
+	if _, err := f.svc.Reap(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatalf("reap took %s; a hung delete stalled it", time.Since(start))
+	}
+	if got := f.status(t, ok.ID).Status; got != store.StatusDeleted {
+		t.Fatalf("the sandbox after the hung one: status %q, want deleted", got)
+	}
+	if got := f.status(t, stuck.ID).Status; got != store.StatusDeleting {
+		t.Fatalf("hung sandbox: status %q, want deleting (reconcile retries)", got)
+	}
+}
+
+// mustExec runs setup SQL and fails the test if it errors, so a broken
+// setup can't make a test pass for the wrong reason.
+func mustExec(t *testing.T, f fixture, sql string, args ...any) {
+	t.Helper()
+	if _, err := f.pool.Exec(context.Background(), sql, args...); err != nil {
+		t.Fatalf("setup %q: %v", sql, err)
 	}
 }
