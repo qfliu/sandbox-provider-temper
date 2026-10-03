@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -96,6 +98,24 @@ func TestUIAdminPagination(t *testing.T) {
 	}
 	if strings.Contains(body, "Page 1 of 1") {
 		t.Fatal("pager shown for the 3-user table")
+	}
+}
+
+// The users table pages on its own parameter and keeps the sandboxes' page.
+func TestUIAdminUsersPagination(t *testing.T) {
+	sb := manyFor(60)
+	h := NewHandler(Deps{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DB: fakeDB{},
+		Auth: uiAuth{}, Sandboxes: sb, Keys: aliceKeys(), Admin: fakeAdmin{sb: sb, extraUsers: 57}})
+	body := uiDo(h, http.MethodGet, "/ui/admin?page=2&upage=2", nil, root).Body.String()
+	if !strings.Contains(body, "Page 2 of 2 · 60 total") || strings.Count(body, "Page 2 of 2 · 60 total") != 2 {
+		t.Fatal("want page 2 of both 60-row lists")
+	}
+	// users 51..60 are the last 10 extras (user-47 … user-56); user-46 is on page 1
+	if !strings.Contains(body, "user-56") || !strings.Contains(body, "user-47") || strings.Contains(body, "user-46") {
+		t.Fatal("users page 2 has the wrong rows")
+	}
+	if !strings.Contains(body, `href="/ui/admin?page=2&amp;upage=1"`) {
+		t.Fatal("users pager link doesn't keep the sandboxes' page")
 	}
 }
 

@@ -185,6 +185,20 @@ func TestUICreateSandboxError(t *testing.T) {
 	}
 }
 
+// The error page after a failed create is the list as at /ui/: its links
+// must not point at POST-only /ui/sandboxes (review of #56).
+func TestUICreateErrorPageLinks(t *testing.T) {
+	body := uiDo(sandboxUI(manyFor(60), ""), http.MethodPost, "/ui/sandboxes", url.Values{
+		"image": {"ubuntu-dev"}, "ssh_public_key": {"not-a-key"}, "ttl_hours": {"8"},
+	}, alice).Body.String()
+	if !strings.Contains(body, `<a href="/ui/">Refresh</a>`) || !strings.Contains(body, `href="/ui/?page=2"`) {
+		t.Fatal("Refresh/pager links don't point at /ui/")
+	}
+	if strings.Contains(body, `href="/ui/sandboxes?`) || strings.Contains(body, `href="/ui/sandboxes"`) {
+		t.Fatal("a link points at POST-only /ui/sandboxes")
+	}
+}
+
 func TestUIDetailPage(t *testing.T) {
 	h := sandboxUI(aliceAndBob(), "192.168.64.2:30022")
 	body := uiDo(h, http.MethodGet, "/ui/sandboxes/sb-alice0000001", nil, alice).Body.String()

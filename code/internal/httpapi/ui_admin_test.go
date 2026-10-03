@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,14 +15,21 @@ import (
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
 
-// fakeAdmin serves the admin lists from an ownedSandboxes fake.
-type fakeAdmin struct{ sb *ownedSandboxes }
+// fakeAdmin serves the admin lists from an ownedSandboxes fake, with
+// extraUsers more users after the three fixed ones.
+type fakeAdmin struct {
+	sb         *ownedSandboxes
+	extraUsers int
+}
 
 func (f fakeAdmin) ListUsers(_ context.Context, limit, offset int) ([]store.UserSummary, int, error) {
 	all := []store.UserSummary{
 		{User: store.User{ID: "u1", Name: "alice", MaxSandboxes: 10, CreatedAt: time.Now()}, LiveSandboxes: 1, ActiveKeys: 2},
 		{User: store.User{ID: "u2", Name: "root", IsAdmin: true, MaxSandboxes: 10, CreatedAt: time.Now()}},
 		{User: store.User{ID: "u9", Name: "bob", MaxSandboxes: 3, CreatedAt: time.Now()}, LiveSandboxes: 1, ActiveKeys: 1},
+	}
+	for i := 0; i < f.extraUsers; i++ {
+		all = append(all, store.UserSummary{User: store.User{ID: fmt.Sprint("x", i), Name: fmt.Sprintf("user-%02d", i), MaxSandboxes: 10, CreatedAt: time.Now()}})
 	}
 	return pageOf(all, limit, offset), len(all), nil
 }
@@ -42,7 +50,7 @@ func (f fakeAdmin) ListAllSandboxes(_ context.Context, includeEnded bool, limit,
 
 func adminUI(sb *ownedSandboxes) http.Handler {
 	return NewHandler(Deps{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DB: fakeDB{},
-		Auth: uiAuth{}, Sandboxes: sb, Keys: aliceKeys(), Admin: fakeAdmin{sb}})
+		Auth: uiAuth{}, Sandboxes: sb, Keys: aliceKeys(), Admin: fakeAdmin{sb: sb}})
 }
 
 var root = &http.Cookie{Name: sessionCookie, Value: "sk_admin"}

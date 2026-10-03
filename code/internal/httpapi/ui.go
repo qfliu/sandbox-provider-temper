@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -280,15 +281,9 @@ func (u *ui) requireSession(next http.Handler) http.Handler {
 // render executes the page into a buffer first, so a template error becomes
 // a clean 500 instead of a 200 with half a page (review of #35).
 func (u *ui) render(w http.ResponseWriter, status int, name string, p page) {
-	u.renderTemplate(w, status, name, "layout", p)
-}
-
-// renderTemplate renders one named template of a page; partials (htmx
-// refreshes) use it directly.
-func (u *ui) renderTemplate(w http.ResponseWriter, status int, name, tmpl string, p page) {
 	p.HasKeys, p.HasAdmin = u.keys != nil, u.admin != nil
 	var buf bytes.Buffer
-	if err := u.pages[name].ExecuteTemplate(&buf, tmpl, p); err != nil {
+	if err := u.pages[name].ExecuteTemplate(&buf, "layout", p); err != nil {
 		u.log.Error("render page", "page", name, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -400,7 +395,11 @@ func (u *ui) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		status, msg := serviceError(u.log, err)
-		p, listErr := u.listPage(r)
+		// The list as at GET /ui/: its Refresh and pager links come from the
+		// request URL, and this one (POST /ui/sandboxes) can't be fetched.
+		get := r.Clone(r.Context())
+		get.URL = &url.URL{Path: "/ui/"}
+		p, listErr := u.listPage(get)
 		if listErr != nil {
 			u.fail(w, r, listErr)
 			return
