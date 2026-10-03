@@ -29,3 +29,10 @@ AllowAgentForwarding no
 PermitTunnel no
 
 Subsystem sftp /usr/lib/openssh/sftp-server
+
+# Errors only: the readiness probe opens a TCP connection every second and
+# sshd would log each one ("Connection closed by …"), a line per second for
+# the sandbox's whole life (Phase 5 batch review). Logins are logged by the
+# gateway and the API (with the key); a sandbox's own log is under its
+# user's control anyway (they're root inside).
+LogLevel ERROR
