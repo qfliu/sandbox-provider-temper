@@ -304,11 +304,19 @@ const MaxAdminSandboxes = 500
 // ListAllSandboxes returns every user's sandboxes, newest first, with
 // owner names; ended ones only if includeEnded (admin view, D43).
 func (s *Store) ListAllSandboxes(ctx context.Context, includeEnded bool) ([]OwnedSandbox, error) {
+	// Two separate statements rather than "$1 OR status IN (…)": a prepared
+	// statement can switch to one generic plan for both cases, and the live
+	// view would then walk the whole created_at index (review of #47). Each
+	// text now gets its own plan: sandboxes_created_at for all, the live
+	// partial index for live ones.
+	where := "WHERE status IN ('pending', 'running', 'deleting')"
+	if includeEnded {
+		where = ""
+	}
 	rows, err := s.pool.Query(ctx, "SELECT "+sandboxColumns+`,
 			(SELECT name FROM users WHERE users.id = sandboxes.user_id)
-		FROM sandboxes
-		WHERE $1 OR status IN ('pending', 'running', 'deleting')
-		ORDER BY created_at DESC, id LIMIT $2`, includeEnded, MaxAdminSandboxes+1)
+		FROM sandboxes `+where+`
+		ORDER BY created_at DESC, id LIMIT $1`, MaxAdminSandboxes+1)
 	if err != nil {
 		return nil, err
 	}
