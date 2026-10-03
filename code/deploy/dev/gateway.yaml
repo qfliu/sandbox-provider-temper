@@ -87,6 +87,11 @@ metadata:
   namespace: sandbox-system
 spec:
   type: NodePort
+  # Local: no SNAT, so the gateway sees (and logs) the client's real IP, not
+  # the node's (Phase 3 batch review). Traffic only goes to gateway pods on
+  # the node it arrived at; fine on one minikube node, and in a cloud the
+  # LoadBalancer health-checks nodes so it only sends to ones with a pod.
+  externalTrafficPolicy: Local
   selector: {app: sandbox-gateway}
   ports:
   - {name: ssh, port: 22, targetPort: ssh, nodePort: 30022}
