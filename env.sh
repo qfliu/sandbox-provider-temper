@@ -32,7 +32,8 @@ export MINIKUBE_HOME="$_SB_STATE/minikube"
 if [ -d "$MINIKUBE_HOME/.minikube/profiles/minikube" ]; then
   export MINIKUBE_PROFILE=minikube
 else
-  export MINIKUBE_PROFILE="sp-$(printf %s "$_SB_ROOT" | shasum | cut -c1-4)"  # short: it is part of a socket path (cluster-up.sh)
+  # (the physical path, so reaching the clone through a symlink doesn't change it)
+  export MINIKUBE_PROFILE="sp-$(cd "$_SB_ROOT" && pwd -P | tr -d '\n' | shasum | cut -c1-4)"  # short: it is part of a socket path (cluster-up.sh)
 fi
 export KUBECONFIG="$_SB_STATE/kube/config"
 export KUBECACHEDIR="$_SB_STATE/kube/cache"   # kubectl discovery/http cache (default ~/.kube/cache)

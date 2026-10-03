@@ -13,10 +13,13 @@ IMAGE="${1:-ubuntu-dev}"
 source ./env.sh
 KEYFILE=.devenv/state/admin-api-key
 [ -s "$KEYFILE" ] || { echo "no API key in $KEYFILE: run ./up.sh first" >&2; exit 1; }
-KEY=$(cat "$KEYFILE")
 PORT="${DEMO_PORT:-18090}"
 API="http://127.0.0.1:$PORT/v1"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/demo.XXXXXX")
+# The key goes to curl in a header file (-H @file), never as an argument,
+# so it doesn't show up in `ps`.
+(umask 077 && { printf 'Authorization: Bearer '; tr -d '\n' <"$KEYFILE"; echo; } >"$TMP/auth")
+AUTH=(-H @"$TMP/auth")
 ID=""
 
 bold() { printf "\n\033[1m%s\033[0m\n" "$*"; }
@@ -28,13 +31,13 @@ call() {
 	shift 2
 	printf '  \033[2m$ curl -X %s -H "Authorization: Bearer $KEY" %s %s\033[0m\n' "$method" \
 		"$(python3 -c 'import shlex,sys; print(" ".join(shlex.quote(a) for a in sys.argv[1:]))' "$API$path" "$@")"
-	CODE=$(curl -s -o "$TMP/out" -w '%{http_code}' -X "$method" -H "Authorization: Bearer $KEY" "$@" "$API$path")
+	CODE=$(curl -s -o "$TMP/out" -w '%{http_code}' -X "$method" "${AUTH[@]}" "$@" "$API$path")
 	[ -n "${QUIET:-}" ] && return
 	python3 -c 'import json,sys
 try: print(json.dumps(json.load(open(sys.argv[1])), indent=2))
 except Exception: print(open(sys.argv[1], errors="replace").read())' "$TMP/out" | sed 's/^/    /' | head -25
 }
-field() { python3 -c "import json,sys; print(json.load(open('$TMP/out'))$1)"; }
+field() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))$1)" "$TMP/out"; }
 run() { # run <command>: exec in the sandbox through the API; shows the
 	# response's stdout/stderr as text rather than JSON
 	QUIET=1 call POST "/sandboxes/$ID/exec" -d "$(python3 -c 'import json,sys; print(json.dumps({"command": sys.argv[1]}))' "$1")"
@@ -47,7 +50,7 @@ for line in d["stderr"].splitlines(): print("\033[33m" + line + "\033[0m")' "$TM
 }
 cleanup() {
 	if [ -n "$ID" ]; then
-		curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $KEY" "$API/sandboxes/$ID" || true
+		curl -s -o /dev/null -X DELETE "${AUTH[@]}" "$API/sandboxes/$ID" || true
 	fi
 	[ -n "${PF:-}" ] && kill "$PF" 2>/dev/null
 	rm -rf "$TMP"
@@ -55,10 +58,19 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-kubectl -n sandbox-system port-forward svc/sandbox-api "$PORT:80" >/dev/null 2>&1 &
+kubectl -n sandbox-system port-forward --address 127.0.0.1 svc/sandbox-api "$PORT:80" >"$TMP/pf.log" 2>&1 &
 PF=$!
-for _ in $(seq 1 40); do curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/healthz" && break; sleep 0.25; done
-curl -s -m 2 -o /dev/null "http://127.0.0.1:$PORT/healthz" || { echo "API not reachable (is ./up.sh done?)" >&2; exit 1; }
+# Only talk (and send the key) to our own port-forward: wait until it says
+# it's listening; if the port was taken, it exits instead.
+for _ in $(seq 1 40); do
+	grep -q "Forwarding from" "$TMP/pf.log" && break
+	kill -0 "$PF" 2>/dev/null || break
+	sleep 0.25
+done
+grep -q "Forwarding from" "$TMP/pf.log" && kill -0 "$PF" 2>/dev/null ||
+	{ echo "couldn't forward port $PORT (in use? set DEMO_PORT): $(tail -1 "$TMP/pf.log")" >&2; exit 1; }
+curl -s -m 2 "http://127.0.0.1:$PORT/healthz" | grep -q '"status":"ok"' ||
+	{ echo "API not reachable (is ./up.sh done?)" >&2; exit 1; }
 
 bold "1. Who am I? Every API call carries an API key."
 call GET /me
@@ -72,10 +84,12 @@ ID=$(field "['id']")
 [ "$CODE" = 201 ] && [ -n "$ID" ] || { echo "create failed (HTTP $CODE)" >&2; exit 1; }
 note "Waiting for it to start: a gVisor pod, sshd ready..."
 for _ in $(seq 1 120); do
-	curl -s -o "$TMP/out" -H "Authorization: Bearer $KEY" "$API/sandboxes/$ID"
+	curl -s -o "$TMP/out" "${AUTH[@]}" "$API/sandboxes/$ID"
 	[ "$(field "['status']")" = running ] && break
 	sleep 0.25
 done
+[ "$(field "['status']")" = running ] ||
+	{ echo "not running after 30 s (status $(field "['status']")); the dashboard shows why" >&2; exit 1; }
 printf "  \033[32m%s is running after %.1f s\033[0m\n" "$ID" "$(python3 -c "import time; print(time.time()-$START)")"
 
 bold "3. Run commands through the API (what an agent does most)."
@@ -112,10 +126,14 @@ note "then open http://localhost:18080/ui and sign in with the key in $KEYFILE"
 bold "8. Delete it."
 call DELETE "/sandboxes/$ID"
 for _ in $(seq 1 40); do
-	curl -s -o "$TMP/out" -H "Authorization: Bearer $KEY" "$API/sandboxes/$ID"
+	curl -s -o "$TMP/out" "${AUTH[@]}" "$API/sandboxes/$ID"
 	[ "$(field "['status']")" = deleted ] && break
 	sleep 0.25
 done
-note "status: $(field "['status']") (the pod and its secrets are gone; the record stays for history)"
+if [ "$(field "['status']")" = deleted ]; then
+	note "status: deleted (the pod and its secrets are gone; the record stays for history)"
+else
+	note "status: $(field "['status']") (still shutting down; it finishes in the background)"
+fi
 ID=""
 bold "Done."
