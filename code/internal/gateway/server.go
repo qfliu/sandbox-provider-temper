@@ -5,9 +5,9 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"regexp"
@@ -15,7 +15,22 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
+
+// SandboxLookup finds a sandbox by id (implemented by store.Store; faked in
+// tests).
+type SandboxLookup interface {
+	GetSandbox(ctx context.Context, id string) (store.Sandbox, error)
+}
+
+// lookupTimeout bounds the database lookup for one authentication attempt.
+const lookupTimeout = 5 * time.Second
+
+// permSandboxID carries the authenticated sandbox id from authentication to
+// the session handler.
+const permSandboxID = "sandbox-id"
 
 // defaultHandshakeTimeout bounds the SSH handshake (incl. authentication),
 // so a client that connects and stalls can't hold a goroutine forever (the
@@ -34,6 +49,7 @@ var ErrNotASandbox = errors.New("user name must be a sandbox id like sb-01234567
 // Server accepts SSH connections for sandboxes.
 type Server struct {
 	config           *ssh.ServerConfig
+	sandboxes        SandboxLookup
 	log              *slog.Logger
 	handshakeTimeout time.Duration
 
@@ -43,9 +59,15 @@ type Server struct {
 	wg      sync.WaitGroup
 }
 
-// New returns a Server presenting hostKey to clients.
-func New(hostKey ssh.Signer, log *slog.Logger) *Server {
-	s := &Server{log: log, handshakeTimeout: defaultHandshakeTimeout, conns: map[net.Conn]struct{}{}}
+// New returns a Server presenting hostKey to clients and checking logins
+// against sandboxes.
+func New(hostKey ssh.Signer, sandboxes SandboxLookup, log *slog.Logger) *Server {
+	s := &Server{
+		sandboxes:        sandboxes,
+		log:              log,
+		handshakeTimeout: defaultHandshakeTimeout,
+		conns:            map[net.Conn]struct{}{},
+	}
 	s.config = &ssh.ServerConfig{
 		MaxAuthTries:      maxAuthTries,
 		PublicKeyCallback: s.authenticate,
@@ -55,18 +77,50 @@ func New(hostKey ssh.Signer, log *slog.Logger) *Server {
 	return s
 }
 
-// authenticate decides whether a client key may open the sandbox named by
-// the user name. Step 3.1 only validates the name; key checking against the
-// sandbox's stored key arrives in step 3.2, so for now everything is denied.
+// errDenied is what every refused key gets: the client learns nothing about
+// why (no such sandbox, not running, wrong key), only the server log does.
+var errDenied = errors.New("access denied")
+
+// authenticate lets a key in only if the user name is a sandbox id, that
+// sandbox is running, and the key is exactly the sandbox owner's
+// ssh_public_key (D3; owner only, admins use the API — D33).
 func (s *Server) authenticate(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-	if !sandboxIDPattern.MatchString(meta.User()) {
+	id := meta.User()
+	if !sandboxIDPattern.MatchString(id) {
 		return nil, ErrNotASandbox
 	}
 	// Debug, not Info: an unauthenticated client may offer several keys per
 	// connection; handle() logs one Info line per refused connection.
-	s.log.Debug("key offered", "user", meta.User(), "remote", meta.RemoteAddr().String(),
+	refuse := func(reason string, args ...any) (*ssh.Permissions, error) {
+		s.log.Debug("key refused", append([]any{"sandbox", id, "reason", reason,
+			"remote", meta.RemoteAddr().String(), "key", ssh.FingerprintSHA256(key)}, args...)...)
+		return nil, errDenied
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
+	defer cancel()
+	sb, err := s.sandboxes.GetSandbox(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return refuse("no such sandbox")
+	}
+	if err != nil {
+		s.log.Warn("sandbox lookup failed", "sandbox", id, "err", err)
+		return nil, errDenied
+	}
+	if sb.Status != store.StatusRunning {
+		return refuse("sandbox not running", "status", sb.Status)
+	}
+	owner, _, _, _, err := ssh.ParseAuthorizedKey([]byte(sb.SSHPublicKey))
+	if err != nil {
+		s.log.Error("stored ssh_public_key doesn't parse", "sandbox", id, "err", err)
+		return nil, errDenied
+	}
+	if !bytes.Equal(owner.Marshal(), key.Marshal()) {
+		return refuse("not the sandbox's key")
+	}
+	s.log.Info("login accepted", "sandbox", id, "remote", meta.RemoteAddr().String(),
 		"key", ssh.FingerprintSHA256(key))
-	return nil, fmt.Errorf("access denied")
+	return &ssh.Permissions{Extensions: map[string]string{permSandboxID: id}}, nil
 }
 
 // Serve accepts connections on ln until ctx ends, then closes the listener
@@ -159,10 +213,9 @@ func (s *Server) handle(conn net.Conn) {
 	conn.SetDeadline(time.Time{})
 	defer sconn.Close()
 
-	// Unreachable until step 3.2 lets someone authenticate; sessions are
-	// proxied in step 3.3.
+	// Authenticated; proxying sessions into the sandbox arrives in step 3.3.
 	go ssh.DiscardRequests(reqs)
 	for nch := range chans {
-		nch.Reject(ssh.Prohibited, "not implemented yet")
+		nch.Reject(ssh.Prohibited, "sessions are not proxied yet (step 3.3)")
 	}
 }

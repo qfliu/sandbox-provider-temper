@@ -7,6 +7,8 @@
 //	GATEWAY_LISTEN_ADDR     listen address (default :2222)
 //	GATEWAY_HOST_KEY_FILE   the gateway's own SSH host key (required); keep it
 //	                        stable so users' known_hosts entries stay valid
+//	DATABASE_URL            Postgres, to look up sandboxes (required; read-only
+//	                        use: the API owns the schema and its migrations)
 package main
 
 import (
@@ -20,8 +22,11 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/qfliu/sandbox-provider-temper/code/internal/config"
+	"github.com/qfliu/sandbox-provider-temper/code/internal/db"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/gateway"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/sshx"
+	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
 
 func main() {
@@ -46,6 +51,10 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	dbURL, err := config.DatabaseURL()
+	if err != nil {
+		return err
+	}
 
 	// Stop on Ctrl-C locally or SIGTERM from Kubernetes. After the first
 	// signal, stop capturing them, so a second Ctrl-C force-quits a
@@ -54,13 +63,19 @@ func run(log *slog.Logger) error {
 	defer stop()
 	go func() { <-ctx.Done(); stop() }()
 
+	pool, err := db.Open(ctx, dbURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 	log.Info("gateway listening", "addr", ln.Addr().String(),
 		"host_key", ssh.FingerprintSHA256(hostKey.PublicKey()))
-	if err := gateway.New(hostKey, log).Serve(ctx, ln); err != nil {
+	if err := gateway.New(hostKey, store.New(pool), log).Serve(ctx, ln); err != nil {
 		return err
 	}
 	log.Info("gateway stopped")
