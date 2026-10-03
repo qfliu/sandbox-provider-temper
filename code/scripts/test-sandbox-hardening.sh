@@ -23,6 +23,7 @@ fail() { FAILED=$((FAILED + 1)); printf "  \033[31mFAIL\033[0m  %s  (%s)\n" "$1"
 die() { printf "setup failed: %s\n" "$1" >&2; exit 1; }
 
 cleanup() {
+	kubectl -n sandboxes delete serviceaccount hardening-probe --ignore-not-found >/dev/null 2>&1
 	[ -n "$SB" ] && curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $KEY" "$API/sandboxes/$SB"
 	[ -n "${PF:-}" ] && { kill "$PF"; wait "$PF"; } 2>/dev/null
 	rm -rf "$TMP"
@@ -87,6 +88,9 @@ bnd=$(printf '%s' "${r#*|}" | awk '{print $2}')
 	fail "capability bounding set" "$r"
 
 printf "\nadmission policy rejects non-conforming pods\n"
+# A real (throwaway) service account, so the "another service account" probe
+# reaches the policy instead of failing the account lookup first.
+kubectl -n sandboxes create serviceaccount hardening-probe >/dev/null 2>&1
 cat >"$TMP/pod.yaml" <<'EOF'
 apiVersion: v1
 kind: Pod
@@ -106,14 +110,23 @@ spec:
       capabilities: {drop: [ALL], add: [CHOWN]}
       seccompProfile: {type: RuntimeDefault}
 EOF
-probe() { sed "$2" "$TMP/pod.yaml" | kubectl apply --dry-run=server -f - 2>&1 | tail -1; }
+# probe <name> <sed expression | "+<line to append at pod level>">
+probe() {
+	if [[ "$2" == +* ]]; then
+		{ cat "$TMP/pod.yaml"; printf '  %s\n' "${2#+}"; } | kubectl apply --dry-run=server -f - 2>&1 | tail -1
+	else
+		sed "$2" "$TMP/pod.yaml" | kubectl apply --dry-run=server -f - 2>&1 | tail -1
+	fi
+}
 out=$(probe "conforming" "s/^//")
 [[ "$out" == *"created (server dry run)"* ]] && pass "a conforming pod is admitted (dry run)" || fail "conforming pod" "$out"
 for c in "keeps default capabilities|s/drop: \[ALL\], //|drop ALL" \
 	"adds MKNOD|s/add: \[CHOWN\]/add: [CHOWN, MKNOD]/|may only add back" \
 	"lacks a seccomp profile|/seccompProfile/d|seccomp" \
 	"overrides seccomp with Localhost|s/      seccompProfile: {type: RuntimeDefault}/      seccompProfile: {type: Localhost, localhostProfile: x.json}/|seccomp" \
-	"lacks CPU and memory limits|/resources:/d|CPU and memory limits"; do
+	"lacks CPU and memory limits|/resources:/d|CPU and memory limits" \
+	"mounts a service account token|+volumes: [{name: tok, projected: {sources: [{serviceAccountToken: {path: token}}]}}]|service account token" \
+	"uses another service account|+serviceAccountName: hardening-probe|default service account"; do
 	IFS='|' read -r name expr want <<<"$c"
 	out=$(probe "$name" "$expr")
 	[[ "$out" == *"$want"* ]] && pass "pod that $name is denied" || fail "pod that $name" "$out"
