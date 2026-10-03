@@ -162,6 +162,10 @@ done
 	fail "idle timer" "idle ${before}s → ${after}s"
 
 printf "\nafter delete\n"
+# Positive control first: B's own key does get in while B is running, so the
+# refusal below is caused by the delete.
+out=$(gw_ssh b "$B" -n 'echo in' 2>&1)
+[ "$out" = in ] && pass "sandbox B's own key → in (before delete)" || fail "B's own key before delete" "$out"
 curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $KEY" "$API/sandboxes/$B"
 for _ in $(seq 1 30); do
 	s=$(api_field "$B" status)

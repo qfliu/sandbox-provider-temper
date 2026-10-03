@@ -55,5 +55,8 @@ sed "s|sandbox/api:IMAGE_TAG|sandbox/api:$TAG|" "$ROOT/code/deploy/dev/gateway.y
 kubectl -n sandbox-system rollout status deployment/sandbox-gateway --timeout=180s >/dev/null
 kubectl -n sandbox-system get pods -l app=sandbox-gateway -o wide | cut -c1-90
 echo "==> sandbox-gateway ready (in-cluster: sandbox-system/sandbox-gateway:22)"
-echo "    from this Mac: ssh -p 30022 <sandbox-id>@$(minikube ip)"
+GW_IP=$(minikube ip)
+echo "    from this Mac: ssh -p 30022 <sandbox-id>@$GW_IP"
 echo "    gateway host key: $(ssh-keygen -lf "$ROOT/.devenv/state/gateway-host-key.pub" | cut -d' ' -f2)"
+echo "    to pin it instead of trusting the first connection, add to ~/.ssh/known_hosts:"
+echo "      [$GW_IP]:30022 $(cut -d' ' -f1,2 "$ROOT/.devenv/state/gateway-host-key.pub")"
