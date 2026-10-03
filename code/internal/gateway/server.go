@@ -8,10 +8,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"regexp"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -51,10 +53,15 @@ var ErrNotASandbox = errors.New("user name must be a sandbox id like sb-01234567
 
 // Server accepts SSH connections for sandboxes.
 type Server struct {
-	hostKey          ssh.Signer
-	sandboxes        SandboxLookup
-	log              *slog.Logger
-	handshakeTimeout time.Duration
+	hostKey           ssh.Signer
+	sandboxes         SandboxLookup
+	upstream          Upstream
+	log               *slog.Logger
+	handshakeTimeout  time.Duration
+	sandboxPort       string        // sshd port in sandbox pods
+	statusInterval    time.Duration // how often an open session re-checks its sandbox
+	keepaliveInterval time.Duration // how often the client is pinged
+	rejectGrace       time.Duration // how long a connection to an unavailable sandbox stays open
 
 	mu      sync.Mutex
 	closing bool // set once shutdown starts; new connections are refused
@@ -62,15 +69,20 @@ type Server struct {
 	wg      sync.WaitGroup
 }
 
-// New returns a Server presenting hostKey to clients and checking logins
-// against sandboxes.
-func New(hostKey ssh.Signer, sandboxes SandboxLookup, log *slog.Logger) *Server {
+// New returns a Server presenting hostKey to clients, checking logins
+// against sandboxes and connecting sessions to them through upstream.
+func New(hostKey ssh.Signer, sandboxes SandboxLookup, upstream Upstream, log *slog.Logger) *Server {
 	return &Server{
-		hostKey:          hostKey,
-		sandboxes:        sandboxes,
-		log:              log,
-		handshakeTimeout: defaultHandshakeTimeout,
-		conns:            map[net.Conn]struct{}{},
+		hostKey:           hostKey,
+		sandboxes:         sandboxes,
+		upstream:          upstream,
+		log:               log,
+		handshakeTimeout:  defaultHandshakeTimeout,
+		sandboxPort:       "22",
+		statusInterval:    30 * time.Second,
+		keepaliveInterval: 30 * time.Second,
+		rejectGrace:       5 * time.Second,
+		conns:             map[net.Conn]struct{}{},
 	}
 }
 
@@ -250,7 +262,13 @@ func (s *Server) handle(conn net.Conn) {
 	conn.SetDeadline(time.Now().Add(s.handshakeTimeout))
 	sconn, chans, reqs, err := ssh.NewServerConn(conn, s.newConnConfig())
 	if err != nil {
-		s.log.Info("connection refused", "remote", conn.RemoteAddr().String(), "err", err)
+		// A connection that closes before speaking SSH is a TCP health probe
+		// or a port scan, not a refused login: don't flood the log with it.
+		level := slog.LevelInfo
+		if errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET) {
+			level = slog.LevelDebug // probes end with FIN or RST before the version exchange
+		}
+		s.log.Log(context.Background(), level, "connection refused", "remote", conn.RemoteAddr().String(), "err", err)
 		return
 	}
 	// Only now is the login real: the client proved it holds the key.
@@ -259,9 +277,5 @@ func (s *Server) handle(conn net.Conn) {
 	conn.SetDeadline(time.Time{})
 	defer sconn.Close()
 
-	// Authenticated; proxying sessions into the sandbox arrives in step 3.3.
-	go ssh.DiscardRequests(reqs)
-	for nch := range chans {
-		nch.Reject(ssh.Prohibited, "sessions are not proxied yet (step 3.3)")
-	}
+	s.proxySessions(sconn, chans, reqs, sconn.Permissions.Extensions[permSandboxID])
 }

@@ -1,4 +1,6 @@
-# Control plane image. Built inside minikube by code/scripts/deploy-api.sh:
+# Platform image with both binaries, /api (control plane) and /gateway (SSH
+# entry point). Built inside minikube by code/scripts/deploy-api.sh and
+# deploy-gateway.sh:
 #   minikube image build -t sandbox/api:<tag> code
 #
 # Stage 1 compiles a static binary; stage 2 is distroless: no shell, no
@@ -11,10 +13,10 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/ ./cmd/api ./cmd/gateway
 
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /out/api /api
+COPY --from=build /out/api /out/gateway /
 USER nonroot:nonroot
-EXPOSE 8080
+EXPOSE 8080 2222
 ENTRYPOINT ["/api"]

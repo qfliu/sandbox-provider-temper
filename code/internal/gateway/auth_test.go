@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -18,6 +19,7 @@ import (
 // fakeSandboxes serves sandboxes from a map; "sb-0000000000db" simulates a
 // database error. It counts lookups.
 type fakeSandboxes struct {
+	mu      sync.Mutex
 	rows    map[string]store.Sandbox
 	lookups atomic.Int32
 }
@@ -27,6 +29,8 @@ func (f *fakeSandboxes) GetSandbox(_ context.Context, id string) (store.Sandbox,
 	if id == "sb-0000000000db" {
 		return store.Sandbox{}, errors.New("connection refused")
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	sb, ok := f.rows[id]
 	if !ok {
 		return store.Sandbox{}, store.ErrNotFound
@@ -39,8 +43,7 @@ func authorized(k ssh.PublicKey) string {
 }
 
 // tryLogin authenticates as user with key and reports whether the gateway
-// accepted the login. A successful login can't open a session yet (step
-// 3.3), which is checked too.
+// accepted the login.
 func tryLogin(t *testing.T, addr, user string, host ssh.PublicKey, key ssh.Signer) bool {
 	t.Helper()
 	c, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
@@ -54,10 +57,7 @@ func tryLogin(t *testing.T, addr, user string, host ssh.PublicKey, key ssh.Signe
 		}
 		return false
 	}
-	defer c.Close()
-	if _, err := c.NewSession(); err == nil || !strings.Contains(err.Error(), "not proxied yet") {
-		t.Fatalf("%s: session = %v; sessions aren't proxied until step 3.3", user, err)
-	}
+	c.Close()
 	return true
 }
 
@@ -70,7 +70,7 @@ func TestAuthentication(t *testing.T) {
 		"sb-00000000000c": {ID: "sb-00000000000c", Status: store.StatusPending, SSHPublicKey: authorized(owner.PublicKey())},
 		"sb-00000000000d": {ID: "sb-00000000000d", Status: store.StatusDeleted, SSHPublicKey: authorized(owner.PublicKey())},
 	}}
-	addr := start(t, New(host, f, quietLog()))
+	addr := start(t, New(host, f, nil, quietLog()))
 
 	for _, tc := range []struct {
 		name string
@@ -96,7 +96,7 @@ func TestAuthentication(t *testing.T) {
 func TestBadUserNameSkipsLookup(t *testing.T) {
 	host := signer(t)
 	f := &fakeSandboxes{}
-	addr := start(t, New(host, f, quietLog()))
+	addr := start(t, New(host, f, nil, quietLog()))
 	for _, user := range []string{"root", "user", "sb-XYZ", "sb-0123456789ab; DROP TABLE"} {
 		if tryLogin(t, addr, user, host.PublicKey(), signer(t)) {
 			t.Fatalf("%q let in", user)
@@ -107,10 +107,29 @@ func TestBadUserNameSkipsLookup(t *testing.T) {
 	}
 }
 
+// syncBuffer is a bytes.Buffer safe to write from the gateway's goroutines
+// while a test reads it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // logBuffer captures log output so tests can check what was logged.
-func logBuffer() (*slog.Logger, *bytes.Buffer) {
-	var buf bytes.Buffer
-	return slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})), &buf
+func logBuffer() (*slog.Logger, *syncBuffer) {
+	buf := &syncBuffer{}
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})), buf
 }
 
 type fakeMeta struct {
@@ -135,7 +154,7 @@ func TestOnlyCompletedLoginsAreLoggedAsAccepted(t *testing.T) {
 	host, owner := signer(t), signer(t)
 	f := &fakeSandboxes{rows: map[string]store.Sandbox{"sb-00000000000a": running("sb-00000000000a", owner.PublicKey())}}
 	log, buf := logBuffer()
-	srv := New(host, f, log)
+	srv := New(host, f, nil, log)
 
 	perms, err := (&connAuth{s: srv}).authenticate(fakeMeta{user: "sb-00000000000a"}, owner.PublicKey())
 	if err != nil || perms.Extensions[permSandboxID] != "sb-00000000000a" {
@@ -149,7 +168,7 @@ func TestOnlyCompletedLoginsAreLoggedAsAccepted(t *testing.T) {
 		t.Fatal("owner login failed")
 	}
 	if n := strings.Count(buf.String(), "login accepted"); n != 1 {
-		t.Fatalf("%d 'login accepted' lines after one real login, want 1:\n%s", n, buf)
+		t.Fatalf("%d 'login accepted' lines after one real login, want 1:\n%s", n, buf.String())
 	}
 }
 
@@ -161,7 +180,7 @@ func TestPerConnectionLimits(t *testing.T) {
 		"sb-00000000000a": running("sb-00000000000a", owner.PublicKey()),
 		"sb-00000000000b": running("sb-00000000000b", owner.PublicKey()),
 	}}
-	srv := New(signer(t), f, quietLog())
+	srv := New(signer(t), f, nil, quietLog())
 
 	a := &connAuth{s: srv}
 	if _, err := a.authenticate(fakeMeta{user: "sb-00000000000a"}, owner.PublicKey()); err != nil {
@@ -189,7 +208,7 @@ func TestPerConnectionLimits(t *testing.T) {
 // (review finding 3).
 func TestLookupErrorWarnsOncePerConnection(t *testing.T) {
 	log, buf := logBuffer()
-	a := &connAuth{s: New(signer(t), &fakeSandboxes{}, log)}
+	a := &connAuth{s: New(signer(t), &fakeSandboxes{}, nil, log)}
 	for i := 0; i < maxAuthTries; i++ {
 		a.authenticate(fakeMeta{user: "sb-0000000000db"}, signer(t).PublicKey())
 	}
@@ -203,7 +222,7 @@ func TestLookupErrorWarnsOncePerConnection(t *testing.T) {
 func TestWrongKeyThenRightKey(t *testing.T) {
 	host, owner := signer(t), signer(t)
 	f := &fakeSandboxes{rows: map[string]store.Sandbox{"sb-00000000000a": running("sb-00000000000a", owner.PublicKey())}}
-	addr := start(t, New(host, f, quietLog()))
+	addr := start(t, New(host, f, nil, quietLog()))
 	c, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
 		User:            "sb-00000000000a",
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer(t), signer(t), owner)},
@@ -219,7 +238,7 @@ func TestUnparseableStoredKeyIsRefused(t *testing.T) {
 	f := &fakeSandboxes{rows: map[string]store.Sandbox{
 		"sb-00000000000a": {ID: "sb-00000000000a", Status: store.StatusRunning, SSHPublicKey: "garbage"},
 	}}
-	a := &connAuth{s: New(signer(t), f, quietLog())}
+	a := &connAuth{s: New(signer(t), f, nil, quietLog())}
 	if _, err := a.authenticate(fakeMeta{user: "sb-00000000000a"}, signer(t).PublicKey()); err == nil {
 		t.Fatal("a sandbox with an unparseable stored key let someone in")
 	}
