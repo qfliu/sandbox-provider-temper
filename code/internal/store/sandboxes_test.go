@@ -440,7 +440,7 @@ func TestSandboxCreatedByKey(t *testing.T) {
 	if got.CreatedByKey == nil || got.CreatedByKey.Name != "ci-runner" {
 		t.Fatalf("after revoking the key: %+v", got.CreatedByKey)
 	}
-	all, _ := s.ListAllSandboxes(ctx, true)
+	all, _, _ := s.ListAllSandboxes(ctx, true, 50, 0)
 	if len(all) != 1 || all[0].CreatedByKey == nil || all[0].CreatedByKey.ID != k.ID {
 		t.Fatalf("admin list: %+v", all)
 	}

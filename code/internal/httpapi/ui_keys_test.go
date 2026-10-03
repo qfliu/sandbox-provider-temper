@@ -38,6 +38,11 @@ func (f *fakeKeys) ListAPIKeys(_ context.Context, userID string) ([]store.APIKey
 	return out, nil
 }
 
+func (f *fakeKeys) ListAPIKeysPage(ctx context.Context, userID string, limit, offset int) ([]store.APIKey, int, error) {
+	all, _ := f.ListAPIKeys(ctx, userID)
+	return pageOf(all, limit, offset), len(all), nil
+}
+
 func (f *fakeKeys) CreateAPIKey(_ context.Context, userID, name string) (string, store.APIKey, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -195,6 +200,10 @@ type failingListKeys struct{ *fakeKeys }
 
 func (failingListKeys) ListAPIKeys(context.Context, string) ([]store.APIKey, error) {
 	return nil, context.DeadlineExceeded
+}
+
+func (failingListKeys) ListAPIKeysPage(context.Context, string, int, int) ([]store.APIKey, int, error) {
+	return nil, 0, context.DeadlineExceeded
 }
 
 // If the key list can't be loaded after a key was created, the new key is

@@ -1,0 +1,6 @@
+{{define "pager"}}{{if gt .Pages 1}}
+<nav class="pager" aria-label="Pages">
+  <span class="muted">Page {{.Page}} of {{.Pages}} · {{.Total}} total</span>
+  {{range .Links}}{{if .Current}}<strong aria-current="page">{{.Label}}</strong>{{else if eq .N 0}}<span class="muted">{{.Label}}</span>{{else}}<a href="{{.URL}}">{{.Label}}</a>{{end}}{{end}}
+</nav>
+{{end}}{{end}}

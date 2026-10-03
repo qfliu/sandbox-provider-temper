@@ -1,11 +1,13 @@
 {{define "content"}}
 <div class="head">
   <h1>Your sandboxes</h1>
-  {{if .ShowEnded}}<a href="/ui/">Hide ended</a>{{else}}<a href="/ui/?ended=1">Show ended</a>{{end}}
+  <span class="actions-inline">
+    <a href="{{.Self}}">Refresh</a>
+    {{if .ShowEnded}}<a href="/ui/">Hide ended</a>{{else}}<a href="/ui/?ended=1">Show ended</a>{{end}}
+  </span>
 </div>
-<div id="sandboxes" hx-get="/ui/sandboxes/rows{{if .ShowEnded}}?ended=1{{end}}" hx-trigger="every 5s" hx-swap="innerHTML">
 {{template "rows" .}}
-</div>
+{{template "pager" .Pager}}
 
 <section class="card">
   <h2>New sandbox</h2>

@@ -1,6 +1,9 @@
 {{define "content"}}
 {{if ne .Sandbox.UserID .User.ID}}<p><a href="/ui/admin">← Admin</a></p>{{else}}<p><a href="/ui/">← All sandboxes</a></p>{{end}}
-<h1><code>{{.Sandbox.ID}}</code></h1>
+<div class="head">
+  <h1><code>{{.Sandbox.ID}}</code></h1>
+  <a href="{{.Self}}">Refresh</a>
+</div>
 {{template "status" .}}
 
 {{if live .Sandbox.Status}}

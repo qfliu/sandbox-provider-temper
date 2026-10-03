@@ -39,14 +39,15 @@ type Deps struct {
 // AdminService reads platform-wide data for admins (implemented by
 // store.Store; faked in tests). Callers must check the user is an admin.
 type AdminService interface {
-	ListUsers(ctx context.Context) ([]store.UserSummary, error)
-	ListAllSandboxes(ctx context.Context, includeEnded bool) ([]store.OwnedSandbox, error)
+	ListUsers(ctx context.Context, limit, offset int) ([]store.UserSummary, int, error)
+	ListAllSandboxes(ctx context.Context, includeEnded bool, limit, offset int) ([]store.OwnedSandbox, int, error)
 }
 
 // KeyService lists, issues and revokes a user's API keys (implemented by
 // store.Store; faked in tests).
 type KeyService interface {
 	ListAPIKeys(ctx context.Context, userID string) ([]store.APIKey, error)
+	ListAPIKeysPage(ctx context.Context, userID string, limit, offset int) ([]store.APIKey, int, error)
 	CreateAPIKey(ctx context.Context, userID, name string) (string, store.APIKey, error)
 	RevokeAPIKey(ctx context.Context, userID, keyID string) error
 }

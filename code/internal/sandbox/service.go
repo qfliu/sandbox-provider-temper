@@ -133,6 +133,12 @@ func (s *Service) Get(ctx context.Context, user store.User, id string) (store.Sa
 	return sb, nil
 }
 
+// ListPage is one page of the user's sandboxes (newest first) and their
+// total; ended ones only if includeEnded (dashboard, step 4.6).
+func (s *Service) ListPage(ctx context.Context, user store.User, includeEnded bool, limit, offset int) ([]store.Sandbox, int, error) {
+	return s.store.ListSandboxesPage(ctx, user.ID, includeEnded, limit, offset)
+}
+
 // List returns the user's sandboxes; ended ones only if includeEnded.
 func (s *Service) List(ctx context.Context, user store.User, includeEnded bool) ([]store.Sandbox, error) {
 	return s.store.ListSandboxes(ctx, user.ID, includeEnded)

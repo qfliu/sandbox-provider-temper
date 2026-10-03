@@ -1,5 +1,8 @@
 {{define "content"}}
-<h1>API keys</h1>
+<div class="head">
+  <h1>API keys</h1>
+  <a href="{{.Self}}">Refresh</a>
+</div>
 <p class="muted">Agents and scripts use a key in <code>Authorization: Bearer &lt;key&gt;</code>; you also sign in here with one. Revoking a key cuts off everything using it.</p>
 {{with .Error}}<p class="error" role="alert">{{.}}</p>{{end}}
 
@@ -32,6 +35,7 @@
   {{end}}
   </tbody>
 </table>
+{{template "pager" .Pager}}
 
 <section class="card">
   <h2>Create a key</h2>

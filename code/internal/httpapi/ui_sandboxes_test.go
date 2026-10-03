@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -69,6 +70,26 @@ func (f *ownedSandboxes) List(_ context.Context, u store.User, includeEnded bool
 	return out, nil
 }
 
+// ListPage is List, newest first, sliced like the store's LIMIT/OFFSET.
+func (f *ownedSandboxes) ListPage(ctx context.Context, u store.User, includeEnded bool, limit, offset int) ([]store.Sandbox, int, error) {
+	all, _ := f.List(ctx, u, includeEnded)
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].CreatedAt.Equal(all[j].CreatedAt) {
+			return all[i].CreatedAt.After(all[j].CreatedAt)
+		}
+		return all[i].ID < all[j].ID
+	})
+	return pageOf(all, limit, offset), len(all), nil
+}
+
+// pageOf slices list like LIMIT/OFFSET.
+func pageOf[T any](list []T, limit, offset int) []T {
+	if offset >= len(list) {
+		return []T{}
+	}
+	return list[offset:min(len(list), offset+limit)]
+}
+
 func (f *ownedSandboxes) Delete(ctx context.Context, u store.User, id string) (store.Sandbox, error) {
 	sb, err := f.Get(ctx, u, id)
 	if err != nil {
@@ -124,24 +145,13 @@ func TestUIListShowsOnlyOwnLiveSandboxes(t *testing.T) {
 	if strings.Contains(body, "sb-bob") {
 		t.Fatal("another user's sandbox listed")
 	}
-	if !strings.Contains(body, `hx-get="/ui/sandboxes/rows"`) || !strings.Contains(body, `hx-trigger="every 5s"`) {
-		t.Fatal("list doesn't auto-refresh")
+	// Nothing refreshes on its own (step 4.6): a Refresh link instead.
+	if strings.Contains(body, "hx-") || strings.Contains(body, "htmx") || !strings.Contains(body, `<a href="/ui/">Refresh</a>`) {
+		t.Fatal("list should have a Refresh link and no auto-refresh")
 	}
 	ended := uiDo(h, http.MethodGet, "/ui/?ended=1", nil, alice).Body.String()
-	if !strings.Contains(ended, "sb-alice0000old") || !strings.Contains(ended, `hx-get="/ui/sandboxes/rows?ended=1"`) {
-		t.Fatal("?ended=1 doesn't show ended sandboxes or keep the filter on refresh")
-	}
-}
-
-// The refresh endpoint returns just the table, not a whole page.
-func TestUIRowsPartial(t *testing.T) {
-	rec := uiDo(sandboxUI(aliceAndBob(), ""), http.MethodGet, "/ui/sandboxes/rows", nil, alice)
-	body := rec.Body.String()
-	if rec.Code != http.StatusOK || !strings.Contains(body, "sb-alice0000001") {
-		t.Fatalf("rows = %d:\n%s", rec.Code, body)
-	}
-	if strings.Contains(body, "<html") || strings.Contains(body, "New sandbox") {
-		t.Fatal("rows partial contains the whole page")
+	if !strings.Contains(ended, "sb-alice0000old") || !strings.Contains(ended, `<a href="/ui/?ended=1">Refresh</a>`) {
+		t.Fatal("?ended=1 doesn't show ended sandboxes or keep the filter on Refresh")
 	}
 }
 
@@ -175,6 +185,20 @@ func TestUICreateSandboxError(t *testing.T) {
 	}
 }
 
+// The error page after a failed create is the list as at /ui/: its links
+// must not point at POST-only /ui/sandboxes (review of #56).
+func TestUICreateErrorPageLinks(t *testing.T) {
+	body := uiDo(sandboxUI(manyFor(60), ""), http.MethodPost, "/ui/sandboxes", url.Values{
+		"image": {"ubuntu-dev"}, "ssh_public_key": {"not-a-key"}, "ttl_hours": {"8"},
+	}, alice).Body.String()
+	if !strings.Contains(body, `<a href="/ui/">Refresh</a>`) || !strings.Contains(body, `href="/ui/?page=2"`) {
+		t.Fatal("Refresh/pager links don't point at /ui/")
+	}
+	if strings.Contains(body, `href="/ui/sandboxes?`) || strings.Contains(body, `href="/ui/sandboxes"`) {
+		t.Fatal("a link points at POST-only /ui/sandboxes")
+	}
+}
+
 func TestUIDetailPage(t *testing.T) {
 	h := sandboxUI(aliceAndBob(), "192.168.64.2:30022")
 	body := uiDo(h, http.MethodGet, "/ui/sandboxes/sb-alice0000001", nil, alice).Body.String()
@@ -183,7 +207,7 @@ func TestUIDetailPage(t *testing.T) {
 		`data-copy="ssh-cmd"`,
 		"ubuntu-dev", "in 50m", "3m ago",
 		`action="/ui/sandboxes/sb-alice0000001/delete"`, `data-confirm=`,
-		`hx-get="/ui/sandboxes/sb-alice0000001/status"`, // live: status refreshes
+		`<a href="/ui/sandboxes/sb-alice0000001">Refresh</a>`, // refreshed by hand
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("detail page missing %q", want)
@@ -204,7 +228,6 @@ func TestUIOtherUsersSandboxIsNotFound(t *testing.T) {
 	h := sandboxUI(svc, "")
 	for _, r := range []struct{ method, path string }{
 		{http.MethodGet, "/ui/sandboxes/sb-bob000000001"},
-		{http.MethodGet, "/ui/sandboxes/sb-bob000000001/status"},
 		{http.MethodPost, "/ui/sandboxes/sb-bob000000001/delete"},
 	} {
 		var form url.Values
@@ -240,19 +263,6 @@ func TestUIDeleteNeedsPOST(t *testing.T) {
 	}
 }
 
-// When the session is gone, an htmx auto-refresh gets HX-Redirect (so the
-// whole page goes to login) instead of a redirect whose login page htmx
-// would paste into the table.
-func TestUIHtmxRefreshWithoutSession(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/ui/sandboxes/rows", nil)
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	sandboxUI(aliceAndBob(), "").ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized || rec.Header().Get("HX-Redirect") != "/ui/login" {
-		t.Fatalf("= %d HX-Redirect %q, want 401 + HX-Redirect /ui/login", rec.Code, rec.Header().Get("HX-Redirect"))
-	}
-}
-
 func TestSSHCommand(t *testing.T) {
 	for gateway, want := range map[string]string{
 		"192.168.64.2:30022": "ssh -p 30022 sb-x@192.168.64.2",
@@ -282,18 +292,6 @@ func TestHumanDuration(t *testing.T) {
 	}
 }
 
-// htmx and the dashboard script are served from our own origin (the CSP
-// allows nothing else).
-func TestUIServesScripts(t *testing.T) {
-	h := sandboxUI(aliceAndBob(), "")
-	for _, f := range []string{"htmx.min.js", "app.js"} {
-		rec := uiDo(h, http.MethodGet, "/ui/static/"+f, nil, nil)
-		if rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Content-Type"), "javascript") {
-			t.Errorf("%s = %d %q", f, rec.Code, rec.Header().Get("Content-Type"))
-		}
-	}
-}
-
 // Only the offered lifetimes are accepted: a missing or bogus value must
 // not silently become the 1 h default.
 func TestUICreateRejectsBadLifetime(t *testing.T) {
@@ -318,23 +316,6 @@ func TestUntil(t *testing.T) {
 	}
 	if got := until(time.Now().Add(50*time.Minute + 10*time.Second)); got != "in 50m" {
 		t.Errorf("until(+50m) = %q", got)
-	}
-}
-
-// The status card (the htmx refresh) carries the Delete button and its own
-// polling, so both disappear in place once the sandbox ends.
-func TestUIStatusPartial(t *testing.T) {
-	h := sandboxUI(aliceAndBob(), "")
-	live := uiDo(h, http.MethodGet, "/ui/sandboxes/sb-alice0000001/status", nil, alice).Body.String()
-	if !strings.Contains(live, `hx-get="/ui/sandboxes/sb-alice0000001/status"`) || !strings.Contains(live, "/delete") {
-		t.Errorf("live status partial lacks polling or delete:\n%s", live)
-	}
-	if strings.Contains(live, "<html") {
-		t.Error("status partial is a whole page")
-	}
-	ended := uiDo(h, http.MethodGet, "/ui/sandboxes/sb-alice0000old/status", nil, alice).Body.String()
-	if strings.Contains(ended, "hx-get") || strings.Contains(ended, "/delete") {
-		t.Errorf("ended status partial still polls or offers delete:\n%s", ended)
 	}
 }
 
@@ -515,7 +496,7 @@ func TestUISandboxPagesSurviveKeyListFailure(t *testing.T) {
 	for name, keys := range map[string]KeyService{"list fails": failingListKeys{aliceKeys()}, "no keys service": nil} {
 		h := NewHandler(Deps{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DB: fakeDB{},
 			Auth: uiAuth{}, Sandboxes: sb, Keys: keys})
-		for _, path := range []string{"/ui/", "/ui/sandboxes/rows", "/ui/sandboxes/sb-alice0000001", "/ui/sandboxes/sb-alice0000001/status"} {
+		for _, path := range []string{"/ui/", "/ui/?ended=1", "/ui/sandboxes/sb-alice0000001"} {
 			rec := uiDo(h, http.MethodGet, path, nil, aliceSession)
 			if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "browser (sk_aliceAAA…)") ||
 				strings.Contains(rec.Body.String(), "#key-") {

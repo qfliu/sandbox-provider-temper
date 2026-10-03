@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -52,6 +53,12 @@ type page struct {
 	Error string
 	// Which optional sections exist (for the nav); set by render.
 	HasKeys, HasAdmin bool
+	// Self is the page's own URL, for its Refresh link (nothing refreshes
+	// on its own, step 4.6).
+	Self string
+	// Pager is the main list's pagination (50 per page); UserPager is the
+	// admin users table's.
+	Pager, UserPager pager
 
 	// Sandbox list and create form.
 	Sandboxes  []store.Sandbox
@@ -80,7 +87,6 @@ type page struct {
 	// Admin view.
 	Users        []store.UserSummary
 	AllSandboxes []store.OwnedSandbox
-	Truncated    bool // more sandboxes exist than are listed
 }
 
 // createForm keeps what the user typed when the form is shown again with
@@ -179,7 +185,7 @@ func humanDuration(d time.Duration) string {
 func newUI(log *slog.Logger, auth Authenticator, sandboxes SandboxService, keys KeyService, admin AdminService, gateway string) *ui {
 	u := &ui{log: log, auth: auth, sandboxes: sandboxes, keys: keys, admin: admin, gateway: gateway, pages: map[string]*template.Template{}}
 	u.setLimits(0, 0)
-	partials := []string{"templates/rows.html", "templates/status.html", "templates/admin_rows.html", "templates/keyref.html"}
+	partials := []string{"templates/rows.html", "templates/status.html", "templates/admin_rows.html", "templates/keyref.html", "templates/pager.html"}
 	for _, name := range []string{"login", "list", "detail", "keys", "admin"} {
 		files := append([]string{"templates/layout.html", "templates/" + name + ".html"}, partials...)
 		u.pages[name] = template.Must(template.New(name).Funcs(templateFuncs).ParseFS(web.Templates, files...))
@@ -206,10 +212,8 @@ func (u *ui) routes() http.Handler {
 		http.Redirect(w, r, "/ui/", http.StatusSeeOther)
 	})
 	mux.Handle("GET /ui/{$}", u.requireSession(http.HandlerFunc(u.list)))
-	mux.Handle("GET /ui/sandboxes/rows", u.requireSession(http.HandlerFunc(u.rows)))
 	mux.Handle("POST /ui/sandboxes", u.requireSession(http.HandlerFunc(u.create)))
 	mux.Handle("GET /ui/sandboxes/{id}", u.requireSession(http.HandlerFunc(u.detail)))
-	mux.Handle("GET /ui/sandboxes/{id}/status", u.requireSession(http.HandlerFunc(u.status)))
 	mux.Handle("POST /ui/sandboxes/{id}/delete", u.requireSession(http.HandlerFunc(u.delete)))
 	// Keys and Admin are optional dependencies: without them those pages
 	// don't exist (404) rather than crash.
@@ -220,7 +224,6 @@ func (u *ui) routes() http.Handler {
 	}
 	if u.admin != nil {
 		mux.Handle("GET /ui/admin", u.requireSession(requireAdmin(http.HandlerFunc(u.adminView))))
-		mux.Handle("GET /ui/admin/rows", u.requireSession(requireAdmin(http.HandlerFunc(u.adminRows))))
 	}
 	return securityHeaders(http.NewCrossOriginProtection().Handler(mux))
 }
@@ -278,15 +281,9 @@ func (u *ui) requireSession(next http.Handler) http.Handler {
 // render executes the page into a buffer first, so a template error becomes
 // a clean 500 instead of a 200 with half a page (review of #35).
 func (u *ui) render(w http.ResponseWriter, status int, name string, p page) {
-	u.renderTemplate(w, status, name, "layout", p)
-}
-
-// renderTemplate renders one named template of a page; partials (htmx
-// refreshes) use it directly.
-func (u *ui) renderTemplate(w http.ResponseWriter, status int, name, tmpl string, p page) {
 	p.HasKeys, p.HasAdmin = u.keys != nil, u.admin != nil
 	var buf bytes.Buffer
-	if err := u.pages[name].ExecuteTemplate(&buf, tmpl, p); err != nil {
+	if err := u.pages[name].ExecuteTemplate(&buf, "layout", p); err != nil {
 		u.log.Error("render page", "page", name, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -341,29 +338,27 @@ func isHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
-// toLogin sends the browser to the login page. An htmx background request
-// (auto-refresh) can't follow a plain redirect usefully, since htmx would
-// paste the login page into the table, so it gets HX-Redirect instead,
-// which makes htmx load the login page as a whole.
+// toLogin sends the browser to the login page.
 func toLogin(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", "/ui/login")
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
 	http.Redirect(w, r, "/ui/login", http.StatusSeeOther)
 }
 
-// listPage loads the signed-in user's sandboxes for the list page.
+// listPage loads one page of the signed-in user's sandboxes for the list
+// page (50 per page, step 4.6).
 func (u *ui) listPage(r *http.Request) (page, error) {
 	user := userFrom(r.Context())
 	showEnded := r.URL.Query().Get("ended") == "1"
-	list, err := u.sandboxes.List(r.Context(), user, showEnded)
+	n := requestedPage(r, "page")
+	list, total, err := u.sandboxes.ListPage(r.Context(), user, showEnded, pageSize, (n-1)*pageSize)
+	if err == nil && n > pages(total) { // past the end: show the last page
+		n = clampPage(n, total)
+		list, total, err = u.sandboxes.ListPage(r.Context(), user, showEnded, pageSize, (n-1)*pageSize)
+	}
 	if err != nil {
 		return page{}, err
 	}
 	return page{ActiveKeys: u.activeKeys(r, user),
-		Title: "Your sandboxes", User: &user,
+		Title: "Your sandboxes", User: &user, Pager: newPager(r, "page", n, total), Self: selfURL(r),
 		Sandboxes: list, ShowEnded: showEnded,
 		Images: sandbox.Images, TTLChoices: u.ttlChoices, IdleFor: humanDuration(u.idleTimeout),
 		Form: createForm{Image: sandbox.Images[0], TTLHours: 1},
@@ -377,16 +372,6 @@ func (u *ui) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.render(w, http.StatusOK, "list", p)
-}
-
-// rows is the list's table alone, for the htmx auto-refresh.
-func (u *ui) rows(w http.ResponseWriter, r *http.Request) {
-	p, err := u.listPage(r)
-	if err != nil {
-		u.fail(w, r, err)
-		return
-	}
-	u.renderTemplate(w, http.StatusOK, "list", "rows", p)
 }
 
 func (u *ui) create(w http.ResponseWriter, r *http.Request) {
@@ -410,7 +395,11 @@ func (u *ui) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		status, msg := serviceError(u.log, err)
-		p, listErr := u.listPage(r)
+		// The list as at GET /ui/: its Refresh and pager links come from the
+		// request URL, and this one (POST /ui/sandboxes) can't be fetched.
+		get := r.Clone(r.Context())
+		get.URL = &url.URL{Path: "/ui/"}
+		p, listErr := u.listPage(get)
 		if listErr != nil {
 			u.fail(w, r, listErr)
 			return
@@ -453,7 +442,7 @@ func (u *ui) detailPage(r *http.Request) (page, error) {
 	if sb.UserID == user.ID { // keys page links only make sense for your own
 		active = u.activeKeys(r, user)
 	}
-	return page{ActiveKeys: active,
+	return page{ActiveKeys: active, Self: selfURL(r),
 		Title: sb.ID, User: &user, Sandbox: sb,
 		SSHCommand: sshCommand(sb.ID, u.gateway), GatewaySet: gatewaySet(u.gateway),
 	}, err
@@ -466,16 +455,6 @@ func (u *ui) detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.render(w, http.StatusOK, "detail", p)
-}
-
-// status is the detail page's status card alone, for the htmx refresh.
-func (u *ui) status(w http.ResponseWriter, r *http.Request) {
-	p, err := u.detailPage(r)
-	if err != nil {
-		u.fail(w, r, err)
-		return
-	}
-	u.renderTemplate(w, http.StatusOK, "detail", "status", p)
 }
 
 func (u *ui) delete(w http.ResponseWriter, r *http.Request) {
@@ -499,11 +478,6 @@ func (u *ui) delete(w http.ResponseWriter, r *http.Request) {
 func requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !userFrom(r.Context()).IsAdmin {
-			if r.Header.Get("HX-Request") == "true" {
-				// A demoted admin's open admin page: htmx doesn't swap
-				// errors, so it would keep showing the old table. Leave.
-				w.Header().Set("HX-Redirect", "/ui/")
-			}
 			http.NotFound(w, r)
 			return
 		}
@@ -511,40 +485,42 @@ func requireAdmin(next http.Handler) http.Handler {
 	})
 }
 
-// adminPage loads every user and sandbox for the admin view (D43).
-func (u *ui) adminPage(r *http.Request, withUsers bool) (page, error) {
+// adminPage loads one page of users (?upage=) and one page of sandboxes
+// (?page=) for the admin view (D43; 50 per page, step 4.6).
+func (u *ui) adminPage(r *http.Request) (page, error) {
 	user := userFrom(r.Context())
-	p := page{Title: "Admin", User: &user, ShowEnded: r.URL.Query().Get("ended") == "1"}
-	var err error
-	if p.AllSandboxes, err = u.admin.ListAllSandboxes(r.Context(), p.ShowEnded); err != nil {
+	p := page{Title: "Admin", User: &user, ShowEnded: r.URL.Query().Get("ended") == "1", Self: selfURL(r)}
+	ctx := r.Context()
+	n := requestedPage(r, "page")
+	all, total, err := u.admin.ListAllSandboxes(ctx, p.ShowEnded, pageSize, (n-1)*pageSize)
+	if err == nil && n > pages(total) {
+		n = clampPage(n, total)
+		all, total, err = u.admin.ListAllSandboxes(ctx, p.ShowEnded, pageSize, (n-1)*pageSize)
+	}
+	if err != nil {
 		return p, err
 	}
-	if len(p.AllSandboxes) > store.MaxAdminSandboxes {
-		p.AllSandboxes, p.Truncated = p.AllSandboxes[:store.MaxAdminSandboxes], true
+	p.AllSandboxes, p.Pager = all, newPager(r, "page", n, total)
+	un := requestedPage(r, "upage")
+	users, utotal, err := u.admin.ListUsers(ctx, pageSize, (un-1)*pageSize)
+	if err == nil && un > pages(utotal) {
+		un = clampPage(un, utotal)
+		users, utotal, err = u.admin.ListUsers(ctx, pageSize, (un-1)*pageSize)
 	}
-	if withUsers {
-		p.Users, err = u.admin.ListUsers(r.Context())
+	if err != nil {
+		return p, err
 	}
-	return p, err
+	p.Users, p.UserPager = users, newPager(r, "upage", un, utotal)
+	return p, nil
 }
 
 func (u *ui) adminView(w http.ResponseWriter, r *http.Request) {
-	p, err := u.adminPage(r, true)
+	p, err := u.adminPage(r)
 	if err != nil {
 		u.fail(w, r, err)
 		return
 	}
 	u.render(w, http.StatusOK, "admin", p)
-}
-
-// adminRows is the admin sandbox table alone, for the htmx auto-refresh.
-func (u *ui) adminRows(w http.ResponseWriter, r *http.Request) {
-	p, err := u.adminPage(r, false)
-	if err != nil {
-		u.fail(w, r, err)
-		return
-	}
-	u.renderTemplate(w, http.StatusOK, "admin", "admin_rows", p)
 }
 
 // maxKeyNameLen bounds a key's label.
@@ -567,8 +543,13 @@ func checkKeyName(name string) string {
 // session uses.
 func (u *ui) keysPage(r *http.Request) (page, error) {
 	user := userFrom(r.Context())
-	keys, err := u.keys.ListAPIKeys(r.Context(), user.ID)
-	p := page{Title: "API keys", User: &user, Keys: keys}
+	n := requestedPage(r, "page")
+	keys, total, err := u.keys.ListAPIKeysPage(r.Context(), user.ID, pageSize, (n-1)*pageSize)
+	if err == nil && n > pages(total) {
+		n = clampPage(n, total)
+		keys, total, err = u.keys.ListAPIKeysPage(r.Context(), user.ID, pageSize, (n-1)*pageSize)
+	}
+	p := page{Title: "API keys", User: &user, Keys: keys, Pager: newPager(r, "page", n, total), Self: selfURL(r)}
 	if r.URL.Query().Get("error") == "last-key" { // a fixed code, never echoed text
 		p.Error = "You can't revoke your only API key. Create another one first."
 	}
@@ -639,20 +620,9 @@ func (u *ui) revokeKey(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/keys", http.StatusSeeOther)
 }
 
-// fail shows a service error as a plain error page. For an htmx refresh it
-// sends just the status, which leaves the current content in place (fine
-// for a passing error); but if the thing being refreshed is gone or no
-// longer visible (404), the page would freeze on stale data, so htmx is
-// told to go back to the list instead.
-func (u *ui) fail(w http.ResponseWriter, r *http.Request, err error) {
+// fail shows a service error as a plain error page.
+func (u *ui) fail(w http.ResponseWriter, _ *http.Request, err error) {
 	status, msg := serviceError(u.log, err)
-	if r.Header.Get("HX-Request") == "true" {
-		if status == http.StatusNotFound {
-			w.Header().Set("HX-Redirect", "/ui/")
-		}
-		w.WriteHeader(status)
-		return
-	}
 	http.Error(w, msg, status)
 }
 

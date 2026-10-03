@@ -118,6 +118,33 @@ func (s *Store) ListAPIKeys(ctx context.Context, userID string) ([]APIKey, error
 	return keys, rows.Err()
 }
 
+// ListAPIKeysPage is one page of a user's active keys, newest first, and
+// how many there are in all (dashboard pagination, step 4.6).
+func (s *Store) ListAPIKeysPage(ctx context.Context, userID string, limit, offset int) ([]APIKey, int, error) {
+	var total int
+	if err := s.pool.QueryRow(ctx,
+		"SELECT count(*) FROM api_keys WHERE user_id = $1 AND revoked_at IS NULL", userID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id::text, user_id::text, name, prefix, created_at, last_used_at
+		FROM api_keys WHERE user_id = $1 AND revoked_at IS NULL
+		ORDER BY created_at DESC, id LIMIT $2 OFFSET $3`, userID, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	keys := []APIKey{}
+	for rows.Next() {
+		var k APIKey
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.Prefix, &k.CreatedAt, &k.LastUsedAt); err != nil {
+			return nil, 0, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, total, rows.Err()
+}
+
 // RevokeAPIKey revokes one of the user's active keys. It's ErrNotFound if
 // the key isn't theirs or is already revoked, and ErrLastKey if it's their
 // only active key. The user's row is locked, so two concurrent revokes of
@@ -205,17 +232,22 @@ type UserSummary struct {
 	ActiveKeys    int
 }
 
-// ListUsers returns every user with their live sandbox and active key
-// counts, by name (admin view, D43).
-func (s *Store) ListUsers(ctx context.Context) ([]UserSummary, error) {
+// ListUsers is one page of users (by name) with their live sandbox and
+// active key counts, and how many users there are in all (admin view, D43,
+// paginated in step 4.6).
+func (s *Store) ListUsers(ctx context.Context, limit, offset int) ([]UserSummary, int, error) {
+	var total int
+	if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM users").Scan(&total); err != nil {
+		return nil, 0, err
+	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+userColumns+`,
 			(SELECT count(*) FROM sandboxes s WHERE s.user_id = users.id
 				AND s.status IN ('pending', 'running', 'deleting')),
 			(SELECT count(*) FROM api_keys k WHERE k.user_id = users.id AND k.revoked_at IS NULL)
-		FROM users ORDER BY name`)
+		FROM users ORDER BY name LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	list := []UserSummary{}
@@ -223,9 +255,9 @@ func (s *Store) ListUsers(ctx context.Context) ([]UserSummary, error) {
 		var u UserSummary
 		if err := rows.Scan(&u.ID, &u.Name, &u.IsAdmin, &u.MaxSandboxes, &u.CreatedAt,
 			&u.LiveSandboxes, &u.ActiveKeys); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		list = append(list, u)
 	}
-	return list, rows.Err()
+	return list, total, rows.Err()
 }
