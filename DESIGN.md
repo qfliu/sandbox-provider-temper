@@ -227,6 +227,7 @@ Update checkboxes as work progresses. **Workflow:** one branch and one PR **per 
 - [ ] 6.1 Helm chart in `code/deploy/helm/` (API, gateway, Postgres, RBAC, NetworkPolicies, pre-pull DaemonSet)
 - [ ] 6.2 One-command flow: `up.sh` (cluster + build + install), `demo.sh` (end-to-end walkthrough), `down.sh`
 - [ ] 6.3 `README.md`: quickstart, API reference, architecture diagram, measured startup numbers, uninstall steps
+- [ ] 6.5 Prove the image pre-pull (D46) really downloads: on minikube the images are built on the node, so the DaemonSet only ever saw "already present". (a) Stand-in check: remove a public image (e.g. busybox) from the node, point a copy of the DaemonSet at it, expect "Pulling … Successfully pulled", then a normal pod with it shows "already present on machine". (b) Real numbers: push the sandbox images to minikube's registry addon, clear them from the node, and time the first sandbox on a fresh node with and without pre-pull for the README. (Follow-up decided 2026-10-03, after #46.)
 - [ ] 6.4 Write-up of trade-offs and next steps: agent-sandbox (D27), gVisor vs. Kata/Firecracker, SSH certificates, in-sandbox daemon, warm pool, persistent disks / pause-resume, Tailscale (D16), cloud deployment plan (D10 step 2), Python-vs-Go note
 - **Done when:** a reviewer can clone the repo, run the scripts and reproduce the demo. → **PR 6**
 
