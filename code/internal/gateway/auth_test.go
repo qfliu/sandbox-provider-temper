@@ -27,7 +27,7 @@ type fakeSandboxes struct {
 	touchDelay time.Duration
 }
 
-func (f *fakeSandboxes) TouchSandbox(ctx context.Context, _ string) error {
+func (f *fakeSandboxes) RecordSSHActivity(ctx context.Context, _ string) error {
 	if f.touchDelay > 0 { // a slow database
 		select {
 		case <-time.After(f.touchDelay):

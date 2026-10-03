@@ -25,9 +25,9 @@ import (
 // (implemented by store.Store; faked in tests).
 type SandboxLookup interface {
 	GetSandbox(ctx context.Context, id string) (store.Sandbox, error)
-	// TouchSandbox bumps last_activity_at, so the idle reaper (D9, D32)
-	// counts open SSH sessions as activity.
-	TouchSandbox(ctx context.Context, id string) error
+	// RecordSSHActivity marks an SSH session on the sandbox as open, so
+	// the idle reaper (D9, D32) counts it as activity (D36).
+	RecordSSHActivity(ctx context.Context, id string) error
 }
 
 // lookupTimeout bounds the database lookup for one authentication attempt.
