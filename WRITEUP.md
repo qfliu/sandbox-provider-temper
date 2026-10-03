@@ -74,7 +74,8 @@ applies (D45).
 - **How it works:** the gateway checks the client's key against the one given
   at create, then proxies to the pod. It's stateless, so it scales
   horizontally behind one address. It also limits connections overall, per
-  client and per sandbox.
+  sandbox, and per client while they are still in the SSH handshake (so it
+  stops unauthenticated floods, not many logged-in users behind one NAT).
 - **Caveat 1, client IP:** the per-client limit needs the real client IP. The
   Service uses `externalTrafficPolicy: Local` for that. Behind a cloud load
   balancer that hides it, use the PROXY protocol or a network load balancer
@@ -113,8 +114,11 @@ applies (D45).
 
 ## Reliability
 
-- **Platform:** API and gateway run 2 replicas each, are stateless and drain
-  on shutdown. Migrations are safe with several replicas.
+- **Platform:** API and gateway run 2 replicas each and are stateless. On
+  shutdown the API drains in-flight requests; the gateway keeps accepting
+  for 5 s while it leaves the Service, then ends its open SSH sessions
+  (clients reconnect to another replica). Migrations are safe with several
+  replicas.
 - **Postgres:** one replica on a persistent volume. A managed, highly
   available Postgres is the production step.
 - **Sandbox lifetime:** expired or idle sandboxes are reaped every 30 s, and
@@ -131,11 +135,10 @@ applies (D45).
   - the readiness probe runs every second;
   - each sandbox requests 1 GiB of ephemeral storage, not the full 5 GiB
     limit, which had capped the node at 6 sandboxes;
-  - sshd log noise is turned down;
   - the images are pre-pulled on every node (a DaemonSet).
 - **What pre-pull is worth:** proven and measured (D51). Without it, the
-  first sandbox on a node waits about 5 s even for a registry on the same
-  machine, and longer from a real one. That matters most on new autoscaled
+  first `ubuntu-dev` sandbox (218 MB) on a node waits about 5 s even for a
+  registry on the same machine, and longer from a real one. That matters most on new autoscaled
   nodes.
 - **Next steps:**
   - **Warm pool:** pods already running, assigned at create. That brings
@@ -154,6 +157,13 @@ applies (D45).
   several users, expiry and revocation without storing keys.
 - **API and Ingress:** the API is plain HTTP inside the cluster; TLS and
   Ingress are left to the deployment.
+- **Dashboard sessions:** signing in stores the API key itself in the
+  session cookie (HttpOnly, SameSite=Strict, 12 h; revoking the key ends the
+  session). A server-side sessions table, so the browser holds only a
+  random session ID, is the upgrade (D40).
+- **Admins and SSH:** admins reach anyone's sandbox through the API only;
+  the gateway accepts only the sandbox's own key (D39). Admin SSH would come
+  with SSH certificates (below) or a separate admin key the gateway trusts.
 - **Install:** Helm only via `helm upgrade --install`. Generated secrets rely
   on `lookup`, which GitOps rendering doesn't run (D52).
 - **Postgres:** no external or managed Postgres option in the chart yet.
@@ -167,8 +177,9 @@ applies (D45).
 
 ## Next steps
 
-1. **Run it in a cloud (D10, step 2).** EKS or AKS with an arm64 (Graviton or
-   Ampere) or amd64 node pool:
+1. **Run it in a cloud (D10, step 2).** Managed EKS or AKS, or k3s on VMs via
+   Terraform (still open in D10), with an arm64 (Graviton or Ampere) or
+   amd64 node pool:
    - **gVisor:** install it through the node image or a privileged installer
      DaemonSet.
    - **Images:** push the platform and sandbox images to ECR/ACR (buildx for
@@ -194,6 +205,9 @@ applies (D45).
      option 1.
 8. **Harder isolation tier:** Kata Containers or Firecracker node pools for
    tenants that need a VM boundary, selected per sandbox by RuntimeClass.
+   Installed by us on bare-metal or nested-virtualization nodes, not a
+   managed sandboxing feature such as AKS Pod Sandboxing or GKE Sandbox,
+   which the brief rules out (D10).
 
 ## How it was built
 
