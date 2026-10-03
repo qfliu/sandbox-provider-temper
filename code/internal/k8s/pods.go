@@ -247,8 +247,10 @@ var SandboxCapabilities = []corev1.Capability{
 }
 
 // SandboxSecurityContext is the sandbox container's security context: drop
-// all capabilities but SandboxCapabilities, and the runtime's default
-// seccomp filter on top of gVisor. Privilege escalation stays allowed
+// all capabilities but SandboxCapabilities, and the RuntimeDefault seccomp
+// profile (not applied under gVisor, whose own syscall filter is the
+// barrier; it applies if a pod ever runs on another runtime, D45).
+// Privilege escalation stays allowed
 // because sudo (setuid) is part of the sandbox (D2): the user is meant to
 // be root inside their own gVisor sandbox.
 func SandboxSecurityContext() *corev1.SecurityContext {
