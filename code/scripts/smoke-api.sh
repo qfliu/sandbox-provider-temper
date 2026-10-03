@@ -3,9 +3,10 @@
 # it: against the API deployed in the cluster, over HTTP with an API key.
 # Prints PASS/FAIL per check and exits non-zero if anything failed.
 #
-# It uses a dedicated "smoke-test" user (created on first run) and a second
-# throwaway user for the isolation checks, and deletes every sandbox it
-# creates.
+# It uses two fixed users, "smoke-test" and "smoke-other" (for the isolation
+# checks), created on first run. Their API keys are cached in
+# .devenv/state/smoke-keys/ and reused while valid, so repeated runs don't
+# pile up users or keys. Every sandbox it creates is deleted.
 #
 # Usage (from the project root, after cluster-up / deploy-postgres /
 # deploy-api):
@@ -28,7 +29,8 @@ check() { # check "<name>" <condition...>
 section() { printf "\n%s\n" "$1"; }
 
 # json <file> <python expression over d>, e.g. json out.json "d['status']"
-json() { python3 -c "import json,sys; d=json.load(open('$1')); print($2)" 2>/dev/null; }
+# (the path is passed as an argument, never pasted into the Python source)
+json() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$1" 2>/dev/null; }
 
 # req <key> <method> <path> [curl args...] → body in $TMP/out, status in $CODE
 req() {
@@ -38,7 +40,9 @@ req() {
 }
 
 cleanup() {
-	for id in "${SANDBOXES[@]}"; do
+	# ${arr[@]+...}: macOS's bash 3.2 treats an empty array as unset under
+	# set -u, which would abort cleanup and leak the port-forward/temp dir.
+	for id in ${SANDBOXES[@]+"${SANDBOXES[@]}"}; do
 		curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $KEY" "$API/sandboxes/$id" || true
 	done
 	[ -n "${PF:-}" ] && { kill "$PF"; wait "$PF"; } 2>/dev/null
@@ -47,19 +51,52 @@ cleanup() {
 trap cleanup EXIT
 
 # --- setup -------------------------------------------------------------------
+die() { printf "setup failed: %s\n" "$1" >&2; exit 1; }
+
+# Fail fast (instead of minute-long kubectl waits and 27 confusing failures)
+# if the API isn't deployed and ready.
+READY=$(kubectl -n sandbox-system get deploy sandbox-api -o jsonpath='{.status.readyReplicas}' 2>&1) ||
+	die "can't read deployment sandbox-api: $READY (run deploy-api.sh)"
+[ "${READY:-0}" -ge 1 ] 2>/dev/null || die "sandbox-api has no ready pods (run deploy-api.sh)"
+
 kubectl -n sandbox-system port-forward svc/sandbox-api "$PORT:80" >/dev/null 2>&1 &
 PF=$!
-for _ in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$PORT/healthz" && break; sleep 0.25; done
+UP=""
+DEADLINE=$((SECONDS + 10)) # total wait, however long each probe takes
+while [ "$SECONDS" -lt "$DEADLINE" ]; do
+	curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/healthz" && { UP=yes; break; }
+	kill -0 "$PF" 2>/dev/null || break # port-forward died (e.g. port $PORT in use)
+	sleep 0.25
+done
+[ -n "$UP" ] || die "API not reachable on 127.0.0.1:$PORT (port in use? set SMOKE_PORT)"
+
+kexec() { kubectl -n sandbox-system exec --pod-running-timeout=10s deploy/sandbox-api -- /api "$@"; }
 
 new_key() { # new_key <user>: an API key for <user>, creating the user if needed
 	local out
-	out=$(kubectl -n sandbox-system exec deploy/sandbox-api -- /api create-user --name "$1" 2>/dev/null) ||
-		out=$(kubectl -n sandbox-system exec deploy/sandbox-api -- /api create-key --user "$1" --name smoke 2>/dev/null)
+	if ! out=$(kexec create-user --name "$1" 2>&1); then
+		grep -q "already exists" <<<"$out" || { echo "create-user $1: $out" >&2; return 1; }
+		out=$(kexec create-key --user "$1" --name smoke 2>&1) || { echo "create-key $1: $out" >&2; return 1; }
+	fi
 	printf '%s\n' "$out" | tail -1
 }
-KEY=$(new_key smoke-test)
-OTHER=$(new_key "smoke-other-$(date +%s)")
-[[ "$KEY" == sk_* && "$OTHER" == sk_* ]] || { echo "could not get API keys (is the API deployed?)"; exit 1; }
+# cached_key <user>: reuse the cached key if the API still accepts it,
+# otherwise get a new one and cache it.
+KEYDIR="$ROOT/.devenv/state/smoke-keys"
+cached_key() {
+	local f="$KEYDIR/$1" key
+	if [ -s "$f" ]; then
+		key=$(cat "$f")
+		[ "$(curl -s -m 5 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $key" "$API/me")" = 200 ] &&
+			{ printf '%s\n' "$key"; return; }
+	fi
+	key=$(new_key "$1") || return 1
+	(umask 077 && mkdir -p "$KEYDIR" && printf '%s\n' "$key" >"$f")
+	printf '%s\n' "$key"
+}
+KEY=$(cached_key smoke-test) && OTHER=$(cached_key smoke-other) ||
+	die "could not get API keys (see the error above)"
+[[ "$KEY" == sk_* && "$OTHER" == sk_* ]] || die "unexpected key output"
 ssh-keygen -q -t ed25519 -N "" -C smoke -f "$TMP/id"
 SSH_PUB=$(cat "$TMP/id.pub")
 printf "smoke test against %s (user smoke-test)\n" "$API"
@@ -75,12 +112,15 @@ check "valid key → 200, user smoke-test" test "$CODE $(json "$TMP/out" "d['nam
 
 # --- validation --------------------------------------------------------------
 section "validation"
+# Match the error message too, so an unrelated 400 (e.g. a malformed
+# body) can't pass for the validation being tested.
+err_is() { test "$CODE" = 400 && grep -q "$1" "$TMP/out"; }
 req "$KEY" POST /sandboxes -d "{\"image\":\"alpine\",\"ssh_public_key\":\"$SSH_PUB\"}"
-check "unknown image → 400" test "$CODE" = 400
+check "unknown image → 400" err_is "image must be one of"
 req "$KEY" POST /sandboxes -d "{\"image\":\"ubuntu-dev\",\"ssh_public_key\":\"$SSH_PUB\",\"ttl_seconds\":10}"
-check "TTL below 60 s → 400" test "$CODE" = 400
+check "TTL below 60 s → 400" err_is "ttl_seconds must be between"
 req "$KEY" POST /sandboxes -d '{"image":"ubuntu-dev","ssh_public_key":"not a key"}'
-check "invalid SSH key → 400" test "$CODE" = 400
+check "invalid SSH key → 400" err_is "ssh_public_key must be"
 
 # --- lifecycle ---------------------------------------------------------------
 section "lifecycle"
@@ -126,7 +166,8 @@ check "upload 1 MiB → 200" test "$CODE $(json "$TMP/out" "d['size']")" = "200 
 exec_cmd '{"command":"sha256sum smoke/blob.bin | cut -d\" \" -f1"}'
 check "sha256 inside matches" test "$(json "$TMP/out" "d['stdout'].strip()")" = "$LOCAL_SHA"
 CODE=$(curl -s -o "$TMP/back" -w '%{http_code}' -H "Authorization: Bearer $KEY" "$API/sandboxes/$ID/files?path=/home/user/smoke/blob.bin")
-check "download is byte-identical" cmp -s "$TMP/blob" "$TMP/back"
+LAST="HTTP $CODE, $(wc -c <"$TMP/back" | tr -d ' ') bytes"
+check "download → 200, byte-identical" eval 'test "$CODE" = 200 && cmp -s "$TMP/blob" "$TMP/back"'
 req "$KEY" GET "/sandboxes/$ID/files?path=missing.txt"
 check "missing file → 404" test "$CODE" = 404
 req "$KEY" PUT "/sandboxes/$ID/files?path=/etc/smoke.txt" --data-binary x
@@ -134,6 +175,11 @@ check "write outside user's permissions → 403" test "$CODE" = 403
 
 # --- isolation ---------------------------------------------------------------
 section "isolation (another user)"
+# Precondition: the sandbox exists and its owner can see it. Without this,
+# an empty $ID would hit a non-existent route and the 404 checks below
+# would pass without testing anything.
+req "$KEY" GET "/sandboxes/$ID"
+check "precondition: owner sees the sandbox" test -n "$ID" -a "$CODE" = 200
 req "$OTHER" GET "/sandboxes/$ID"
 check "can't see it → 404" test "$CODE" = 404
 req "$OTHER" POST "/sandboxes/$ID/exec" -d '{"command":"id"}'
@@ -145,9 +191,12 @@ check "can't delete it → 404" test "$CODE" = 404
 section "delete"
 req "$KEY" DELETE "/sandboxes/$ID"
 check "delete → deleted, reason recorded" test "$CODE $(json "$TMP/out" "d['status']+'|'+d['status_reason']")" = "200 deleted|deleted by owner"
+# kubectl must succeed and find no pod: a kubectl error (bad kubeconfig,
+# API server down) must not count as "removed".
 GONE=""
 for _ in $(seq 1 30); do
-	kubectl -n sandboxes get pod "$ID" >/dev/null 2>&1 || { GONE=yes; break; }
+	PODS=$(kubectl -n sandboxes get pod "$ID" --ignore-not-found -o name 2>&1) && [ -z "$PODS" ] && { GONE=yes; break; }
+	LAST="kubectl: ${PODS:-pod still present}"
 	sleep 1
 done
 check "pod removed from the cluster" test "$GONE" = yes
