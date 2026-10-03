@@ -210,6 +210,7 @@ Update checkboxes as work progresses. **Workflow:** one branch and one PR **per 
 - [x] 4.3 API key management: create (shown once), revoke, can't revoke the last key (D42)
 - [x] 4.4 Admin view: all users and sandboxes (auto-refresh), delete any sandbox (D43)
 - [x] 4.5 Record which API key created each sandbox and show it: `/v1` (`created_by_key`), the user's list, the detail page, the admin view (D44)
+- [ ] 4.6 Pagination, 50 per page with page numbers (`?page=N`, "Page 3 of 12", bad/huge numbers clamp to the last page) for the admin "all sandboxes" list and the user's list with ended sandboxes; the "Show ended" filter carries through. **No auto-refresh on these lists**: a **Refresh** button instead (the user refreshes when they want). Decided 2026-10-03; done together with step 6.5 (pre-pull download test), after the open PRs (#47–#55) are reviewed.
 - **Done when:** everything the API can do for sandboxes and keys can be done from the browser. → PRs #35–#38, review fixes #39–#42, step 4.5 #43
 
 ### Phase 5: Hardening + scale (~1 h) — one branch/PR per step
@@ -227,7 +228,7 @@ Update checkboxes as work progresses. **Workflow:** one branch and one PR **per 
 - [ ] 6.1 Helm chart in `code/deploy/helm/` (API, gateway, Postgres, RBAC, NetworkPolicies, pre-pull DaemonSet)
 - [ ] 6.2 One-command flow: `up.sh` (cluster + build + install), `demo.sh` (end-to-end walkthrough), `down.sh`
 - [ ] 6.3 `README.md`: quickstart, API reference, architecture diagram, measured startup numbers, uninstall steps
-- [ ] 6.5 Prove the image pre-pull (D46) really downloads: on minikube the images are built on the node, so the DaemonSet only ever saw "already present". (a) Stand-in check: remove a public image (e.g. busybox) from the node, point a copy of the DaemonSet at it, expect "Pulling … Successfully pulled", then a normal pod with it shows "already present on machine". (b) Real numbers: push the sandbox images to minikube's registry addon, clear them from the node, and time the first sandbox on a fresh node with and without pre-pull for the README. (Follow-up decided 2026-10-03, after #46.)
+- [ ] 6.5 Prove the image pre-pull (D46) really downloads: on minikube the images are built on the node, so the DaemonSet only ever saw "already present". (a) Stand-in check: remove a public image (e.g. busybox) from the node, point a copy of the DaemonSet at it, expect "Pulling … Successfully pulled", then a normal pod with it shows "already present on machine". (b) Real numbers: push the sandbox images to minikube's registry addon, clear them from the node, and time the first sandbox on a fresh node with and without pre-pull for the README. (Follow-up decided 2026-10-03, after #46; done together with step 4.6.)
 - [ ] 6.4 Write-up of trade-offs and next steps: agent-sandbox (D27), gVisor vs. Kata/Firecracker, SSH certificates, in-sandbox daemon, warm pool, persistent disks / pause-resume, Tailscale (D16), cloud deployment plan (D10 step 2), Python-vs-Go note
 - **Done when:** a reviewer can clone the repo, run the scripts and reproduce the demo. → **PR 6**
 
