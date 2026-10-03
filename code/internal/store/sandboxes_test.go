@@ -449,3 +449,24 @@ func TestSandboxCreatedByKey(t *testing.T) {
 		t.Fatalf("sandbox without a key has %+v", old.CreatedByKey)
 	}
 }
+
+// The copied label outlives the key row itself: if the key is ever deleted
+// (FK sets the id to NULL), the name and prefix still show. An unnamed key
+// comes back with an empty name and its prefix.
+func TestCreatedByKeyOutlivesKeyRow(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	_, k, _ := s.CreateAPIKey(ctx, alice.ID, "")
+	n := newSandbox(alice.ID, 1)
+	n.CreatedByKey = &KeyRef{ID: k.ID, Name: k.Name, Prefix: k.Prefix}
+	sb, _ := s.CreateSandbox(ctx, n)
+	if got, _ := s.GetSandbox(ctx, sb.ID); got.CreatedByKey == nil || got.CreatedByKey.Name != "" || got.CreatedByKey.Prefix != k.Prefix {
+		t.Fatalf("unnamed key = %+v, want empty name and prefix %s", got.CreatedByKey, k.Prefix)
+	}
+	mustExec(t, s, "DELETE FROM api_keys WHERE id = $1", k.ID)
+	got, _ := s.GetSandbox(ctx, sb.ID)
+	if got.CreatedByKey == nil || got.CreatedByKey.Prefix != k.Prefix || got.CreatedByKey.ID != "" {
+		t.Fatalf("after deleting the key row: %+v, want the copied prefix and no id", got.CreatedByKey)
+	}
+}

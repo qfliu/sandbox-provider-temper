@@ -98,9 +98,11 @@ func (sc *sandboxScan) dest(extra ...any) []any {
 		&s.DeletedAt, &sc.keyID, &sc.keyName, &sc.keyPrefix}, extra...)
 }
 
+// finish fills CreatedByKey. The copied prefix is what counts: if the key
+// row is ever deleted, the FK clears only the id, and the label stays.
 func (sc *sandboxScan) finish() {
-	if sc.keyID != nil {
-		sc.s.CreatedByKey = &KeyRef{ID: *sc.keyID, Name: deref(sc.keyName), Prefix: deref(sc.keyPrefix)}
+	if sc.keyID != nil || sc.keyPrefix != nil {
+		sc.s.CreatedByKey = &KeyRef{ID: deref(sc.keyID), Name: deref(sc.keyName), Prefix: deref(sc.keyPrefix)}
 	}
 }
 

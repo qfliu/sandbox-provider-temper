@@ -401,13 +401,20 @@ func TestCreateRecordsKey(t *testing.T) {
 		t.Fatalf("/v1 create recorded %+v, want key k-good", got)
 	}
 
-	spoof := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", strings.NewReader(
-		`{"image":"ubuntu-dev","ssh_public_key":"ssh-ed25519 AAAAkey","created_by":{"id":"k-other"},"CreatedBy":{"id":"k-other"}}`))
-	spoof.Header.Set("Authorization", "Bearer "+goodKey)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, spoof)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("create with a created_by field = %d, want 400", rec.Code)
+	// The Go field name itself is not accepted from JSON (json:"-"), so a
+	// body can't name another key.
+	for _, field := range []string{"CreatedBy", "created_by"} {
+		spoof := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", strings.NewReader(
+			`{"image":"ubuntu-dev","ssh_public_key":"ssh-ed25519 AAAAkey","`+field+`":{"ID":"k-other","Name":"evil"}}`))
+		spoof.Header.Set("Authorization", "Bearer "+goodKey)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, spoof)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("create with %q in the body = %d, want 400", field, rec.Code)
+		}
+	}
+	if len(svc.created) != 1 {
+		t.Fatalf("spoofed creates went through: %+v", svc.created)
 	}
 
 	uiDo(h, http.MethodPost, "/ui/sandboxes", url.Values{
@@ -437,6 +444,21 @@ func TestUIShowsCreatedByKey(t *testing.T) {
 	// Sandboxes created before keys were recorded.
 	if body := uiDo(h, http.MethodGet, "/ui/sandboxes/sb-bob000000001", nil, root).Body.String(); !strings.Contains(body, "<dt>Created by</dt><dd>—</dd>") {
 		t.Error("missing key not shown as —")
+	}
+	// A key name is user input: escaped wherever it's shown.
+	sb.rows["sb-alice0000001"] = func() store.Sandbox {
+		s := sb.rows["sb-alice0000001"]
+		s.CreatedByKey = &store.KeyRef{ID: "k1", Name: "<script>x</script>", Prefix: "sk_vOawHfdi"}
+		return s
+	}()
+	for _, page := range []struct {
+		path string
+		c    *http.Cookie
+	}{{"/ui/", alice}, {"/ui/sandboxes/sb-alice0000001", alice}, {"/ui/admin", root}} {
+		body := uiDo(h, http.MethodGet, page.path, nil, page.c).Body.String()
+		if strings.Contains(body, "<script>x</script>") || !strings.Contains(body, "&lt;script&gt;x&lt;/script&gt;") {
+			t.Errorf("%s: key name not escaped", page.path)
+		}
 	}
 	if got := keyLabel(&store.KeyRef{Prefix: "sk_abcdefgh"}); got != "sk_abcdefgh…" {
 		t.Errorf("unnamed key label = %q", got)
