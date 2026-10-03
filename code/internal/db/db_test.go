@@ -80,7 +80,9 @@ func TestMigrateAsPlainOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	// Closed by the cleanup below, after it drops the role and schema: a
+	// deferred Close ran first and the drops silently failed, leaking a
+	// role and a schema per run (Phase 5 batch review).
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	role, schema := "test_app_"+suffix, "test_app_"+suffix
 	for _, q := range []string{
@@ -92,9 +94,12 @@ func TestMigrateAsPlainOwner(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() {
-		admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
-		admin.Exec(context.Background(), "DROP OWNED BY "+role)
-		admin.Exec(context.Background(), "DROP ROLE "+role)
+		defer admin.Close()
+		for _, q := range []string{"DROP SCHEMA " + schema + " CASCADE", "DROP OWNED BY " + role, "DROP ROLE " + role} {
+			if _, err := admin.Exec(context.Background(), q); err != nil {
+				t.Errorf("cleanup %q: %v", q, err)
+			}
+		}
 	})
 
 	cfg, err := pgxpool.ParseConfig(url)
