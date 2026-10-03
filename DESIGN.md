@@ -210,7 +210,7 @@ Update checkboxes as work progresses. **Workflow:** one branch and one PR **per 
 - [x] 4.3 API key management: create (shown once), revoke, can't revoke the last key (D42)
 - [x] 4.4 Admin view: all users and sandboxes (auto-refresh), delete any sandbox (D43)
 - [x] 4.5 Record which API key created each sandbox and show it: `/v1` (`created_by_key`), the user's list, the detail page, the admin view (D44)
-- [ ] 4.6 Pagination, 50 per page with page numbers (`?page=N`, "Page 3 of 12", bad/huge numbers clamp to the last page) for the admin "all sandboxes" list and the user's list with ended sandboxes; the "Show ended" filter carries through. **No auto-refresh on these lists**: a **Refresh** button instead (the user refreshes when they want). Decided 2026-10-03; done together with step 6.5 (pre-pull download test), after the open PRs (#47–#55) are reviewed.
+- [ ] 4.6 **Every list paginated, 50 per page** with page numbers (`?page=N`, "Page 3 of 12", bad/huge numbers clamp to the last page): the user's sandboxes (live and with ended), the admin's users table and all-sandboxes list (live and with ended), and the API keys page; filters such as "Show ended" carry through. **No auto-refresh anywhere** (lists and the sandbox page's status card): a **Refresh** button instead, to keep things simple. Removes htmx polling (the `rows`/`status`/`admin rows` partial endpoints and their session/404 redirect handling go or simplify). Decided 2026-10-03; done together with step 6.5 (pre-pull download test), after the open PRs (#47–#55) are reviewed.
 - **Done when:** everything the API can do for sandboxes and keys can be done from the browser. → PRs #35–#38, review fixes #39–#42, step 4.5 #43
 
 ### Phase 5: Hardening + scale (~1 h) — one branch/PR per step
