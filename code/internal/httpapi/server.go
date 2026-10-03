@@ -28,6 +28,15 @@ type Deps struct {
 	SSHGateway string
 	// Keys manages users' API keys from the dashboard.
 	Keys KeyService
+	// Admin lists all users and sandboxes for the dashboard's admin view.
+	Admin AdminService
+}
+
+// AdminService reads platform-wide data for admins (implemented by
+// store.Store; faked in tests). Callers must check the user is an admin.
+type AdminService interface {
+	ListUsers(ctx context.Context) ([]store.UserSummary, error)
+	ListAllSandboxes(ctx context.Context, includeEnded bool) ([]store.OwnedSandbox, error)
 }
 
 // KeyService lists, issues and revokes a user's API keys (implemented by
@@ -59,7 +68,7 @@ func NewHandler(d Deps) http.Handler {
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /readyz", handleReadyz(d.Log, d.DB))
 	mux.Handle("/v1/", requireAuth(d.Log, d.Auth, v1))
-	ui := newUI(d.Log, d.Auth, d.Sandboxes, d.Keys, d.SSHGateway).routes()
+	ui := newUI(d.Log, d.Auth, d.Sandboxes, d.Keys, d.Admin, d.SSHGateway).routes()
 	mux.Handle("/ui", ui)
 	mux.Handle("/ui/", ui)
 	return logRequests(d.Log, mux)

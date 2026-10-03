@@ -1,0 +1,27 @@
+{{define "content"}}
+<h1>Admin</h1>
+<p class="muted">Every user and sandbox on the platform. Admins can delete any sandbox; it's recorded as "deleted by admin {{.User.Name}}".</p>
+
+<h2>Users</h2>
+<table>
+  <thead><tr><th>User</th><th>Live sandboxes</th><th>Active keys</th><th>Created</th></tr></thead>
+  <tbody>
+  {{range .Users}}
+  <tr>
+    <td>{{.Name}}{{if .IsAdmin}} <span class="badge">admin</span>{{end}}</td>
+    <td>{{.LiveSandboxes}} / {{.MaxSandboxes}}</td>
+    <td>{{.ActiveKeys}}</td>
+    <td>{{ago .CreatedAt}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+
+<div class="head spaced">
+  <h2>All sandboxes</h2>
+  {{if .ShowEnded}}<a href="/ui/admin">Hide ended</a>{{else}}<a href="/ui/admin?ended=1">Show ended</a>{{end}}
+</div>
+<div id="admin-sandboxes" hx-get="/ui/admin/rows{{if .ShowEnded}}?ended=1{{end}}" hx-trigger="every 5s" hx-swap="innerHTML">
+{{template "admin_rows" .}}
+</div>
+{{end}}

@@ -189,3 +189,35 @@ func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
+
+// UserSummary is a user plus counts for the admin view.
+type UserSummary struct {
+	User
+	LiveSandboxes int
+	ActiveKeys    int
+}
+
+// ListUsers returns every user with their live sandbox and active key
+// counts, by name (admin view, D43).
+func (s *Store) ListUsers(ctx context.Context) ([]UserSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+userColumns+`,
+			(SELECT count(*) FROM sandboxes s WHERE s.user_id = users.id
+				AND s.status IN ('pending', 'running', 'deleting')),
+			(SELECT count(*) FROM api_keys k WHERE k.user_id = users.id AND k.revoked_at IS NULL)
+		FROM users ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []UserSummary{}
+	for rows.Next() {
+		var u UserSummary
+		if err := rows.Scan(&u.ID, &u.Name, &u.IsAdmin, &u.MaxSandboxes, &u.CreatedAt,
+			&u.LiveSandboxes, &u.ActiveKeys); err != nil {
+			return nil, err
+		}
+		list = append(list, u)
+	}
+	return list, rows.Err()
+}
