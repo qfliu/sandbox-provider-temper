@@ -40,36 +40,46 @@ new_sandbox() {
 		-d "{\"image\":\"ubuntu-base\",\"ssh_public_key\":\"$(cat "$TMP/k$1.pub")\"}" |
 		python3 -c "import json,sys; print(json.load(sys.stdin)['id'])"
 }
-A=$(new_sandbox a) && B=$(new_sandbox b) || { echo "could not create sandboxes"; exit 1; }
+A=$(new_sandbox a) || { echo "could not create sandbox A"; exit 1; }
+SANDBOXES=("$A")
+B=$(new_sandbox b) || { echo "could not create sandbox B"; exit 1; }
 SANDBOXES=("$A" "$B")
 kubectl -n sandboxes wait --for=condition=Ready pod/"$A" pod/"$B" --timeout=90s >/dev/null || { echo "sandboxes not ready"; exit 1; }
+s=""
 for _ in $(seq 1 30); do # the API also needs to see them running
 	s=$(curl -s -H "Authorization: Bearer $KEY" "$API/sandboxes/$A" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
 	[ "$s" = running ] && break; sleep 1
 done
+[ "$s" = running ] || { echo "sandbox $A not running in the API (status: $s)"; exit 1; }
 B_IP=$(kubectl -n sandboxes get pod "$B" -o jsonpath='{.status.podIP}')
 NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}')
 printf "sandboxes %s (tests run inside it) and %s (%s); node %s\n" "$A" "$B" "$B_IP" "$NODE_IP"
 
 # in_a <command>: run in sandbox A via the API; prints "<exit_code>|<stdout>"
+# (just "|" if the exec call itself failed)
 in_a() {
 	curl -s -H "Authorization: Bearer $KEY" -X POST "$API/sandboxes/$A/exec" \
 		-d "$(python3 -c 'import json,sys; print(json.dumps({"command": sys.argv[1], "timeout_seconds": 20}))' "$1")" |
-		python3 -c "import json,sys; d=json.load(sys.stdin); print(str(d['exit_code'])+'|'+d['stdout'].strip())"
+		python3 -c "import json,sys
+try: d=json.load(sys.stdin); print(str(d['exit_code'])+'|'+d['stdout'].strip())
+except Exception: print('|')"
 }
-# tcp_from_a <host> <port>: exit code of a 3 s TCP connect attempt from A
+# tcp_from_a <host> <port>: exit code of a 3 s TCP connect attempt from A.
+# 124 means the attempt timed out, i.e. the packets were dropped, which is
+# what a NetworkPolicy does. Anything else (0 connected, 1 refused or no
+# such name, empty if the exec failed) is not proof of a block.
 tcp_from_a() { in_a "timeout 3 bash -c '</dev/tcp/$1/$2' 2>/dev/null; echo \$?" | cut -d'|' -f2; }
 
 printf "\nfrom inside a sandbox: allowed\n"
-r=$(in_a "getent hosts pypi.org | head -1")
-[ "${r%%|*}" = 0 ] && pass "DNS (pypi.org resolves)" || fail "DNS" "$r"
+r=$(in_a "getent hosts pypi.org")
+[ "${r%%|*}" = 0 ] && [ -n "${r#*|}" ] && pass "DNS (pypi.org resolves)" || fail "DNS" "$r"
 r=$(in_a "curl -sS -m 15 -o /dev/null -w '%{http_code}' https://pypi.org/simple/")
 [ "${r#*|}" = 200 ] && pass "internet (https://pypi.org → 200)" || fail "internet" "$r"
 
 printf "\nfrom inside a sandbox: blocked\n"
 blocked() { # blocked <name> <host> <port>
 	local rc; rc=$(tcp_from_a "$2" "$3")
-	[ "$rc" != 0 ] && pass "$1 ($2:$3) blocked" || fail "$1 ($2:$3)" "connected"
+	[ "$rc" = 124 ] && pass "$1 ($2:$3) blocked" || fail "$1 ($2:$3)" "exit ${rc:-?}, want 124 (timed out)"
 }
 blocked "Postgres"              postgres.sandbox-system 5432
 blocked "control plane API"     sandbox-api.sandbox-system 80
@@ -86,10 +96,13 @@ r=$(in_a "echo ok")
 
 kubectl -n default run netpol-outsider --image=sandbox/ubuntu-base:0.1 --image-pull-policy=Never \
 	--restart=Never --command -- sleep 120 >/dev/null 2>&1
-kubectl -n default wait --for=condition=Ready pod/netpol-outsider --timeout=60s >/dev/null 2>&1
+kubectl -n default wait --for=condition=Ready pod/netpol-outsider --timeout=60s >/dev/null ||
+	{ echo "outsider pod not ready"; exit 1; }
 outsider() { kubectl -n default exec netpol-outsider -- timeout 3 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1; echo $?; }
-[ "$(outsider "$B_IP" 22)" != 0 ] && pass "unrelated pod → sandbox:22 blocked" || fail "unrelated pod → sandbox:22" "connected"
-[ "$(outsider postgres.sandbox-system 5432)" != 0 ] && pass "unrelated pod → Postgres blocked" || fail "unrelated pod → Postgres" "connected"
+rc=$(outsider "$B_IP" 22)
+[ "$rc" = 124 ] && pass "unrelated pod → sandbox:22 blocked" || fail "unrelated pod → sandbox:22" "exit $rc, want 124"
+rc=$(outsider postgres.sandbox-system 5432)
+[ "$rc" = 124 ] && pass "unrelated pod → Postgres blocked" || fail "unrelated pod → Postgres" "exit $rc, want 124"
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/readyz")
 [ "$code" = 200 ] && pass "API → Postgres still works (/readyz 200)" || fail "API → Postgres" "readyz $code"
 
