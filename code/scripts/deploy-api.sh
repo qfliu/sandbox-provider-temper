@@ -34,25 +34,46 @@ DO $$ BEGIN
   END IF;
 END $$;
 ALTER ROLE sandbox_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'pw';
--- Owning the database makes it pg_database_owner, which owns schema public
--- (Postgres 15+), so new migrations can create tables there.
-ALTER DATABASE sandbox OWNER TO sandbox_app;
--- Hand over what earlier deploys created as the superuser (tables bring
--- their indexes; ACLs such as the gateway's grants are kept).
+-- Owning the public schema is all its migrations need. The database itself
+-- stays the superuser's: a database owner could set its connection limit
+-- to 0, change database-wide settings or drop it (review of #48).
+ALTER DATABASE sandbox OWNER TO sandbox;
+ALTER SCHEMA public OWNER TO sandbox_app;
+-- Nothing database-level for ordinary roles: no new schemas and no
+-- extensions (trusted extensions need CREATE on the database), and no
+-- connecting to the maintenance databases. The superuser is unaffected.
+REVOKE CREATE ON DATABASE sandbox FROM PUBLIC;
+REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;
+REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;
+-- Hand over what earlier deploys created as the superuser. Tables bring
+-- their indexes and the sequences they own; ACLs such as the gateway's
+-- grants are kept.
 DO $$ DECLARE r record; BEGIN
   FOR r IN
     SELECT format('ALTER %s %I.%I OWNER TO sandbox_app',
-                  CASE c.relkind WHEN 'r' THEN 'TABLE' WHEN 'S' THEN 'SEQUENCE'
-                                 WHEN 'v' THEN 'VIEW' ELSE 'MATERIALIZED VIEW' END,
+                  CASE c.relkind WHEN 'S' THEN 'SEQUENCE' WHEN 'v' THEN 'VIEW'
+                                 WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'f' THEN 'FOREIGN TABLE'
+                                 ELSE 'TABLE' END,
                   n.nspname, c.relname) AS stmt
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'S', 'v', 'm')
+    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
       AND pg_get_userbyid(c.relowner) <> 'sandbox_app'
+      AND NOT (c.relkind = 'S' AND EXISTS (  -- serial/identity: follows its table
+        SELECT 1 FROM pg_depend d WHERE d.objid = c.oid AND d.deptype IN ('a', 'i')))
+      AND NOT c.relispartition               -- partitions follow their parent
   LOOP EXECUTE r.stmt; END LOOP;
   FOR r IN
-    SELECT format('ALTER FUNCTION %s OWNER TO sandbox_app', p.oid::regprocedure) AS stmt
+    SELECT format('ALTER ROUTINE %s OWNER TO sandbox_app', p.oid::regprocedure) AS stmt
     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-    WHERE n.nspname = 'public' AND pg_get_userbyid(p.proowner) <> 'sandbox_app'
+    WHERE n.nspname = 'public' AND p.prokind IN ('f', 'p')
+      AND pg_get_userbyid(p.proowner) <> 'sandbox_app'
+  LOOP EXECUTE r.stmt; END LOOP;
+  FOR r IN  -- enums, domains, standalone composite types
+    SELECT format('ALTER TYPE %I.%I OWNER TO sandbox_app', n.nspname, t.typname) AS stmt
+    FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+    WHERE n.nspname = 'public' AND t.typtype IN ('e', 'd', 'c')
+      AND (t.typtype <> 'c' OR (SELECT relkind FROM pg_class WHERE oid = t.typrelid) = 'c')
+      AND pg_get_userbyid(t.typowner) <> 'sandbox_app'
   LOOP EXECUTE r.stmt; END LOOP;
 END $$;
 SQL
