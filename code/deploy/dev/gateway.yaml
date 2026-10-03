@@ -47,8 +47,10 @@ spec:
         - {name: GATEWAY_LISTEN_ADDR, value: ":2222"}
         - {name: GATEWAY_HOST_KEY_FILE, value: /keys/host/ssh_host_ed25519_key}
         - {name: SANDBOX_INTERNAL_KEY_FILE, value: /keys/internal/id}
-        # Connection limits (D49): total, per client IP (counted from
-        # accept, so unauthenticated floods too), per sandbox.
+        # Connection limits per replica (D49): total; per client (IPv4 address
+        # or IPv6 /64), only for connections still in their handshake (so
+        # unauthenticated floods, not logged-in users behind one NAT); per
+        # sandbox, logged-in connections.
         - {name: GATEWAY_MAX_CONNS, value: "1000"}
         - {name: GATEWAY_MAX_CONNS_PER_IP, value: "20"}
         - {name: GATEWAY_MAX_CONNS_PER_SANDBOX, value: "10"}
