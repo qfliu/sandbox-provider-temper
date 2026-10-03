@@ -43,6 +43,12 @@ kubectl -n sandboxes create secret generic sandbox-internal-key \
   --from-file=authorized_keys="$KEYS/id.pub" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl -n sandbox-system create secret generic sandbox-internal-key-private \
   --from-file=id="$KEYS/id" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+# The SSH gateway's own host key (D6). Generated once and kept, so users'
+# known_hosts entries for the gateway stay valid across restarts/replicas.
+GWKEY="$ROOT/.devenv/state/gateway-host-key"
+[ -f "$GWKEY" ] || ssh-keygen -q -t ed25519 -N "" -C sandbox-gateway -f "$GWKEY"
+kubectl -n sandbox-system create secret generic gateway-host-key \
+  --from-file=ssh_host_ed25519_key="$GWKEY" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 echo "==> cluster ready"
 kubectl get nodes -o wide | cut -c1-100
