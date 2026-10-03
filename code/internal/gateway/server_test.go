@@ -39,6 +39,8 @@ func (noSandboxes) GetSandbox(context.Context, string) (store.Sandbox, error) {
 	return store.Sandbox{}, store.ErrNotFound
 }
 
+func (noSandboxes) TouchSandbox(context.Context, string) error { return nil }
+
 // serve runs srv on ln until the returned cancel is called; done receives
 // Serve's result.
 func serve(srv *Server, ln net.Listener) (cancel func(), done <-chan error) {

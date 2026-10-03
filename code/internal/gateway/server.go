@@ -21,10 +21,13 @@ import (
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
 
-// SandboxLookup finds a sandbox by id (implemented by store.Store; faked in
-// tests).
+// SandboxLookup finds sandboxes and records SSH activity on them
+// (implemented by store.Store; faked in tests).
 type SandboxLookup interface {
 	GetSandbox(ctx context.Context, id string) (store.Sandbox, error)
+	// TouchSandbox bumps last_activity_at, so the idle reaper (D9, D32)
+	// counts open SSH sessions as activity.
+	TouchSandbox(ctx context.Context, id string) error
 }
 
 // lookupTimeout bounds the database lookup for one authentication attempt.
@@ -62,6 +65,8 @@ type Server struct {
 	statusInterval    time.Duration // how often an open session re-checks its sandbox
 	keepaliveInterval time.Duration // how often the client is pinged
 	rejectGrace       time.Duration // how long a connection to an unavailable sandbox stays open
+	touchInterval     time.Duration // how often an open session records activity
+	touchMinGap       time.Duration // never touch a sandbox more often than this
 
 	mu      sync.Mutex
 	closing bool // set once shutdown starts; new connections are refused
@@ -82,6 +87,8 @@ func New(hostKey ssh.Signer, sandboxes SandboxLookup, upstream Upstream, log *sl
 		statusInterval:    30 * time.Second,
 		keepaliveInterval: 30 * time.Second,
 		rejectGrace:       5 * time.Second,
+		touchInterval:     time.Minute,
+		touchMinGap:       10 * time.Second,
 		conns:             map[net.Conn]struct{}{},
 	}
 }
