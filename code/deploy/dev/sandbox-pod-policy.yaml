@@ -16,7 +16,7 @@ spec:
     - apiGroups: [""]
       apiVersions: [v1]
       operations: [CREATE, UPDATE]
-      resources: [pods]
+      resources: [pods, pods/ephemeralcontainers]
   variables:
   - name: containers
     expression: "object.spec.containers + (has(object.spec.initContainers) ? object.spec.initContainers : [])"
@@ -43,11 +43,15 @@ spec:
         c.securityContext.privileged == false)
     message: "sandbox containers must not be privileged"
   - expression: >-
-      variables.containers.all(c, (has(c.securityContext) && has(c.securityContext.seccompProfile) &&
-        c.securityContext.seccompProfile.type == 'RuntimeDefault') ||
-        (has(object.spec.securityContext) && has(object.spec.securityContext.seccompProfile) &&
-        object.spec.securityContext.seccompProfile.type == 'RuntimeDefault'))
+      variables.containers.all(c, (has(c.securityContext) && has(c.securityContext.seccompProfile))
+        ? c.securityContext.seccompProfile.type == 'RuntimeDefault'
+        : (has(object.spec.securityContext) && has(object.spec.securityContext.seccompProfile) &&
+           object.spec.securityContext.seccompProfile.type == 'RuntimeDefault'))
     message: "sandbox containers must use the RuntimeDefault seccomp profile"
+  # No debug containers (kubectl debug) in sandboxes: they'd bypass the
+  # rules above; admins reach sandboxes through the API (D39).
+  - expression: "!has(object.spec.ephemeralContainers) || size(object.spec.ephemeralContainers) == 0"
+    message: "ephemeral (debug) containers are not allowed in sandbox pods"
   - expression: >-
       variables.containers.all(c, has(c.resources) && has(c.resources.limits) &&
         'cpu' in c.resources.limits && 'memory' in c.resources.limits)

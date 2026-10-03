@@ -3,11 +3,15 @@
 # sandbox never waits on an image download (they're 145-220 MB). The init
 # containers just run `true`; the pod then idles on the tiny pause image.
 #
-# Keep the image list in step with sandbox.Images and SANDBOX_IMAGE_TAG.
-# After publishing new image tags, `kubectl -n sandbox-system rollout
-# restart daemonset/sandbox-image-prepull` makes every node fetch them.
-# (On minikube the images are built on the node, so this is a no-op there;
-# it matters on a real cluster with a registry and many nodes.)
+# Keep the image list in step with sandbox.Images, SANDBOX_IMAGE_REPO and
+# SANDBOX_IMAGE_TAG (a unit test checks Images and the defaults). Release
+# new images under a NEW tag and update it here and in the API: applying
+# this file then rolls out and every node fetches it. Re-pushing the same
+# tag isn't picked up (IfNotPresent keeps the cached copy). This dev
+# manifest hard-codes the default repo; the Phase 6 Helm chart templates
+# repo and tag. (On minikube the images are built on the node, so this is
+# a no-op there; it matters on a multi-node cluster pulling from a
+# registry.)
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -52,7 +56,7 @@ spec:
         resources: *tiny
       containers:
       - name: pause
-        image: registry.k8s.io/pause:3.10.2
+        image: registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4
         imagePullPolicy: IfNotPresent
         securityContext: *locked
         resources: *tiny
