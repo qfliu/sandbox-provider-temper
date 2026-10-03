@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"html/template"
@@ -58,7 +59,7 @@ func newUI(log *slog.Logger, auth Authenticator) *ui {
 func (u *ui) routes() http.Handler {
 	mux := http.NewServeMux()
 	static, _ := fs.Sub(web.Static, "static")
-	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServerFS(static)))
+	mux.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", noListing(http.FileServerFS(static))))
 	mux.HandleFunc("GET /ui/login", u.loginForm)
 	mux.HandleFunc("POST /ui/login", u.login)
 	mux.HandleFunc("POST /ui/logout", u.logout)
@@ -67,6 +68,17 @@ func (u *ui) routes() http.Handler {
 	})
 	mux.Handle("GET /ui/{$}", u.requireSession(http.HandlerFunc(u.home)))
 	return securityHeaders(http.NewCrossOriginProtection().Handler(mux))
+}
+
+// noListing serves files but not directory listings.
+func noListing(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "" || strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -108,12 +120,18 @@ func (u *ui) requireSession(next http.Handler) http.Handler {
 	})
 }
 
+// render executes the page into a buffer first, so a template error becomes
+// a clean 500 instead of a 200 with half a page (review of #35).
 func (u *ui) render(w http.ResponseWriter, status int, name string, p page) {
+	var buf bytes.Buffer
+	if err := u.pages[name].ExecuteTemplate(&buf, "layout", p); err != nil {
+		u.log.Error("render page", "page", name, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	if err := u.pages[name].ExecuteTemplate(w, "layout", p); err != nil {
-		u.log.Error("render page", "page", name, "err", err)
-	}
+	buf.WriteTo(w)
 }
 
 func (u *ui) loginForm(w http.ResponseWriter, _ *http.Request) {

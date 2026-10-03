@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
@@ -213,5 +214,73 @@ func TestUIServesStaticCSS(t *testing.T) {
 	}
 	if rec.Header().Get("Cache-Control") == "no-store" {
 		t.Fatal("static files shouldn't be no-store")
+	}
+}
+
+// Same-site pages and old browsers that only send Origin are covered too,
+// not just Sec-Fetch-Site: cross-site (review of #35).
+func TestUIRefusesOtherCrossOriginPOSTs(t *testing.T) {
+	h := uiHandler()
+	for name, set := range map[string]func(*http.Request){
+		"same-site":       func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "same-site") },
+		"origin mismatch": func(r *http.Request) { r.Header.Set("Origin", "https://evil.example") },
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/ui/login", strings.NewReader("api_key="+goodKey))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		set(req)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s: %d, want 403", name, rec.Code)
+		}
+	}
+}
+
+// Error responses carry the security headers too.
+func TestUIErrorResponsesHaveSecurityHeaders(t *testing.T) {
+	h := uiHandler()
+	cross := httptest.NewRequest(http.MethodPost, "/ui/logout", nil)
+	cross.Header.Set("Sec-Fetch-Site", "cross-site")
+	for name, req := range map[string]*http.Request{
+		"404":        httptest.NewRequest(http.MethodGet, "/ui/nope", nil),
+		"403":        cross,
+		"static dir": httptest.NewRequest(http.MethodGet, "/ui/static/", nil),
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code < 400 {
+			t.Errorf("%s: %d, want an error", name, rec.Code)
+		}
+		if rec.Header().Get("X-Frame-Options") != "DENY" || rec.Header().Get("Content-Security-Policy") == "" {
+			t.Errorf("%s: security headers missing", name)
+		}
+	}
+}
+
+// /ui/static/ serves files, not a listing of them.
+func TestUIStaticHasNoDirectoryListing(t *testing.T) {
+	rec := uiDo(uiHandler(), http.MethodGet, "/ui/static/", nil, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /ui/static/ = %d, want 404", rec.Code)
+	}
+}
+
+// The session cookie only works for /ui: /v1 still needs the
+// Authorization header.
+func TestV1IgnoresSessionCookie(t *testing.T) {
+	rec := uiDo(uiHandler(), http.MethodGet, "/v1/me", nil, &http.Cookie{Name: sessionCookie, Value: goodKey})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("/v1/me with only the cookie = %d, want 401", rec.Code)
+	}
+}
+
+// A template error is a clean 500, not a 200 with half a page.
+func TestUITemplateErrorIs500(t *testing.T) {
+	u := newUI(slog.New(slog.NewTextHandler(io.Discard, nil)), uiAuth{})
+	u.pages["broken"] = template.Must(template.New("layout").Parse(`partial {{.Missing.Field}}`))
+	rec := httptest.NewRecorder()
+	u.render(rec, http.StatusOK, "broken", page{})
+	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "partial") {
+		t.Fatalf("= %d %q, want a clean 500", rec.Code, rec.Body)
 	}
 }
