@@ -72,6 +72,7 @@ spec:
         - name: DATABASE_URL     # $(VAR) expands the env var defined above
           value: postgres://sandbox:$(POSTGRES_PASSWORD)@postgres.sandbox-system:5432/sandbox?sslmode=disable
         - {name: SANDBOX_INTERNAL_KEY_FILE, value: /keys/id}
+        - {name: SSH_GATEWAY_ADDR, value: "SSH_GATEWAY_ADDR"}  # filled in by deploy-api.sh (minikube ip:30022)
         readinessProbe:
           httpGet: {path: /readyz, port: http}
           periodSeconds: 5

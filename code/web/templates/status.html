@@ -1,0 +1,16 @@
+{{define "status"}}
+<section class="card" id="status"{{if live .Sandbox.Status}} hx-get="/ui/sandboxes/{{.Sandbox.ID}}/status" hx-trigger="every 3s" hx-swap="outerHTML"{{end}}>
+  <dl class="facts">
+    <dt>Status</dt><dd><span class="status s-{{.Sandbox.Status}}">{{.Sandbox.Status}}</span>{{with .Sandbox.StatusReason}} <span class="muted">{{.}}</span>{{end}}</dd>
+    <dt>Image</dt><dd>{{.Sandbox.Image}}</dd>
+    <dt>Created</dt><dd>{{ago .Sandbox.CreatedAt}}</dd>
+    {{if live .Sandbox.Status}}<dt>Expires</dt><dd>{{until .Sandbox.ExpiresAt}} <span class="muted">({{stamp .Sandbox.ExpiresAt}})</span></dd>{{end}}
+    <dt>Last used</dt><dd>{{ago .Sandbox.LastActivityAt}}</dd>
+  </dl>
+  {{if live .Sandbox.Status}}
+  <form method="post" action="/ui/sandboxes/{{.Sandbox.ID}}/delete" class="actions">
+    <button class="danger" data-confirm="Delete {{.Sandbox.ID}}? Its files are lost.">Delete</button>
+  </form>
+  {{end}}
+</section>
+{{end}}

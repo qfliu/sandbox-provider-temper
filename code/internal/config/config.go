@@ -20,6 +20,10 @@ type API struct {
 	DatabaseURL string
 	// Sandbox controls how sandbox pods are created.
 	Sandbox Sandbox
+	// SSHGatewayAddr is where users reach the SSH gateway, "host:port"
+	// (e.g. 192.168.64.2:30022 on minikube, D38). Only used to show the ssh
+	// command in the dashboard; optional.
+	SSHGatewayAddr string
 }
 
 // MaxExecTimeout is the longest a single exec may run (timeout_seconds cap).
@@ -54,7 +58,8 @@ type Sandbox struct {
 // LoadAPI reads API settings from the environment, applying defaults.
 func LoadAPI() (API, error) {
 	cfg := API{
-		ListenAddr: getenv("API_LISTEN_ADDR", ":8080"),
+		ListenAddr:     getenv("API_LISTEN_ADDR", ":8080"),
+		SSHGatewayAddr: os.Getenv("SSH_GATEWAY_ADDR"),
 		// Drain window on SIGTERM; fits inside Kubernetes' default 30 s
 		// terminationGracePeriodSeconds before it force-kills the pod.
 		ShutdownTimeout: 25 * time.Second,

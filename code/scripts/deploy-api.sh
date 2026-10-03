@@ -18,7 +18,12 @@ minikube image build -t "sandbox/api:$TAG" "$ROOT/code" >"$LOG" 2>&1 \
   || { tail -30 "$LOG"; echo "API image build failed; full log: $LOG" >&2; exit 1; }
 
 echo "==> deploying"
-sed "s|sandbox/api:IMAGE_TAG|sandbox/api:$TAG|" "$ROOT/code/deploy/dev/api.yaml" | kubectl apply -f - >/dev/null
+# The dashboard shows users how to SSH in through the gateway's NodePort (D38).
+# (Assigned first so a failing `minikube ip` stops the script under set -e.)
+GATEWAY_IP=$(minikube ip)
+sed -e "s|sandbox/api:IMAGE_TAG|sandbox/api:$TAG|" \
+    -e "s|\"SSH_GATEWAY_ADDR\"|\"$GATEWAY_IP:30022\"|" \
+    "$ROOT/code/deploy/dev/api.yaml" | kubectl apply -f - >/dev/null
 kubectl -n sandbox-system rollout status deployment/sandbox-api --timeout=180s >/dev/null
 kubectl -n sandbox-system get pods -l app=sandbox-api -o wide | cut -c1-90
 echo "==> sandbox-api ready (sandbox-system/sandbox-api:80)"
