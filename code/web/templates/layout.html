@@ -16,6 +16,7 @@
   <nav>
     <a href="/ui/">Sandboxes</a>
     <a href="/ui/keys">API keys</a>
+    {{if .IsAdmin}}<a href="/ui/admin">Admin</a>{{end}}
     <span class="who">{{.Name}}{{if .IsAdmin}} <span class="badge">admin</span>{{end}}</span>
     <form method="post" action="/ui/logout"><button class="link">Sign out</button></form>
   </nav>

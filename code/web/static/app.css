@@ -66,3 +66,4 @@ h1 code { font-size: inherit; }
 button.danger-link { color: var(--danger); }
 header nav a { color: var(--text); text-decoration: none; }
 header nav a:hover { color: var(--accent); }
+.spaced { margin-top: 32px; }

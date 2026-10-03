@@ -236,3 +236,39 @@ func (s *Store) ClaimForReaping(ctx context.Context, idleFor time.Duration, idle
 	}
 	return list, rows.Err()
 }
+
+// OwnedSandbox is a sandbox with its owner's name (admin view).
+type OwnedSandbox struct {
+	Sandbox
+	Owner string
+}
+
+// MaxAdminSandboxes caps the admin list (ended sandboxes accumulate).
+// ListAllSandboxes returns one more, so callers can tell the list was cut.
+const MaxAdminSandboxes = 500
+
+// ListAllSandboxes returns every user's sandboxes, newest first, with
+// owner names; ended ones only if includeEnded (admin view, D43).
+func (s *Store) ListAllSandboxes(ctx context.Context, includeEnded bool) ([]OwnedSandbox, error) {
+	rows, err := s.pool.Query(ctx, "SELECT "+sandboxColumns+`,
+			(SELECT name FROM users WHERE users.id = sandboxes.user_id)
+		FROM sandboxes
+		WHERE $1 OR status IN ('pending', 'running', 'deleting')
+		ORDER BY created_at DESC, id LIMIT $2`, includeEnded, MaxAdminSandboxes+1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []OwnedSandbox{}
+	for rows.Next() {
+		var o OwnedSandbox
+		sb := &o.Sandbox
+		if err := rows.Scan(&sb.ID, &sb.UserID, &sb.Image, &sb.Status, &sb.StatusReason, &sb.SSHPublicKey,
+			&sb.PodName, &sb.PodIP, &sb.HostPublicKey, &sb.TTLSeconds, &sb.CreatedAt, &sb.ExpiresAt,
+			&sb.LastActivityAt, &sb.DeletedAt, &o.Owner); err != nil {
+			return nil, err
+		}
+		list = append(list, o)
+	}
+	return list, rows.Err()
+}

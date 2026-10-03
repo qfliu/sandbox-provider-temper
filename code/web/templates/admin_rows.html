@@ -1,0 +1,28 @@
+{{define "admin_rows"}}
+{{if .AllSandboxes}}
+<table>
+  <thead><tr><th>Sandbox</th><th>Owner</th><th>Image</th><th>Status</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
+  <tbody>
+  {{range .AllSandboxes}}
+  <tr>
+    <td><a href="/ui/sandboxes/{{.ID}}"><code>{{.ID}}</code></a></td>
+    <td>{{.Owner}}</td>
+    <td>{{.Image}}</td>
+    <td><span class="status s-{{.Status}}">{{.Status}}</span></td>
+    <td>{{if live .Status}}{{until .ExpiresAt}}{{else}}–{{end}}</td>
+    <td>{{ago .LastActivityAt}}</td>
+    <td>{{if live .Status}}
+      <form method="post" action="/ui/sandboxes/{{.ID}}/delete">
+        <input type="hidden" name="from" value="admin">
+        <button class="link danger-link" data-confirm="Delete {{.Owner}}'s sandbox {{.ID}}? Its files are lost.">Delete</button>
+      </form>{{end}}
+    </td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{if .Truncated}}<p class="hint">Showing the newest {{len .AllSandboxes}} sandboxes only.</p>{{end}}
+{{else}}
+<p class="muted">{{if .ShowEnded}}No sandboxes yet.{{else}}No live sandboxes.{{end}}</p>
+{{end}}
+{{end}}

@@ -202,3 +202,67 @@ func TestRevokeLastTwoKeysConcurrently(t *testing.T) {
 		}
 	}
 }
+
+func TestListUsersWithCounts(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	root, _ := s.CreateUser(ctx, "root", true)
+	s.CreateAPIKey(ctx, alice.ID, "a")
+	_, k2, _ := s.CreateAPIKey(ctx, alice.ID, "b")
+	s.CreateAPIKey(ctx, alice.ID, "c")
+	if err := s.RevokeAPIKey(ctx, alice.ID, k2.ID); err != nil {
+		t.Fatal(err)
+	}
+	live, _ := s.CreateSandbox(ctx, newSandbox(alice.ID, 1))
+	ended, _ := s.CreateSandbox(ctx, newSandbox(alice.ID, 2))
+	if _, err := s.MarkSandboxEnded(ctx, ended.ID, StatusDeleted, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	users, err := s.ListUsers(ctx)
+	if err != nil || len(users) != 2 {
+		t.Fatalf("users = %+v, %v", users, err)
+	}
+	a, r := users[0], users[1]
+	if a.Name != "alice" || a.LiveSandboxes != 1 || a.ActiveKeys != 2 || a.MaxSandboxes != 10 {
+		t.Errorf("alice = %+v; want 1 live sandbox, 2 active keys", a)
+	}
+	if r.Name != "root" || !r.IsAdmin || r.LiveSandboxes != 0 || r.ActiveKeys != 0 || r.ID != root.ID {
+		t.Errorf("root = %+v", r)
+	}
+
+	all, err := s.ListAllSandboxes(ctx, false)
+	if err != nil || len(all) != 1 || all[0].ID != live.ID || all[0].Owner != "alice" {
+		t.Fatalf("live sandboxes = %+v, %v; want alice's live one with its owner", all, err)
+	}
+	if all, _ := s.ListAllSandboxes(ctx, true); len(all) != 2 {
+		t.Fatalf("with ended: %d sandboxes, want 2", len(all))
+	}
+}
+
+// The admin list is newest first, with each sandbox's own owner, and
+// returns one row past the cap so the caller can tell it was cut.
+func TestListAllSandboxesOrderAndOwners(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	bob, _ := s.CreateUser(ctx, "bob", false)
+	old, _ := s.CreateSandbox(ctx, newSandbox(alice.ID, 1))
+	mid, _ := s.CreateSandbox(ctx, newSandbox(bob.ID, 2))
+	recent, _ := s.CreateSandbox(ctx, newSandbox(alice.ID, 3))
+	for i, id := range []string{old.ID, mid.ID, recent.ID} {
+		if _, err := s.pool.Exec(ctx, "UPDATE sandboxes SET created_at = now() - make_interval(hours => $2) WHERE id = $1", id, 3-i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := s.ListAllSandboxes(ctx, false)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("all = %+v, %v", all, err)
+	}
+	for i, want := range []struct{ id, owner string }{{recent.ID, "alice"}, {mid.ID, "bob"}, {old.ID, "alice"}} {
+		if all[i].ID != want.id || all[i].Owner != want.owner {
+			t.Errorf("row %d = %s/%s, want %s/%s", i, all[i].ID, all[i].Owner, want.id, want.owner)
+		}
+	}
+}

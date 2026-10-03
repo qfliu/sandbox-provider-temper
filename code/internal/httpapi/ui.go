@@ -38,6 +38,7 @@ type ui struct {
 	auth      Authenticator
 	sandboxes SandboxService
 	keys      KeyService
+	admin     AdminService
 	gateway   string // the SSH gateway's public host:port, may be empty
 	pages     map[string]*template.Template
 }
@@ -66,6 +67,11 @@ type page struct {
 	CurrentKey string // display prefix of the key this session uses
 	NewKey     string // a just-created key, shown once
 	NewKeyName string
+
+	// Admin view.
+	Users        []store.UserSummary
+	AllSandboxes []store.OwnedSandbox
+	Truncated    bool // more sandboxes exist than are listed
 }
 
 // createForm keeps what the user typed when the form is shown again with
@@ -114,10 +120,10 @@ func humanDuration(d time.Duration) string {
 	return fmt.Sprintf("%dh %dm", h, m)
 }
 
-func newUI(log *slog.Logger, auth Authenticator, sandboxes SandboxService, keys KeyService, gateway string) *ui {
-	u := &ui{log: log, auth: auth, sandboxes: sandboxes, keys: keys, gateway: gateway, pages: map[string]*template.Template{}}
-	partials := []string{"templates/rows.html", "templates/status.html"}
-	for _, name := range []string{"login", "list", "detail", "keys"} {
+func newUI(log *slog.Logger, auth Authenticator, sandboxes SandboxService, keys KeyService, admin AdminService, gateway string) *ui {
+	u := &ui{log: log, auth: auth, sandboxes: sandboxes, keys: keys, admin: admin, gateway: gateway, pages: map[string]*template.Template{}}
+	partials := []string{"templates/rows.html", "templates/status.html", "templates/admin_rows.html"}
+	for _, name := range []string{"login", "list", "detail", "keys", "admin"} {
 		files := append([]string{"templates/layout.html", "templates/" + name + ".html"}, partials...)
 		u.pages[name] = template.Must(template.New(name).Funcs(templateFuncs).ParseFS(web.Templates, files...))
 	}
@@ -151,6 +157,8 @@ func (u *ui) routes() http.Handler {
 	mux.Handle("GET /ui/keys", u.requireSession(http.HandlerFunc(u.listKeys)))
 	mux.Handle("POST /ui/keys", u.requireSession(http.HandlerFunc(u.createKey)))
 	mux.Handle("POST /ui/keys/{id}/revoke", u.requireSession(http.HandlerFunc(u.revokeKey)))
+	mux.Handle("GET /ui/admin", u.requireSession(requireAdmin(http.HandlerFunc(u.adminView))))
+	mux.Handle("GET /ui/admin/rows", u.requireSession(requireAdmin(http.HandlerFunc(u.adminRows))))
 	return securityHeaders(http.NewCrossOriginProtection().Handler(mux))
 }
 
@@ -377,11 +385,72 @@ func (u *ui) status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (u *ui) delete(w http.ResponseWriter, r *http.Request) {
-	if _, err := u.sandboxes.Delete(r.Context(), userFrom(r.Context()), r.PathValue("id")); err != nil {
+	user := userFrom(r.Context())
+	sb, err := u.sandboxes.Delete(r.Context(), user, r.PathValue("id"))
+	if err != nil {
 		u.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
+	back := "/ui/"
+	// Back to the admin page when deleting from it (a fixed value, never a
+	// URL from the form), or when an admin deleted someone else's sandbox.
+	if r.PostFormValue("from") == "admin" || sb.UserID != user.ID {
+		back = "/ui/admin"
+	}
+	http.Redirect(w, r, back, http.StatusSeeOther)
+}
+
+// requireAdmin lets only admins through (after requireSession). Others get
+// a 404, so the admin pages don't reveal that they exist.
+func requireAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !userFrom(r.Context()).IsAdmin {
+			if r.Header.Get("HX-Request") == "true" {
+				// A demoted admin's open admin page: htmx doesn't swap
+				// errors, so it would keep showing the old table. Leave.
+				w.Header().Set("HX-Redirect", "/ui/")
+			}
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// adminPage loads every user and sandbox for the admin view (D43).
+func (u *ui) adminPage(r *http.Request, withUsers bool) (page, error) {
+	user := userFrom(r.Context())
+	p := page{Title: "Admin", User: &user, ShowEnded: r.URL.Query().Get("ended") == "1"}
+	var err error
+	if p.AllSandboxes, err = u.admin.ListAllSandboxes(r.Context(), p.ShowEnded); err != nil {
+		return p, err
+	}
+	if len(p.AllSandboxes) > store.MaxAdminSandboxes {
+		p.AllSandboxes, p.Truncated = p.AllSandboxes[:store.MaxAdminSandboxes], true
+	}
+	if withUsers {
+		p.Users, err = u.admin.ListUsers(r.Context())
+	}
+	return p, err
+}
+
+func (u *ui) adminView(w http.ResponseWriter, r *http.Request) {
+	p, err := u.adminPage(r, true)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	u.render(w, http.StatusOK, "admin", p)
+}
+
+// adminRows is the admin sandbox table alone, for the htmx auto-refresh.
+func (u *ui) adminRows(w http.ResponseWriter, r *http.Request) {
+	p, err := u.adminPage(r, false)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	u.renderTemplate(w, http.StatusOK, "admin", "admin_rows", p)
 }
 
 // maxKeyNameLen bounds a key's label.
