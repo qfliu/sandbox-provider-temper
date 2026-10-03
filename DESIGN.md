@@ -175,8 +175,8 @@ Update checkboxes as work progresses. **Workflow:** one branch and one PR **per 
 - [x] 2.7 API in the cluster (D30): `code/Dockerfile` (+ `.dockerignore`), `code/deploy/dev/api.yaml` (ServiceAccount, Role/RoleBinding in `sandboxes`, Deployment ×2, Service), `code/scripts/deploy-api.sh`. Fixed `deploy-postgres.sh` storing the password with a trailing newline. Verified: in-cluster API serves `/v1`, creates running sandboxes, SSHes into them from its own pod (`check-ssh`), RBAC least-privilege, survives losing a replica mid-traffic
 - [x] 2.8 Exec + files (D31): `internal/sshx/{exec,files,pool}.go`, `internal/sandbox/exec.go`, 3 endpoints; sshd `MaxSessions 64`; activity tracking. Verified on the in-cluster API (see D31); fixed a 500→403 for permission-denied uploads
 - [x] 2.9 Reaper (D32): `internal/sandbox/reaper.go`, `store.ClaimForReaping` (atomic claim), config `SANDBOX_IDLE_TIMEOUT` / `REAPER_INTERVAL`; reconcile keeps the reaper's reason when finishing an interrupted delete
-- [ ] 2.10 Unit tests for auth, quota and the reaper; `code/scripts/smoke-api.sh` (curl: create → exec → upload/download → delete)
-- **Done when:** the smoke script passes against the local cluster. → **PR 2**
+- [x] 2.10 `code/scripts/smoke-api.sh`: 27 end-to-end checks against the in-cluster API as a dedicated `smoke-test` user (auth, validation, lifecycle, exec, files, cross-user isolation, delete), PASS/FAIL per check, non-zero exit on any failure; ~6 s. Unit tests planned for this step (auth, quota, reaper) were written with each earlier step (~80 tests)
+- **Done when:** the smoke script passes against the local cluster. → ✅ **Phase 2 complete** (step PRs #3–#10, #22, #23; review fixes #11–#21)
 
 ### Phase 3: SSH gateway (~1 h) — branch `phase3/ssh-gateway`
 - [ ] 3.1 `cmd/gateway`: SSH server (`x/crypto/ssh`) with a persistent host key from a Secret; username = sandbox id
