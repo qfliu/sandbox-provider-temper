@@ -147,7 +147,14 @@ def main():
             w.writerows(r for r in out if r)
     finally:  # also on Ctrl-C: delete everything this run created
         with created.lock:
-            ids = list(created.ids)
+            ids = set(created.ids)
+        # Sweep too: a create still in flight when the run was interrupted
+        # (or that timed out on our side) has no recorded id. The key
+        # belongs to the dedicated load-test user, so every live sandbox
+        # it can see is ours to delete (Phase 5 batch review).
+        code, body = call(a.api, key, "GET", "/sandboxes")
+        if code == 200:
+            ids |= {s["id"] for s in body.get("sandboxes", [])}
         for sid in ids:
             call(a.api, key, "DELETE", "/sandboxes/" + sid)
         if ids:

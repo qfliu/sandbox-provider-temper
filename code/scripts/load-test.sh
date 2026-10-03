@@ -24,16 +24,19 @@ if [ ! -s "$KEYFILE" ]; then
 		out=$(kexec create-key --user load-test --name load 2>&1) || { echo "$out" >&2; exit 1; }
 	(umask 077 && printf '%s\n' "$out" | tail -1 >"$KEYFILE")
 fi
-# Quota = N so the test measures the cluster, not the per-user limit.
-echo "UPDATE users SET max_sandboxes = $((N)) WHERE name = 'load-test';" |
-	kubectl -n sandbox-system exec -i postgres-0 -- psql -q -v ON_ERROR_STOP=1 -U sandbox -d sandbox >/dev/null
+# Quota = N so the test measures the cluster, not the per-user limit; put
+# back afterwards (Phase 5 batch review).
+psql_su() { kubectl -n sandbox-system exec -i postgres-0 -- psql -tA -q -v ON_ERROR_STOP=1 -U sandbox -d sandbox; }
+OLD_QUOTA=$(echo "SELECT max_sandboxes FROM users WHERE name = 'load-test';" | psql_su)
+echo "UPDATE users SET max_sandboxes = $((N)) WHERE name = 'load-test';" | psql_su >/dev/null
 
 TMP="$(mktemp -d "$ROOT/.devenv/state/tmp/load.XXXXXX")"
 ssh-keygen -q -t ed25519 -N "" -C load-test -f "$TMP/k"
 
 kubectl -n sandbox-system port-forward svc/sandbox-api "$PORT:80" >/dev/null 2>&1 &
 PF=$!
-trap 'kill $PF 2>/dev/null; wait $PF 2>/dev/null; rm -rf "$TMP"' EXIT
+restore_quota() { echo "UPDATE users SET max_sandboxes = $((OLD_QUOTA)) WHERE name = 'load-test';" | psql_su >/dev/null; }
+trap 'restore_quota; kill $PF 2>/dev/null; wait $PF 2>/dev/null || true; rm -rf "$TMP"' EXIT
 UP=""
 for _ in $(seq 1 40); do curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/healthz" && { UP=1; break; }; sleep 0.25; done
 [ -n "$UP" ] || { echo "API not reachable on 127.0.0.1:$PORT" >&2; exit 1; }
