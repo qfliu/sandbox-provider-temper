@@ -549,11 +549,17 @@ func (u *ui) revokeKey(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/keys", http.StatusSeeOther)
 }
 
-// fail shows a service error as a plain error page (or, for an htmx
-// refresh, just the status, which leaves the current content in place).
+// fail shows a service error as a plain error page. For an htmx refresh it
+// sends just the status, which leaves the current content in place (fine
+// for a passing error); but if the thing being refreshed is gone or no
+// longer visible (404), the page would freeze on stale data, so htmx is
+// told to go back to the list instead.
 func (u *ui) fail(w http.ResponseWriter, r *http.Request, err error) {
 	status, msg := serviceError(u.log, err)
 	if r.Header.Get("HX-Request") == "true" {
+		if status == http.StatusNotFound {
+			w.Header().Set("HX-Redirect", "/ui/")
+		}
 		w.WriteHeader(status)
 		return
 	}
