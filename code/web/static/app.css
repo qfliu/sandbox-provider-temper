@@ -67,3 +67,4 @@ button.danger-link { color: var(--danger); }
 header nav a { color: var(--text); text-decoration: none; }
 header nav a:hover { color: var(--accent); }
 .spaced { margin-top: 32px; }
+tr:target td { background: color-mix(in srgb, var(--accent) 12%, transparent); }

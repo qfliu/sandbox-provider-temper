@@ -1,0 +1,4 @@
+{{/* keyref renders a sandbox's "created by" key. On the owner's own pages
+     (ActiveKeys set) an active key links to its row on the keys page and a
+     revoked one says so; elsewhere (admin views) it's plain text. */}}
+{{define "keyref"}}{{with .Ref}}{{if index $.Active .ID}}<a href="/ui/keys#key-{{.ID}}">{{key .}}</a>{{else}}{{key .}}{{if and $.Active .ID}} <span class="muted">(revoked)</span>{{end}}{{end}}{{else}}—{{end}}{{end}}

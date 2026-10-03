@@ -464,3 +464,42 @@ func TestUIShowsCreatedByKey(t *testing.T) {
 		t.Errorf("unnamed key label = %q", got)
 	}
 }
+
+// On the owner's pages, "created by" links to the key on the keys page if
+// it's still active, says "(revoked)" if not; elsewhere it's plain text.
+func TestUICreatedByLinksToKey(t *testing.T) {
+	sb := aliceAndBob()
+	set := func(id string, k *store.KeyRef) {
+		s := sb.rows[id]
+		s.CreatedByKey = k
+		sb.rows[id] = s
+	}
+	set("sb-alice0000001", &store.KeyRef{ID: "k-session", Name: "browser", Prefix: "sk_aliceAAA"}) // active (aliceKeys)
+	set("sb-bob000000001", &store.KeyRef{ID: "k-bobs", Name: "bobs-agent", Prefix: "sk_bob00000"})
+	h := adminUI(sb) // has Keys: aliceKeys()
+	link := `<a href="/ui/keys#key-k-session">browser (sk_aliceAAA…)</a>`
+	for _, path := range []string{"/ui/", "/ui/sandboxes/sb-alice0000001"} {
+		if body := uiDo(h, http.MethodGet, path, nil, aliceSession).Body.String(); !strings.Contains(body, link) {
+			t.Errorf("%s: no link to the active key", path)
+		}
+	}
+	if body := uiDo(h, http.MethodGet, "/ui/keys", nil, aliceSession).Body.String(); !strings.Contains(body, `<tr id="key-k-session">`) {
+		t.Error("keys page row has no anchor")
+	}
+
+	// The same sandbox after its key was revoked (no longer active).
+	set("sb-alice0000001", &store.KeyRef{ID: "k-revoked", Name: "old-agent", Prefix: "sk_oldagent"})
+	body := uiDo(h, http.MethodGet, "/ui/sandboxes/sb-alice0000001", nil, aliceSession).Body.String()
+	if !strings.Contains(body, `old-agent (sk_oldagent…) <span class="muted">(revoked)</span>`) || strings.Contains(body, "#key-k-revoked") {
+		t.Error("revoked key not marked, or still linked")
+	}
+
+	// An admin looking at someone else's sandbox, and the admin list: plain
+	// text (the keys page only has the viewer's own keys).
+	for _, path := range []string{"/ui/sandboxes/sb-bob000000001", "/ui/admin"} {
+		body := uiDo(h, http.MethodGet, path, nil, root).Body.String()
+		if !strings.Contains(body, "bobs-agent (sk_bob00000…)") || strings.Contains(body, "#key-k-bobs") || strings.Contains(body, "(revoked)") {
+			t.Errorf("%s as admin: want a plain label for bob's key", path)
+		}
+	}
+}

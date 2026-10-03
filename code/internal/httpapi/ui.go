@@ -61,6 +61,11 @@ type page struct {
 	IdleFor    string // e.g. "30m"
 	Form       createForm
 
+	// ActiveKeys holds the signed-in user's active key IDs on pages showing
+	// their own sandboxes, so "created by" can link to the key (or say it
+	// was revoked); nil elsewhere.
+	ActiveKeys map[string]bool
+
 	// Sandbox detail.
 	Sandbox    store.Sandbox
 	SSHCommand string
@@ -119,6 +124,16 @@ var templateFuncs = template.FuncMap{
 	"until": until,
 	"stamp": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") },
 	"key":   keyLabel,
+	"keyref": func(k *store.KeyRef, active map[string]bool) keyRefData {
+		return keyRefData{Ref: k, Active: active}
+	},
+}
+
+// keyRefData is what the "keyref" template gets: the key and, on the
+// owner's own pages, which of their keys are still active.
+type keyRefData struct {
+	Ref    *store.KeyRef
+	Active map[string]bool
 }
 
 // keyLabel names the API key that created a sandbox: "ci-runner
@@ -164,7 +179,7 @@ func humanDuration(d time.Duration) string {
 func newUI(log *slog.Logger, auth Authenticator, sandboxes SandboxService, keys KeyService, admin AdminService, gateway string) *ui {
 	u := &ui{log: log, auth: auth, sandboxes: sandboxes, keys: keys, admin: admin, gateway: gateway, pages: map[string]*template.Template{}}
 	u.setLimits(0, 0)
-	partials := []string{"templates/rows.html", "templates/status.html", "templates/admin_rows.html"}
+	partials := []string{"templates/rows.html", "templates/status.html", "templates/admin_rows.html", "templates/keyref.html"}
 	for _, name := range []string{"login", "list", "detail", "keys", "admin"} {
 		files := append([]string{"templates/layout.html", "templates/" + name + ".html"}, partials...)
 		u.pages[name] = template.Must(template.New(name).Funcs(templateFuncs).ParseFS(web.Templates, files...))
@@ -344,7 +359,11 @@ func (u *ui) listPage(r *http.Request) (page, error) {
 	user := userFrom(r.Context())
 	showEnded := r.URL.Query().Get("ended") == "1"
 	list, err := u.sandboxes.List(r.Context(), user, showEnded)
-	return page{
+	if err != nil {
+		return page{}, err
+	}
+	active, err := u.activeKeys(r, user)
+	return page{ActiveKeys: active,
 		Title: "Your sandboxes", User: &user,
 		Sandboxes: list, ShowEnded: showEnded,
 		Images: sandbox.Images, TTLChoices: u.ttlChoices, IdleFor: humanDuration(u.idleTimeout),
@@ -404,12 +423,38 @@ func (u *ui) create(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/sandboxes/"+sb.ID, http.StatusSeeOther)
 }
 
+// activeKeys is the set of the user's active key IDs, or nil when there's
+// no keys page to link to.
+func (u *ui) activeKeys(r *http.Request, user store.User) (map[string]bool, error) {
+	if u.keys == nil {
+		return nil, nil
+	}
+	keys, err := u.keys.ListAPIKeys(r.Context(), user.ID)
+	if err != nil {
+		return nil, err
+	}
+	active := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		active[k.ID] = true
+	}
+	return active, nil
+}
+
 // detailPage loads one sandbox the user may see (their own; any for an
 // admin, as on /v1).
 func (u *ui) detailPage(r *http.Request) (page, error) {
 	user := userFrom(r.Context())
 	sb, err := u.sandboxes.Get(r.Context(), user, r.PathValue("id"))
-	return page{
+	if err != nil {
+		return page{}, err
+	}
+	var active map[string]bool
+	if sb.UserID == user.ID { // keys page links only make sense for your own
+		if active, err = u.activeKeys(r, user); err != nil {
+			return page{}, err
+		}
+	}
+	return page{ActiveKeys: active,
 		Title: sb.ID, User: &user, Sandbox: sb,
 		SSHCommand: sshCommand(sb.ID, u.gateway), GatewaySet: gatewaySet(u.gateway),
 	}, err

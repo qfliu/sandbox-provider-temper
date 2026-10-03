@@ -7,7 +7,7 @@
   <tr>
     <td><a href="/ui/sandboxes/{{.ID}}"><code>{{.ID}}</code></a></td>
     <td>{{.Image}}</td>
-    <td>{{key .CreatedByKey}}</td>
+    <td>{{template "keyref" (keyref .CreatedByKey $.ActiveKeys)}}</td>
     <td><span class="status s-{{.Status}}">{{.Status}}</span></td>
     <td>{{if live .Status}}{{until .ExpiresAt}}{{else}}–{{end}}</td>
     <td>{{ago .LastActivityAt}}</td>

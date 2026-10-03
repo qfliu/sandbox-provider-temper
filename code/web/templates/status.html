@@ -3,7 +3,7 @@
   <dl class="facts">
     <dt>Status</dt><dd><span class="status s-{{.Sandbox.Status}}">{{.Sandbox.Status}}</span>{{with .Sandbox.StatusReason}} <span class="muted">{{.}}</span>{{end}}</dd>
     <dt>Image</dt><dd>{{.Sandbox.Image}}</dd>
-    <dt>Created by</dt><dd>{{key .Sandbox.CreatedByKey}}</dd>
+    <dt>Created by</dt><dd>{{template "keyref" (keyref .Sandbox.CreatedByKey .ActiveKeys)}}</dd>
     <dt>Created</dt><dd>{{ago .Sandbox.CreatedAt}}</dd>
     {{if live .Sandbox.Status}}<dt>Expires</dt><dd>{{until .Sandbox.ExpiresAt}} <span class="muted">({{stamp .Sandbox.ExpiresAt}})</span></dd>{{end}}
     <dt>Last used</dt><dd>{{ago .Sandbox.LastActivityAt}}</dd>
