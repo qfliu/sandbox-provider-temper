@@ -47,9 +47,12 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
-	// Stop on Ctrl-C locally or SIGTERM from Kubernetes.
+	// Stop on Ctrl-C locally or SIGTERM from Kubernetes. After the first
+	// signal, stop capturing them, so a second Ctrl-C force-quits a
+	// shutdown that hangs.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go func() { <-ctx.Done(); stop() }()
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -57,7 +60,9 @@ func run(log *slog.Logger) error {
 	}
 	log.Info("gateway listening", "addr", ln.Addr().String(),
 		"host_key", ssh.FingerprintSHA256(hostKey.PublicKey()))
-	err = gateway.New(hostKey, log).Serve(ctx, ln)
+	if err := gateway.New(hostKey, log).Serve(ctx, ln); err != nil {
+		return err
+	}
 	log.Info("gateway stopped")
-	return err
+	return nil
 }
