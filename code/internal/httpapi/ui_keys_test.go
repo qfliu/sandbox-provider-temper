@@ -169,3 +169,39 @@ func TestUINavLinks(t *testing.T) {
 		t.Fatal("no link to the keys page")
 	}
 }
+
+// The name limit counts characters, like the browser's maxlength, and
+// control characters (e.g. NUL, which Postgres rejects) are refused with a
+// 400 instead of becoming a 500.
+func TestUICreateKeyNameCharacters(t *testing.T) {
+	keys := aliceKeys()
+	h := keysUI(keys)
+	cjk := strings.Repeat("鍵", 34) // 34 characters, 102 bytes
+	if rec := uiDo(h, http.MethodPost, "/ui/keys", url.Values{"name": {cjk}}, aliceSession); rec.Code != http.StatusOK {
+		t.Errorf("34-character CJK name = %d, want 200", rec.Code)
+	}
+	for _, bad := range []string{"a\x00b", "tab\there", "bell\a", "\xff\xfe"} {
+		if rec := uiDo(h, http.MethodPost, "/ui/keys", url.Values{"name": {bad}}, aliceSession); rec.Code != http.StatusBadRequest {
+			t.Errorf("name %q = %d, want 400", bad, rec.Code)
+		}
+	}
+	if n := len(keys.keys); n != 4 {
+		t.Fatalf("%d keys, want 4 (only the CJK one created)", n)
+	}
+}
+
+// failingListKeys creates keys but can't list them.
+type failingListKeys struct{ *fakeKeys }
+
+func (failingListKeys) ListAPIKeys(context.Context, string) ([]store.APIKey, error) {
+	return nil, context.DeadlineExceeded
+}
+
+// If the key list can't be loaded after a key was created, the new key is
+// still shown: otherwise it would exist with nobody ever seeing it.
+func TestUICreateKeyShownEvenIfListFails(t *testing.T) {
+	rec := uiDo(keysUI(failingListKeys{aliceKeys()}), http.MethodPost, "/ui/keys", url.Values{"name": {"x"}}, aliceSession)
+	if !strings.Contains(rec.Body.String(), "sk_NEWKEY00-the-secret-part-shown-once") {
+		t.Fatalf("= %d, new key not shown when the list failed", rec.Code)
+	}
+}

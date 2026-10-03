@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/qfliu/sandbox-provider-temper/code/internal/auth"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/sandbox"
@@ -385,6 +387,19 @@ func (u *ui) delete(w http.ResponseWriter, r *http.Request) {
 // maxKeyNameLen bounds a key's label.
 const maxKeyNameLen = 100
 
+// checkKeyName returns why a key name is unacceptable, or "". The limit
+// counts characters, like the form's maxlength; control characters (which
+// Postgres may reject, e.g. NUL) and invalid UTF-8 are refused.
+func checkKeyName(name string) string {
+	if !utf8.ValidString(name) || strings.ContainsFunc(name, unicode.IsControl) {
+		return "Name can't contain control characters."
+	}
+	if utf8.RuneCountInString(name) > maxKeyNameLen {
+		return fmt.Sprintf("Name too long (at most %d characters).", maxKeyNameLen)
+	}
+	return ""
+}
+
 // keysPage loads the signed-in user's active keys and notes which one this
 // session uses (by display prefix: 8 random characters, so two of a user's
 // keys sharing one is vanishingly unlikely, and it's only used for display
@@ -416,13 +431,13 @@ func (u *ui) listKeys(w http.ResponseWriter, r *http.Request) {
 func (u *ui) createKey(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r.Context())
 	name := strings.TrimSpace(r.PostFormValue("name"))
-	if len(name) > maxKeyNameLen {
+	if msg := checkKeyName(name); msg != "" {
 		p, err := u.keysPage(r)
 		if err != nil {
 			u.fail(w, r, err)
 			return
 		}
-		p.Error = fmt.Sprintf("Name too long (at most %d characters).", maxKeyNameLen)
+		p.Error = msg
 		u.render(w, http.StatusBadRequest, "keys", p)
 		return
 	}
@@ -434,8 +449,10 @@ func (u *ui) createKey(w http.ResponseWriter, r *http.Request) {
 	u.log.Info("api key created", "user", user.Name, "key", key.Prefix)
 	p, err := u.keysPage(r)
 	if err != nil {
-		u.fail(w, r, err)
-		return
+		// The key exists now: show it anyway, or nobody would ever see it.
+		u.log.Error("list api keys after create", "err", err)
+		user := userFrom(r.Context())
+		p = page{Title: "API keys", User: &user, Error: "Couldn't load your other keys; reload the page to see them."}
 	}
 	p.NewKey, p.NewKeyName = plaintext, key.Name
 	u.render(w, http.StatusOK, "keys", p)
