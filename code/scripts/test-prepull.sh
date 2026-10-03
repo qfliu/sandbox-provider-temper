@@ -18,10 +18,14 @@ PASSED=0 FAILED=0
 
 pass() { PASSED=$((PASSED + 1)); printf "  \033[32mPASS\033[0m  %s\n" "$1"; }
 fail() { FAILED=$((FAILED + 1)); printf "  \033[31mFAIL\033[0m  %s  (%s)\n" "$1" "$2"; }
+# cleanup waits until everything is gone, so a rerun never sees the last
+# run's pods or their events.
 cleanup() {
-	kubectl -n "$NS" delete daemonset prepull-probe --ignore-not-found --wait=false >/dev/null 2>&1
-	kubectl -n "$NS" delete pod prepull-consumer --ignore-not-found --wait=false >/dev/null 2>&1
+	kubectl -n "$NS" delete daemonset prepull-probe --ignore-not-found --wait=true >/dev/null 2>&1
+	kubectl -n "$NS" delete pod prepull-consumer --ignore-not-found --wait=true >/dev/null 2>&1
+	kubectl -n "$NS" wait --for=delete pod -l app=prepull-probe --timeout=60s >/dev/null 2>&1
 }
+cleanup # leftovers from an interrupted run
 trap cleanup EXIT
 
 # events <pod>: the kubelet's image events for a pod, one per line

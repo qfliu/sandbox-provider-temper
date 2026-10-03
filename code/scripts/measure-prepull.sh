@@ -31,6 +31,7 @@ node() { minikube ssh -- "$@" </dev/null 2>/dev/null | tr -d '\r'; }
 	{ echo "sandboxes are running; run this on an idle cluster" >&2; exit 1; }
 
 REG_WAS_ON=$(minikube addons list -o json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['registry']['Status'])")
+case "$REG_WAS_ON" in enabled | disabled) ;; *) echo "can't read the registry addon's state" >&2; exit 1 ;; esac
 # drop_names <grep pattern> [--sync]: removes every image name (tags and
 # the @sha256 names a pull adds) matching the pattern; content goes only
 # once no name refers to it.
@@ -65,13 +66,20 @@ restore() {
 trap restore EXIT
 
 echo "== registry"
+# A registry pod still terminating from the last run would answer the
+# readiness check below and then vanish mid-push.
+kubectl -n kube-system wait --for=delete pod -l kubernetes.io/minikube-addons=registry --timeout=120s >/dev/null 2>&1
 minikube addons enable registry >/dev/null 2>&1
-for _ in $(seq 1 30); do node "curl -s -m 2 http://localhost:5000/v2/" | grep -q '{}' && break; sleep 2; done
+for _ in $(seq 1 30); do node "curl -s -m 2 http://localhost:5000/v2/" | grep '{}' >/dev/null && break; sleep 2; done
 for img in $IMAGES; do # retried: a just re-enabled registry can refuse pushes for a few seconds
 	for try in 1 2 3 4 5 6; do
 		out=$(minikube ssh -- "sudo ctr -n k8s.io images tag --force docker.io/sandbox/$img:0.1 $REG/sandbox/$img:0.1 >/dev/null && sudo ctr -n k8s.io images push --plain-http $REG/sandbox/$img:0.1 >/dev/null && echo pushed-ok" </dev/null 2>&1 | tr -d '\r')
 		grep -q pushed-ok <<<"$out" && break
-		[ "$try" = 6 ] && { echo "push of $img failed: $out (\"content digest … not found\": rebuild the images with cluster-up.sh)" >&2; exit 1; }
+		if [ "$try" = 6 ]; then
+			echo "push of $img failed: $out" >&2
+			grep -q "content digest .* not found" <<<"$out" && echo "(the node lost the image's compressed layers: rebuild the images with cluster-up.sh)" >&2
+			exit 1
+		fi
 		sleep 5
 	done
 done
@@ -80,6 +88,17 @@ echo "   pushed: $(node "curl -s http://localhost:5000/v2/_catalog")"
 echo "== clearing the node (no cached sandbox image at all, like a fresh node)"
 kubectl -n "$NS" delete daemonset sandbox-image-prepull --wait=true >/dev/null 2>&1
 kubectl -n "$NS" wait --for=delete pod -l app=sandbox-image-prepull --timeout=60s >/dev/null 2>&1
+# Its exited init containers outlive the pod for a while (the kubelet
+# removes them lazily) and keep the layers' snapshots, which would make the
+# pull below skip the download. Wait for them, then remove what's left.
+for _ in $(seq 1 15); do
+	[ "$(node "sudo ctr -n k8s.io containers ls" | grep -c 'sandbox/ubuntu-')" = 0 ] && break
+	sleep 2
+done
+node "sudo ctr -n k8s.io containers ls" | awk '/sandbox\/ubuntu-/ {print $1}' |
+	while read -r c; do node "sudo crictl rm -f $c >/dev/null 2>&1"; done
+[ "$(node "sudo ctr -n k8s.io containers ls" | grep -c 'sandbox/ubuntu-')" = 0 ] ||
+	{ echo "containers using the sandbox images are still on the node" >&2; exit 1; }
 # ubuntu-dev's layer blobs, to check they're really gone afterwards.
 MANIFEST=$(node "sudo ctr -n k8s.io images ls" | awk '$1=="docker.io/sandbox/ubuntu-dev:0.1"{print $3}')
 LAYERS=$(node "sudo ctr -n k8s.io content get $MANIFEST" |
@@ -95,7 +114,7 @@ node "sudo buildctl prune --all >/dev/null 2>&1"
 BASE=${LAYERS%% *}
 old=$(node "sudo ctr -n k8s.io images ls" | awk 'NR>1 && $1 ~ /^sha256:/ {print $1, $3}' |
 	while read -r name target; do
-		node "sudo ctr -n k8s.io content get $target" | grep -q "$BASE" && printf '%s ' "$name"
+		node "sudo ctr -n k8s.io content get $target" | grep "$BASE" >/dev/null && printf '%s ' "$name"
 	done)
 [ -z "$old" ] || node "sudo ctr -n k8s.io images rm $old >/dev/null 2>&1"
 drop_names 'sandbox/ubuntu-' --sync # --sync: wait until containerd deletes the unreferenced layers
@@ -106,14 +125,14 @@ kept=$(node "sudo ctr -n k8s.io content ls -q" | grep -cxF "$(tr ' ' '\n' <<<"$L
 echo "   no sandbox image or layer on the node"
 
 echo "== timing (ubuntu-dev, ~218 MB)"
-T0=$(python3 -c 'import time; print(time.time())')
 # ctr, not crictl: CRI would drop the compressed layers after unpacking,
 # and the restore's pull of ubuntu-base would then skip the shared ones
 # (their snapshots exist), leaving images the next run can't push.
-out=$(minikube ssh -- "sudo ctr -n k8s.io images pull --plain-http $REG/sandbox/ubuntu-dev:0.1 2>&1" </dev/null | tr -d '\r') # minikube ssh's exit status isn't the command's
-node "sudo crictl inspecti $REG/sandbox/ubuntu-dev:0.1 >/dev/null 2>&1 && echo ok" | grep -q ok ||
-	{ echo "pull failed: $out" >&2; exit 1; }
-PULL=$(python3 -c "import time; print(round(time.time()-$T0, 1))")
+# Timed on the node, so ssh round trips don't count.
+out=$(minikube ssh -- "s=\$(date +%s.%N); sudo ctr -n k8s.io images pull --plain-http $REG/sandbox/ubuntu-dev:0.1 >/tmp/pull.log 2>&1 && echo took \$s \$(date +%s.%N) || cat /tmp/pull.log" </dev/null 2>&1 | tr -d '\r')
+read -r took s e <<<"$(grep '^took ' <<<"$out")"
+[ "${took:-}" = took ] || { echo "pull failed: $out" >&2; exit 1; }
+PULL=$(python3 -c "print(round($e-$s, 1))")
 printf "   cold download + unpack on the node:      %5.1f s\n" "$PULL"
 put_back # usual names back before any pod uses them
 
