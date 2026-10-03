@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -68,10 +69,39 @@ type Server struct {
 	touchInterval     time.Duration // how often an open session records activity
 	touchMinGap       time.Duration // never touch a sandbox more often than this
 
-	mu      sync.Mutex
-	closing bool // set once shutdown starts; new connections are refused
-	conns   map[net.Conn]struct{}
-	wg      sync.WaitGroup
+	// Connection limits (D49): total open connections, concurrent
+	// connections from one client IP (counted from accept, so floods of
+	// unauthenticated handshakes are bounded too), and logged-in
+	// connections to one sandbox.
+	maxConns, maxConnsPerIP, maxConnsPerSandbox int
+
+	mu         sync.Mutex
+	closing    bool // set once shutdown starts; new connections are refused
+	conns      map[net.Conn]struct{}
+	perIP      map[string]int
+	perSandbox map[string]int
+	wg         sync.WaitGroup
+}
+
+// Default connection limits; see SetLimits.
+const (
+	DefaultMaxConns           = 1000
+	DefaultMaxConnsPerIP      = 20
+	DefaultMaxConnsPerSandbox = 10
+)
+
+// SetLimits changes the connection limits (values <= 0 keep the current
+// one). Call it before Serve.
+func (s *Server) SetLimits(total, perIP, perSandbox int) {
+	if total > 0 {
+		s.maxConns = total
+	}
+	if perIP > 0 {
+		s.maxConnsPerIP = perIP
+	}
+	if perSandbox > 0 {
+		s.maxConnsPerSandbox = perSandbox
+	}
 }
 
 // New returns a Server presenting hostKey to clients, checking logins
@@ -89,7 +119,13 @@ func New(hostKey ssh.Signer, sandboxes SandboxLookup, upstream Upstream, log *sl
 		rejectGrace:       5 * time.Second,
 		touchInterval:     time.Minute,
 		touchMinGap:       10 * time.Second,
-		conns:             map[net.Conn]struct{}{},
+
+		maxConns:           DefaultMaxConns,
+		maxConnsPerIP:      DefaultMaxConnsPerIP,
+		maxConnsPerSandbox: DefaultMaxConnsPerSandbox,
+		conns:              map[net.Conn]struct{}{},
+		perIP:              map[string]int{},
+		perSandbox:         map[string]int{},
 	}
 }
 
@@ -232,10 +268,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	}
 }
 
-// track records an accepted connection. During shutdown it closes the
-// connection instead and returns false: without this check, a connection
-// accepted just as shutdown swept the map would be missed and shutdown
-// would wait for it.
+// track records an accepted connection. During shutdown, or when a
+// connection limit is reached, it closes the connection instead and
+// returns false: without the shutdown check, a connection accepted just as
+// shutdown swept the map would be missed and shutdown would wait for it.
 func (s *Server) track(c net.Conn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -243,14 +279,61 @@ func (s *Server) track(c net.Conn) bool {
 		c.Close()
 		return false
 	}
+	ip := remoteIP(c)
+	if len(s.conns) >= s.maxConns || s.perIP[ip] >= s.maxConnsPerIP {
+		// Closed before the SSH banner: cheap for us, clear for the client.
+		// Debug only, or a flood would also flood the log.
+		s.log.Debug("connection limit reached; closing", "remote", ip,
+			"open", len(s.conns), "from_ip", s.perIP[ip])
+		c.Close()
+		return false
+	}
 	s.conns[c] = struct{}{}
+	s.perIP[ip]++
 	return true
 }
 
 func (s *Server) untrack(c net.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.conns[c]; !ok {
+		return
+	}
 	delete(s.conns, c)
+	ip := remoteIP(c)
+	if s.perIP[ip]--; s.perIP[ip] <= 0 {
+		delete(s.perIP, ip)
+	}
+}
+
+// remoteIP is the client's address without the port (the real client IP
+// behind the NodePort/LoadBalancer, D38).
+func remoteIP(c net.Conn) string {
+	host, _, err := net.SplitHostPort(c.RemoteAddr().String())
+	if err != nil {
+		return c.RemoteAddr().String()
+	}
+	return host
+}
+
+// acquireSandbox takes one of a sandbox's connection slots, or reports
+// that it's full.
+func (s *Server) acquireSandbox(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.perSandbox[id] >= s.maxConnsPerSandbox {
+		return false
+	}
+	s.perSandbox[id]++
+	return true
+}
+
+func (s *Server) releaseSandbox(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.perSandbox[id]--; s.perSandbox[id] <= 0 {
+		delete(s.perSandbox, id)
+	}
 }
 
 // shutdown refuses new connections and closes open ones (idempotent).
@@ -284,5 +367,15 @@ func (s *Server) handle(conn net.Conn) {
 	conn.SetDeadline(time.Time{})
 	defer sconn.Close()
 
-	s.proxySessions(sconn, chans, reqs, sconn.Permissions.Extensions[permSandboxID])
+	id := sconn.Permissions.Extensions[permSandboxID]
+	if !s.acquireSandbox(id) {
+		s.log.Warn("too many connections to sandbox; refusing", "sandbox", id,
+			"limit", s.maxConnsPerSandbox, "remote", conn.RemoteAddr().String())
+		go ssh.DiscardRequests(reqs) // global requests must be serviced too
+		rejectThenClose(sconn, chans, s.rejectGrace, ssh.ResourceShortage,
+			fmt.Sprintf("too many connections to this sandbox (limit %d); close one and retry", s.maxConnsPerSandbox))
+		return
+	}
+	defer s.releaseSandbox(id)
+	s.proxySessions(sconn, chans, reqs, id)
 }

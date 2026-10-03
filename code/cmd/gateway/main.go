@@ -13,15 +13,19 @@
 //	                        sandbox also reads ssh_activity)
 //	SANDBOX_INTERNAL_KEY_FILE  the platform-internal private key the gateway
 //	                        logs into sandboxes with (required, D7)
+//	GATEWAY_MAX_CONNS, GATEWAY_MAX_CONNS_PER_IP, GATEWAY_MAX_CONNS_PER_SANDBOX
+//	                        connection limits (D49; defaults 1000, 20, 10)
 package main
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"golang.org/x/crypto/ssh"
@@ -83,8 +87,20 @@ func run(log *slog.Logger) error {
 	}
 	log.Info("gateway listening", "addr", ln.Addr().String(),
 		"host_key", ssh.FingerprintSHA256(hostKey.PublicKey()))
+	limits := map[string]int{}
+	for _, name := range []string{"GATEWAY_MAX_CONNS", "GATEWAY_MAX_CONNS_PER_IP", "GATEWAY_MAX_CONNS_PER_SANDBOX"} {
+		if v := os.Getenv(name); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n <= 0 {
+				return fmt.Errorf("%s must be a positive number, got %q", name, v)
+			}
+			limits[name] = n
+		}
+	}
 	upstream := sshx.Dialer{Signer: internalKey}
-	if err := gateway.New(hostKey, store.New(pool), upstream, log).Serve(ctx, ln); err != nil {
+	srv := gateway.New(hostKey, store.New(pool), upstream, log)
+	srv.SetLimits(limits["GATEWAY_MAX_CONNS"], limits["GATEWAY_MAX_CONNS_PER_IP"], limits["GATEWAY_MAX_CONNS_PER_SANDBOX"])
+	if err := srv.Serve(ctx, ln); err != nil {
 		return err
 	}
 	log.Info("gateway stopped")
