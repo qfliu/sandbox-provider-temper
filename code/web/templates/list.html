@@ -22,7 +22,7 @@
     <select id="ttl_hours" name="ttl_hours">
       {{range .TTLChoices}}<option value="{{.}}"{{if eq . $.Form.TTLHours}} selected{{end}}>{{.}} hour{{if ne . 1}}s{{end}}</option>{{end}}
     </select>
-    <p class="hint">Deleted automatically after this, or after 30 minutes without use.</p>
+    <p class="hint">Deleted automatically after this, or after {{.IdleFor}} without use.</p>
     <button type="submit">Create sandbox</button>
   </form>
 </section>

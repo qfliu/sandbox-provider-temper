@@ -39,7 +39,10 @@ type ui struct {
 	sandboxes SandboxService
 	keys      KeyService
 	admin     AdminService
-	gateway   string // the SSH gateway's public host:port, may be empty
+	gateway   string
+	// Sandbox limits shown in and enforced by the create form.
+	ttlChoices  []int
+	idleTimeout time.Duration // the SSH gateway's public host:port, may be empty
 	pages     map[string]*template.Template
 }
 
@@ -57,6 +60,7 @@ type page struct {
 	ShowEnded  bool
 	Images     []string
 	TTLChoices []int
+	IdleFor    string // e.g. "30m"
 	Form       createForm
 
 	// Sandbox detail.
@@ -84,9 +88,31 @@ type createForm struct {
 	TTLHours     int
 }
 
-// ttlChoices are the lifetimes offered in the create form, in hours. The
-// service still enforces the configured maximum.
+// ttlChoices are the lifetimes the create form can offer, in hours; only
+// those within the configured maximum are shown (setLimits).
 var ttlChoices = []int{1, 2, 4, 8, 24}
+
+// setLimits applies the sandbox limits from config: the lifetimes offered
+// (at most maxTTL; at least the shortest one) and the idle timeout stated
+// in the form. Zero values keep the defaults.
+func (u *ui) setLimits(maxTTL, idle time.Duration) {
+	u.ttlChoices = ttlChoices
+	if maxTTL > 0 {
+		u.ttlChoices = nil
+		for _, h := range ttlChoices {
+			if time.Duration(h)*time.Hour <= maxTTL {
+				u.ttlChoices = append(u.ttlChoices, h)
+			}
+		}
+		if len(u.ttlChoices) == 0 {
+			u.ttlChoices = ttlChoices[:1] // the service will explain the limit
+		}
+	}
+	u.idleTimeout = 30 * time.Minute
+	if idle > 0 {
+		u.idleTimeout = idle
+	}
+}
 
 // templateFuncs are helpers available in every template.
 var templateFuncs = template.FuncMap{
@@ -124,6 +150,7 @@ func humanDuration(d time.Duration) string {
 
 func newUI(log *slog.Logger, auth Authenticator, sandboxes SandboxService, keys KeyService, admin AdminService, gateway string) *ui {
 	u := &ui{log: log, auth: auth, sandboxes: sandboxes, keys: keys, admin: admin, gateway: gateway, pages: map[string]*template.Template{}}
+	u.setLimits(0, 0)
 	partials := []string{"templates/rows.html", "templates/status.html", "templates/admin_rows.html"}
 	for _, name := range []string{"login", "list", "detail", "keys", "admin"} {
 		files := append([]string{"templates/layout.html", "templates/" + name + ".html"}, partials...)
@@ -307,7 +334,7 @@ func (u *ui) listPage(r *http.Request) (page, error) {
 	return page{
 		Title: "Your sandboxes", User: &user,
 		Sandboxes: list, ShowEnded: showEnded,
-		Images: sandbox.Images, TTLChoices: ttlChoices,
+		Images: sandbox.Images, TTLChoices: u.ttlChoices, IdleFor: humanDuration(u.idleTimeout),
 		Form: createForm{Image: sandbox.Images[0], TTLHours: 1},
 	}, err
 }
@@ -340,7 +367,7 @@ func (u *ui) create(w http.ResponseWriter, r *http.Request) {
 	var err error
 	form.TTLHours, err = strconv.Atoi(r.PostFormValue("ttl_hours"))
 	var sb store.Sandbox
-	if err != nil || !slices.Contains(ttlChoices, form.TTLHours) {
+	if err != nil || !slices.Contains(u.ttlChoices, form.TTLHours) {
 		// Only the offered lifetimes: a missing or bogus value must not
 		// silently become the default (0 means "default" to the service).
 		err = &sandbox.ValidationError{Msg: "pick a lifetime from the list"}

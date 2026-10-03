@@ -144,13 +144,15 @@ func serve(log *slog.Logger) error {
 		"idle_timeout", cfg.Sandbox.IdleTimeout, "reaper_interval", cfg.Sandbox.ReaperInterval)
 
 	srv := newHTTPServer(cfg.ListenAddr, httpapi.NewHandler(httpapi.Deps{
-		Log:       log,
-		DB:        pool,
-		Auth:      st,
-		Sandboxes:  sandboxes,
-		SSHGateway: cfg.SSHGatewayAddr,
-		Keys:       st,
-		Admin:      st,
+		Log:         log,
+		DB:          pool,
+		Auth:        st,
+		Sandboxes:   sandboxes,
+		SSHGateway:  cfg.SSHGatewayAddr,
+		Keys:        st,
+		Admin:       st,
+		MaxTTL:      cfg.Sandbox.MaxTTL,
+		IdleTimeout: cfg.Sandbox.IdleTimeout,
 	}))
 
 	errCh := make(chan error, 1)
