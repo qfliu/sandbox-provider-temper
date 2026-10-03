@@ -1,7 +1,7 @@
 # The control plane API inside the cluster (D30). Applied by
 # code/scripts/deploy-api.sh, which substitutes the image tag.
 #
-# Needs Secrets postgres-credentials (deploy-postgres.sh) and
+# Needs Secrets postgres-app-credentials (deploy-api.sh) and
 # sandbox-internal-key-private (cluster-up.sh) in sandbox-system.
 
 # --- Identity and least-privilege permissions -------------------------------
@@ -67,10 +67,10 @@ spec:
         ports:
         - {name: http, containerPort: 8080}
         env:
-        - name: POSTGRES_PASSWORD
-          valueFrom: {secretKeyRef: {name: postgres-credentials, key: password}}
+        - name: POSTGRES_PASSWORD   # sandbox_app: owns the platform's tables, not a superuser (D47)
+          valueFrom: {secretKeyRef: {name: postgres-app-credentials, key: password}}
         - name: DATABASE_URL     # $(VAR) expands the env var defined above
-          value: postgres://sandbox:$(POSTGRES_PASSWORD)@postgres.sandbox-system:5432/sandbox?sslmode=disable
+          value: postgres://sandbox_app:$(POSTGRES_PASSWORD)@postgres.sandbox-system:5432/sandbox?sslmode=disable
         - {name: SANDBOX_INTERNAL_KEY_FILE, value: /keys/id}
         - {name: SSH_GATEWAY_ADDR, value: "SSH_GATEWAY_ADDR"}  # filled in by deploy-api.sh (minikube ip:30022)
         readinessProbe:
