@@ -276,7 +276,7 @@ func TestV1IgnoresSessionCookie(t *testing.T) {
 
 // A template error is a clean 500, not a 200 with half a page.
 func TestUITemplateErrorIs500(t *testing.T) {
-	u := newUI(slog.New(slog.NewTextHandler(io.Discard, nil)), uiAuth{})
+	u := newUI(slog.New(slog.NewTextHandler(io.Discard, nil)), uiAuth{}, fakeSandboxes{}, "")
 	u.pages["broken"] = template.Must(template.New("layout").Parse(`partial {{.Missing.Field}}`))
 	rec := httptest.NewRecorder()
 	u.render(rec, http.StatusOK, "broken", page{})

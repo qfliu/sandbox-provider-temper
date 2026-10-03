@@ -153,32 +153,39 @@ func handleDownload(log *slog.Logger, svc SandboxService) http.HandlerFunc {
 // writeServiceError maps service errors to HTTP status codes. Unexpected
 // errors are logged and hidden behind a generic 500.
 func writeServiceError(log *slog.Logger, w http.ResponseWriter, err error) {
+	status, msg := serviceError(log, err)
+	writeError(w, status, msg)
+}
+
+// serviceError turns a service error into an HTTP status and a message safe
+// to show the caller (shared by the JSON API and the dashboard).
+func serviceError(log *slog.Logger, err error) (int, string) {
 	var verr *sandbox.ValidationError
 	var notRunning *sandbox.NotRunningError
 	switch {
 	case errors.As(err, &verr):
-		writeError(w, http.StatusBadRequest, verr.Msg)
+		return http.StatusBadRequest, verr.Msg
 	case errors.As(err, &notRunning):
-		writeError(w, http.StatusConflict, notRunning.Error())
+		return http.StatusConflict, notRunning.Error()
 	case errors.Is(err, sandbox.ErrUnreachable):
-		writeError(w, http.StatusBadGateway, "sandbox unreachable, try again")
+		return http.StatusBadGateway, "sandbox unreachable, try again"
 	case errors.Is(err, sshx.ErrNotFound):
-		writeError(w, http.StatusNotFound, "file not found")
+		return http.StatusNotFound, "file not found"
 	case errors.Is(err, sshx.ErrIsDir):
-		writeError(w, http.StatusBadRequest, "path is a directory")
+		return http.StatusBadRequest, "path is a directory"
 	case errors.Is(err, fs.ErrPermission):
 		// The sandbox's own file permissions said no (we act as `user`).
-		writeError(w, http.StatusForbidden, "permission denied inside the sandbox")
+		return http.StatusForbidden, "permission denied inside the sandbox"
 	case errors.Is(err, fs.ErrNotExist):
-		writeError(w, http.StatusBadRequest, "path does not exist or its parent is not a directory")
+		return http.StatusBadRequest, "path does not exist or its parent is not a directory"
 	case errors.Is(err, store.ErrNotFound):
-		writeError(w, http.StatusNotFound, "sandbox not found")
+		return http.StatusNotFound, "sandbox not found"
 	case errors.Is(err, store.ErrQuotaExceeded):
-		writeError(w, http.StatusTooManyRequests, "sandbox quota exceeded: delete a sandbox first")
+		return http.StatusTooManyRequests, "sandbox quota exceeded: delete a sandbox first"
 	case errors.Is(err, sandbox.ErrUnavailable):
-		writeError(w, http.StatusServiceUnavailable, "cluster busy or unavailable, try again")
+		return http.StatusServiceUnavailable, "cluster busy or unavailable, try again"
 	default:
 		log.Error("request failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		return http.StatusInternalServerError, "internal error"
 	}
 }

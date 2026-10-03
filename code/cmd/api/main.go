@@ -147,7 +147,8 @@ func serve(log *slog.Logger) error {
 		Log:       log,
 		DB:        pool,
 		Auth:      st,
-		Sandboxes: sandboxes,
+		Sandboxes:  sandboxes,
+		SSHGateway: cfg.SSHGatewayAddr,
 	}))
 
 	errCh := make(chan error, 1)

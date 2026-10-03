@@ -1,0 +1,20 @@
+{{define "rows"}}
+{{if .Sandboxes}}
+<table>
+  <thead><tr><th>Sandbox</th><th>Image</th><th>Status</th><th>Expires</th><th>Last used</th></tr></thead>
+  <tbody>
+  {{range .Sandboxes}}
+  <tr>
+    <td><a href="/ui/sandboxes/{{.ID}}"><code>{{.ID}}</code></a></td>
+    <td>{{.Image}}</td>
+    <td><span class="status s-{{.Status}}">{{.Status}}</span></td>
+    <td>{{if live .Status}}{{until .ExpiresAt}}{{else}}–{{end}}</td>
+    <td>{{ago .LastActivityAt}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="muted">{{if .ShowEnded}}No sandboxes yet.{{else}}No running sandboxes. Create one below.{{end}}</p>
+{{end}}
+{{end}}

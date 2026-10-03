@@ -28,3 +28,36 @@ button.link { margin: 0; padding: 0; color: var(--accent); background: none; }
 form { margin: 0; }
 .error { color: var(--danger); }
 .badge { font-size: 12px; padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); }
+h2 { font-size: 18px; font-weight: 600; margin: 0 0 8px; }
+section.card { margin-top: 24px; }
+.head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.head form button { margin-top: 0; }
+a { color: var(--accent); }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; }
+table { width: 100%; border-collapse: collapse; margin-top: 16px; background: var(--surface);
+        border: 1px solid var(--border); border-radius: var(--radius); }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+th { font-weight: 500; color: var(--muted); font-size: 14px; }
+tr:last-child td { border-bottom: 0; }
+select, textarea { width: 100%; padding: 8px 10px; font: inherit; color: inherit; background: var(--bg);
+                   border: 1px solid var(--border); border-radius: var(--radius); }
+textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.hint { color: var(--muted); font-size: 14px; margin: 4px 0 0; }
+.status { font-size: 13px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); }
+.s-running { color: #1d7a46; border-color: #1d7a46; }
+.s-pending, .s-deleting { color: #9a6700; border-color: #9a6700; }
+.s-failed, .s-lost { color: var(--danger); border-color: var(--danger); }
+.s-deleted { color: var(--muted); }
+@media (prefers-color-scheme: dark) {
+  .s-running { color: #6fd39b; border-color: #6fd39b; }
+  .s-pending, .s-deleting { color: #e3b341; border-color: #e3b341; }
+}
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 24px; margin: 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; }
+.copy { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.copy code { padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+.copy button { margin-top: 0; }
+button.secondary { color: var(--accent); background: none; border: 1px solid var(--border); }
+button.danger { background: var(--danger); }
+h1 code { font-size: inherit; }

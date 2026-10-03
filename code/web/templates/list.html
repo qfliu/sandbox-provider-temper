@@ -1,0 +1,29 @@
+{{define "content"}}
+<div class="head">
+  <h1>Your sandboxes</h1>
+  {{if .ShowEnded}}<a href="/ui/">Hide ended</a>{{else}}<a href="/ui/?ended=1">Show ended</a>{{end}}
+</div>
+<div id="sandboxes" hx-get="/ui/sandboxes/rows{{if .ShowEnded}}?ended=1{{end}}" hx-trigger="every 5s" hx-swap="innerHTML">
+{{template "rows" .}}
+</div>
+
+<section class="card">
+  <h2>New sandbox</h2>
+  {{with .Error}}<p class="error" role="alert">{{.}}</p>{{end}}
+  <form method="post" action="/ui/sandboxes">
+    <label for="image">Image</label>
+    <select id="image" name="image">
+      {{range .Images}}<option value="{{.}}"{{if eq . $.Form.Image}} selected{{end}}>{{.}}</option>{{end}}
+    </select>
+    <label for="ssh_public_key">SSH public key</label>
+    <textarea id="ssh_public_key" name="ssh_public_key" rows="3" required placeholder="ssh-ed25519 AAAA… you@laptop">{{.Form.SSHPublicKey}}</textarea>
+    <p class="hint">The contents of e.g. <code>~/.ssh/id_ed25519.pub</code>. Only the matching private key can SSH in.</p>
+    <label for="ttl_hours">Lifetime</label>
+    <select id="ttl_hours" name="ttl_hours">
+      {{range .TTLChoices}}<option value="{{.}}"{{if eq . $.Form.TTLHours}} selected{{end}}>{{.}} hour{{if ne . 1}}s{{end}}</option>{{end}}
+    </select>
+    <p class="hint">Deleted automatically after this, or after 30 minutes without use.</p>
+    <button type="submit">Create sandbox</button>
+  </form>
+</section>
+{{end}}
