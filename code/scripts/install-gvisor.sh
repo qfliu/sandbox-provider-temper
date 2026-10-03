@@ -53,7 +53,11 @@ fi
 #    which is /data/gvisor (symlinks resolve through /proc/self/exe).
 echo "==> configuring containerd"
 #    runsc.toml: allow-suid lets setuid binaries (sudo) work inside the
-#    sandbox (D22); gVisor ignores SUID bits by default.
+#    sandbox (D22); gVisor ignores SUID bits by default. Deliberately NOT
+#    oci-seccomp: applying the pod's RuntimeDefault profile inside gVisor
+#    breaks thread creation ("can't start new thread", tested), so gVisor's
+#    own syscall filter is the barrier (D45). Raw sockets stay off (runsc's
+#    default, net-raw = false).
 minikube ssh -- 'set -e
   sudo ln -sf /data/gvisor/runsc /usr/bin/runsc
   sudo ln -sf /data/gvisor/containerd-shim-runsc-v1 /usr/bin/containerd-shim-runsc-v1
