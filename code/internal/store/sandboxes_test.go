@@ -402,9 +402,71 @@ func TestGatewayRoleCannotChangeSandboxes(t *testing.T) {
 			t.Errorf("as the gateway role, %q: err = %v; want permission denied", q, err)
 		}
 	}
+	// The gateway reads sandbox rows with every column (GetSandbox), incl.
+	// the created-by key copied onto the row (step 4.5).
+	if err := asGateway("SELECT " + sandboxColumns + " FROM sandboxes"); err != nil {
+		t.Fatalf("the gateway role can't read sandbox rows: %v", err)
+	}
 	if err := asGateway(`INSERT INTO ssh_activity (sandbox_id, last_seen_at) VALUES ($1, now())
 		ON CONFLICT (sandbox_id) DO UPDATE SET last_seen_at = now()
 		WHERE ssh_activity.last_seen_at < now() - interval '10 seconds'`, sb.ID); err != nil {
 		t.Fatalf("the gateway role can't record SSH activity: %v", err)
+	}
+}
+
+// The key that created a sandbox is stored on it, survives the key being
+// revoked, and shows in every reader; sandboxes without one have none.
+func TestSandboxCreatedByKey(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	plain, k, _ := s.CreateAPIKey(ctx, alice.ID, "ci-runner")
+	s.CreateAPIKey(ctx, alice.ID, "other") // so k can be revoked
+
+	u, ref, err := s.Authenticate(ctx, plain)
+	if err != nil || u.ID != alice.ID || ref.ID != k.ID || ref.Name != "ci-runner" || ref.Prefix != k.Prefix {
+		t.Fatalf("Authenticate = %+v, %+v, %v", u, ref, err)
+	}
+	n := newSandbox(alice.ID, 1)
+	n.CreatedByKey = &ref
+	sb, err := s.CreateSandbox(ctx, n)
+	if err != nil || sb.CreatedByKey == nil || *sb.CreatedByKey != ref {
+		t.Fatalf("created = %+v, %v; want CreatedByKey %+v", sb.CreatedByKey, err, ref)
+	}
+	if err := s.RevokeAPIKey(ctx, alice.ID, k.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetSandbox(ctx, sb.ID)
+	if got.CreatedByKey == nil || got.CreatedByKey.Name != "ci-runner" {
+		t.Fatalf("after revoking the key: %+v", got.CreatedByKey)
+	}
+	all, _ := s.ListAllSandboxes(ctx, true)
+	if len(all) != 1 || all[0].CreatedByKey == nil || all[0].CreatedByKey.ID != k.ID {
+		t.Fatalf("admin list: %+v", all)
+	}
+	old, _ := s.CreateSandbox(ctx, newSandbox(alice.ID, 2)) // no key given
+	if old.CreatedByKey != nil {
+		t.Fatalf("sandbox without a key has %+v", old.CreatedByKey)
+	}
+}
+
+// The copied label outlives the key row itself: if the key is ever deleted
+// (FK sets the id to NULL), the name and prefix still show. An unnamed key
+// comes back with an empty name and its prefix.
+func TestCreatedByKeyOutlivesKeyRow(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	_, k, _ := s.CreateAPIKey(ctx, alice.ID, "")
+	n := newSandbox(alice.ID, 1)
+	n.CreatedByKey = &KeyRef{ID: k.ID, Name: k.Name, Prefix: k.Prefix}
+	sb, _ := s.CreateSandbox(ctx, n)
+	if got, _ := s.GetSandbox(ctx, sb.ID); got.CreatedByKey == nil || got.CreatedByKey.Name != "" || got.CreatedByKey.Prefix != k.Prefix {
+		t.Fatalf("unnamed key = %+v, want empty name and prefix %s", got.CreatedByKey, k.Prefix)
+	}
+	mustExec(t, s, "DELETE FROM api_keys WHERE id = $1", k.ID)
+	got, _ := s.GetSandbox(ctx, sb.ID)
+	if got.CreatedByKey == nil || got.CreatedByKey.Prefix != k.Prefix || got.CreatedByKey.ID != "" {
+		t.Fatalf("after deleting the key row: %+v, want the copied prefix and no id", got.CreatedByKey)
 	}
 }

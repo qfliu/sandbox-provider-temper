@@ -18,16 +18,16 @@ import (
 // contains HTML; anything else is unknown.
 type uiAuth struct{}
 
-func (uiAuth) UserByAPIKey(ctx context.Context, key string) (store.User, error) {
+func (uiAuth) Authenticate(ctx context.Context, key string) (store.User, store.KeyRef, error) {
 	switch key {
 	case "sk_admin":
-		return store.User{ID: "u2", Name: "root", IsAdmin: true}, nil
-	case aliceLongKey: // long enough to have a display prefix
-		return store.User{ID: "u1", Name: "alice"}, nil
+		return store.User{ID: "u2", Name: "root", IsAdmin: true}, store.KeyRef{ID: "k-root", Name: "root", Prefix: "sk_admin"}, nil
+	case aliceLongKey: // the session key "k-session" in aliceKeys()
+		return store.User{ID: "u1", Name: "alice"}, store.KeyRef{ID: "k-session", Name: "browser", Prefix: "sk_aliceAAA"}, nil
 	case "sk_html":
-		return store.User{ID: "u3", Name: `<script>alert(1)</script>`}, nil
+		return store.User{ID: "u3", Name: `<script>alert(1)</script>`}, store.KeyRef{ID: "k-html", Prefix: "sk_html"}, nil
 	}
-	return fakeAuth{}.UserByAPIKey(ctx, key)
+	return fakeAuth{}.Authenticate(ctx, key)
 }
 
 func uiHandler() http.Handler {

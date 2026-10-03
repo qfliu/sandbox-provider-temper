@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"html/template"
@@ -17,7 +16,6 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/qfliu/sandbox-provider-temper/code/internal/auth"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/sandbox"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 	"github.com/qfliu/sandbox-provider-temper/code/web"
@@ -43,7 +41,7 @@ type ui struct {
 	// Sandbox limits shown in and enforced by the create form.
 	ttlChoices  []int
 	idleTimeout time.Duration // the SSH gateway's public host:port, may be empty
-	pages     map[string]*template.Template
+	pages       map[string]*template.Template
 }
 
 // page is what every template gets: the signed-in user (nil on the login
@@ -63,6 +61,11 @@ type page struct {
 	IdleFor    string // e.g. "30m"
 	Form       createForm
 
+	// ActiveKeys holds the signed-in user's active key IDs on pages showing
+	// their own sandboxes, so "created by" can link to the key (or say it
+	// was revoked); nil elsewhere.
+	ActiveKeys map[string]bool
+
 	// Sandbox detail.
 	Sandbox    store.Sandbox
 	SSHCommand string
@@ -70,7 +73,7 @@ type page struct {
 
 	// API keys.
 	Keys       []store.APIKey
-	CurrentKey string // display prefix of the key this session uses
+	CurrentKey string // ID of the key this session uses
 	NewKey     string // a just-created key, shown once
 	NewKeyName string
 
@@ -120,6 +123,31 @@ var templateFuncs = template.FuncMap{
 	"ago":   func(t time.Time) string { return humanDuration(time.Since(t)) + " ago" },
 	"until": until,
 	"stamp": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") },
+	"key":   keyLabel,
+	"keyref": func(k *store.KeyRef, active map[string]bool) keyRefData {
+		return keyRefData{Ref: k, Active: active}
+	},
+}
+
+// keyRefData is what the "keyref" template gets: the key and, on the
+// owner's own pages, which of their keys are still active.
+type keyRefData struct {
+	Ref    *store.KeyRef
+	Active map[string]bool
+}
+
+// keyLabel names the API key that created a sandbox: "ci-runner
+// (sk_vOawHfdi…)", just the prefix for an unnamed key, or "—" for
+// sandboxes created before keys were recorded (step 4.5).
+func keyLabel(k *store.KeyRef) string {
+	switch {
+	case k == nil:
+		return "—"
+	case k.Name == "":
+		return k.Prefix + "…"
+	default:
+		return k.Name + " (" + k.Prefix + "…)"
+	}
 }
 
 // until is "in 52m", or "expired" once t has passed (a live sandbox can be
@@ -151,7 +179,7 @@ func humanDuration(d time.Duration) string {
 func newUI(log *slog.Logger, auth Authenticator, sandboxes SandboxService, keys KeyService, admin AdminService, gateway string) *ui {
 	u := &ui{log: log, auth: auth, sandboxes: sandboxes, keys: keys, admin: admin, gateway: gateway, pages: map[string]*template.Template{}}
 	u.setLimits(0, 0)
-	partials := []string{"templates/rows.html", "templates/status.html", "templates/admin_rows.html"}
+	partials := []string{"templates/rows.html", "templates/status.html", "templates/admin_rows.html", "templates/keyref.html"}
 	for _, name := range []string{"login", "list", "detail", "keys", "admin"} {
 		files := append([]string{"templates/layout.html", "templates/" + name + ".html"}, partials...)
 		u.pages[name] = template.Must(template.New(name).Funcs(templateFuncs).ParseFS(web.Templates, files...))
@@ -232,7 +260,7 @@ func (u *ui) requireSession(next http.Handler) http.Handler {
 			toLogin(w, r)
 			return
 		}
-		user, err := u.auth.UserByAPIKey(r.Context(), c.Value)
+		user, apiKey, err := u.auth.Authenticate(r.Context(), c.Value)
 		if errors.Is(err, store.ErrNotFound) { // revoked or bogus: end the session
 			clearSession(w, r)
 			toLogin(w, r)
@@ -243,7 +271,7 @@ func (u *ui) requireSession(next http.Handler) http.Handler {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, user)))
+		next.ServeHTTP(w, r.WithContext(withCaller(r.Context(), user, apiKey)))
 	})
 }
 
@@ -274,7 +302,7 @@ func (u *ui) loginForm(w http.ResponseWriter, _ *http.Request) {
 
 func (u *ui) login(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimSpace(r.PostFormValue("api_key"))
-	user, err := u.auth.UserByAPIKey(r.Context(), key)
+	user, _, err := u.auth.Authenticate(r.Context(), key)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && key == "") {
 		u.render(w, http.StatusUnauthorized, "login", page{Title: "Sign in", Error: "Invalid or revoked API key."})
 		return
@@ -331,7 +359,11 @@ func (u *ui) listPage(r *http.Request) (page, error) {
 	user := userFrom(r.Context())
 	showEnded := r.URL.Query().Get("ended") == "1"
 	list, err := u.sandboxes.List(r.Context(), user, showEnded)
-	return page{
+	if err != nil {
+		return page{}, err
+	}
+	active, err := u.activeKeys(r, user)
+	return page{ActiveKeys: active,
 		Title: "Your sandboxes", User: &user,
 		Sandboxes: list, ShowEnded: showEnded,
 		Images: sandbox.Images, TTLChoices: u.ttlChoices, IdleFor: humanDuration(u.idleTimeout),
@@ -374,6 +406,7 @@ func (u *ui) create(w http.ResponseWriter, r *http.Request) {
 	} else {
 		sb, err = u.sandboxes.Create(r.Context(), user, sandbox.CreateRequest{
 			Image: form.Image, SSHPublicKey: form.SSHPublicKey, TTLSeconds: form.TTLHours * 3600,
+			CreatedBy: callerKey(r.Context()),
 		})
 	}
 	if err != nil {
@@ -390,12 +423,38 @@ func (u *ui) create(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/sandboxes/"+sb.ID, http.StatusSeeOther)
 }
 
+// activeKeys is the set of the user's active key IDs, or nil when there's
+// no keys page to link to.
+func (u *ui) activeKeys(r *http.Request, user store.User) (map[string]bool, error) {
+	if u.keys == nil {
+		return nil, nil
+	}
+	keys, err := u.keys.ListAPIKeys(r.Context(), user.ID)
+	if err != nil {
+		return nil, err
+	}
+	active := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		active[k.ID] = true
+	}
+	return active, nil
+}
+
 // detailPage loads one sandbox the user may see (their own; any for an
 // admin, as on /v1).
 func (u *ui) detailPage(r *http.Request) (page, error) {
 	user := userFrom(r.Context())
 	sb, err := u.sandboxes.Get(r.Context(), user, r.PathValue("id"))
-	return page{
+	if err != nil {
+		return page{}, err
+	}
+	var active map[string]bool
+	if sb.UserID == user.ID { // keys page links only make sense for your own
+		if active, err = u.activeKeys(r, user); err != nil {
+			return page{}, err
+		}
+	}
+	return page{ActiveKeys: active,
 		Title: sb.ID, User: &user, Sandbox: sb,
 		SSHCommand: sshCommand(sb.ID, u.gateway), GatewaySet: gatewaySet(u.gateway),
 	}, err
@@ -506,9 +565,7 @@ func checkKeyName(name string) string {
 }
 
 // keysPage loads the signed-in user's active keys and notes which one this
-// session uses (by display prefix: 8 random characters, so two of a user's
-// keys sharing one is vanishingly unlikely, and it's only used for display
-// and the revoke warning).
+// session uses.
 func (u *ui) keysPage(r *http.Request) (page, error) {
 	user := userFrom(r.Context())
 	keys, err := u.keys.ListAPIKeys(r.Context(), user.ID)
@@ -516,9 +573,7 @@ func (u *ui) keysPage(r *http.Request) (page, error) {
 	if r.URL.Query().Get("error") == "last-key" { // a fixed code, never echoed text
 		p.Error = "You can't revoke your only API key. Create another one first."
 	}
-	if c, cerr := r.Cookie(sessionCookie); cerr == nil && len(c.Value) >= auth.DisplayPrefixLen {
-		p.CurrentKey = c.Value[:auth.DisplayPrefixLen]
-	}
+	p.CurrentKey = keyFrom(r.Context()).ID
 	return p, err
 }
 

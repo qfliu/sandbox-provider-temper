@@ -42,6 +42,9 @@ func handleCreateSandbox(log *slog.Logger, svc SandboxService) http.HandlerFunc 
 			writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 			return
 		}
+		// Who created it: always the authenticated key, never the body
+		// (the field has no JSON name, and unknown fields are rejected).
+		req.CreatedBy = callerKey(r.Context())
 		sb, err := svc.Create(r.Context(), userFrom(r.Context()), req)
 		if err != nil {
 			writeServiceError(log, w, err)

@@ -383,3 +383,123 @@ func TestUICreateFormFollowsConfig(t *testing.T) {
 		t.Error("defaults not applied when limits are unset")
 	}
 }
+
+// Creating a sandbox records the key that made the request, from /v1 and
+// from the dashboard, and a client can't claim another key in the body.
+func TestCreateRecordsKey(t *testing.T) {
+	svc := aliceAndBob()
+	h := sandboxUI(svc, "")
+	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes",
+		strings.NewReader(`{"image":"ubuntu-dev","ssh_public_key":"ssh-ed25519 AAAAkey"}`))
+	req.Header.Set("Authorization", "Bearer "+goodKey)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("/v1 create = %d %s", rec.Code, rec.Body)
+	}
+	if got := svc.created[0].CreatedBy; got == nil || got.ID != "k-good" || got.Name != "laptop" {
+		t.Fatalf("/v1 create recorded %+v, want key k-good", got)
+	}
+
+	// The Go field name itself is not accepted from JSON (json:"-"), so a
+	// body can't name another key.
+	for _, field := range []string{"CreatedBy", "created_by"} {
+		spoof := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", strings.NewReader(
+			`{"image":"ubuntu-dev","ssh_public_key":"ssh-ed25519 AAAAkey","`+field+`":{"ID":"k-other","Name":"evil"}}`))
+		spoof.Header.Set("Authorization", "Bearer "+goodKey)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, spoof)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("create with %q in the body = %d, want 400", field, rec.Code)
+		}
+	}
+	if len(svc.created) != 1 {
+		t.Fatalf("spoofed creates went through: %+v", svc.created)
+	}
+
+	uiDo(h, http.MethodPost, "/ui/sandboxes", url.Values{
+		"image": {"ubuntu-dev"}, "ssh_public_key": {"ssh-ed25519 AAAAkey"}, "ttl_hours": {"1"},
+	}, aliceSession)
+	if got := svc.created[len(svc.created)-1].CreatedBy; got == nil || got.ID != "k-session" {
+		t.Fatalf("dashboard create recorded %+v, want the session key k-session", got)
+	}
+}
+
+func TestUIShowsCreatedByKey(t *testing.T) {
+	sb := aliceAndBob()
+	sb.rows["sb-alice0000001"] = func() store.Sandbox {
+		s := sb.rows["sb-alice0000001"]
+		s.CreatedByKey = &store.KeyRef{ID: "k1", Name: "ci-runner", Prefix: "sk_vOawHfdi"}
+		return s
+	}()
+	h := adminUI(sb)
+	for _, path := range []string{"/ui/", "/ui/sandboxes/sb-alice0000001"} {
+		if body := uiDo(h, http.MethodGet, path, nil, alice).Body.String(); !strings.Contains(body, "ci-runner (sk_vOawHfdi…)") {
+			t.Errorf("%s doesn't show the creating key", path)
+		}
+	}
+	if body := uiDo(h, http.MethodGet, "/ui/admin", nil, root).Body.String(); !strings.Contains(body, "alice <span class=\"muted\">· ci-runner (sk_vOawHfdi…)") {
+		t.Error("admin view doesn't show owner · key")
+	}
+	// Sandboxes created before keys were recorded.
+	if body := uiDo(h, http.MethodGet, "/ui/sandboxes/sb-bob000000001", nil, root).Body.String(); !strings.Contains(body, "<dt>Created by</dt><dd>—</dd>") {
+		t.Error("missing key not shown as —")
+	}
+	// A key name is user input: escaped wherever it's shown.
+	sb.rows["sb-alice0000001"] = func() store.Sandbox {
+		s := sb.rows["sb-alice0000001"]
+		s.CreatedByKey = &store.KeyRef{ID: "k1", Name: "<script>x</script>", Prefix: "sk_vOawHfdi"}
+		return s
+	}()
+	for _, page := range []struct {
+		path string
+		c    *http.Cookie
+	}{{"/ui/", alice}, {"/ui/sandboxes/sb-alice0000001", alice}, {"/ui/admin", root}} {
+		body := uiDo(h, http.MethodGet, page.path, nil, page.c).Body.String()
+		if strings.Contains(body, "<script>x</script>") || !strings.Contains(body, "&lt;script&gt;x&lt;/script&gt;") {
+			t.Errorf("%s: key name not escaped", page.path)
+		}
+	}
+	if got := keyLabel(&store.KeyRef{Prefix: "sk_abcdefgh"}); got != "sk_abcdefgh…" {
+		t.Errorf("unnamed key label = %q", got)
+	}
+}
+
+// On the owner's pages, "created by" links to the key on the keys page if
+// it's still active, says "(revoked)" if not; elsewhere it's plain text.
+func TestUICreatedByLinksToKey(t *testing.T) {
+	sb := aliceAndBob()
+	set := func(id string, k *store.KeyRef) {
+		s := sb.rows[id]
+		s.CreatedByKey = k
+		sb.rows[id] = s
+	}
+	set("sb-alice0000001", &store.KeyRef{ID: "k-session", Name: "browser", Prefix: "sk_aliceAAA"}) // active (aliceKeys)
+	set("sb-bob000000001", &store.KeyRef{ID: "k-bobs", Name: "bobs-agent", Prefix: "sk_bob00000"})
+	h := adminUI(sb) // has Keys: aliceKeys()
+	link := `<a href="/ui/keys#key-k-session">browser (sk_aliceAAA…)</a>`
+	for _, path := range []string{"/ui/", "/ui/sandboxes/sb-alice0000001"} {
+		if body := uiDo(h, http.MethodGet, path, nil, aliceSession).Body.String(); !strings.Contains(body, link) {
+			t.Errorf("%s: no link to the active key", path)
+		}
+	}
+	if body := uiDo(h, http.MethodGet, "/ui/keys", nil, aliceSession).Body.String(); !strings.Contains(body, `<tr id="key-k-session">`) {
+		t.Error("keys page row has no anchor")
+	}
+
+	// The same sandbox after its key was revoked (no longer active).
+	set("sb-alice0000001", &store.KeyRef{ID: "k-revoked", Name: "old-agent", Prefix: "sk_oldagent"})
+	body := uiDo(h, http.MethodGet, "/ui/sandboxes/sb-alice0000001", nil, aliceSession).Body.String()
+	if !strings.Contains(body, `old-agent (sk_oldagent…) <span class="muted">(revoked)</span>`) || strings.Contains(body, "#key-k-revoked") {
+		t.Error("revoked key not marked, or still linked")
+	}
+
+	// An admin looking at someone else's sandbox, and the admin list: plain
+	// text (the keys page only has the viewer's own keys).
+	for _, path := range []string{"/ui/sandboxes/sb-bob000000001", "/ui/admin"} {
+		body := uiDo(h, http.MethodGet, path, nil, root).Body.String()
+		if !strings.Contains(body, "bobs-agent (sk_bob00000…)") || strings.Contains(body, "#key-k-bobs") || strings.Contains(body, "(revoked)") {
+			t.Errorf("%s as admin: want a plain label for bob's key", path)
+		}
+	}
+}

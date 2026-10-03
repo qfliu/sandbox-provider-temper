@@ -65,6 +65,9 @@ type CreateRequest struct {
 	SSHPublicKey string `json:"ssh_public_key"`
 	// TTLSeconds is optional; 0 means the default (1 hour).
 	TTLSeconds int `json:"ttl_seconds"`
+	// CreatedBy is the API key making the request, set by the HTTP layer
+	// from authentication, never from the request body (step 4.5).
+	CreatedBy *store.KeyRef `json:"-"`
 }
 
 // Create validates the request, reserves quota by inserting the row, then
@@ -97,6 +100,7 @@ func (s *Service) Create(ctx context.Context, user store.User, req CreateRequest
 		SSHPublicKey:  key,
 		HostPublicKey: hostPub,
 		TTLSeconds:    int(ttl / time.Second),
+		CreatedByKey:  req.CreatedBy,
 	})
 	if err != nil {
 		return store.Sandbox{}, err
