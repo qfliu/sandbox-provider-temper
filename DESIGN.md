@@ -203,6 +203,7 @@ Update checkboxes as work progresses. **Workflow:** one branch and one PR **per 
 - [x] 4.2 Sandbox list with htmx auto-refresh, detail page (status, image, copyable SSH command, expiry), create form, delete with confirmation (D41)
 - [x] 4.3 API key management: create (shown once), revoke, can't revoke the last key (D42)
 - [x] 4.4 Admin view: all users and sandboxes (auto-refresh), delete any sandbox (D43)
+- [ ] 4.5 Record which API key created each sandbox (`created_by_key_id`, nullable for older rows) and show it: detail page, the user's list, the admin view ("owner · key"), and `/v1` responses. Agents are identified as precisely as their keys (one named key per agent = exact). Decided 2026-10-03, after #40–#42 merge.
 - **Done when:** everything the API can do for sandboxes and keys can be done from the browser. → **PR 4**
 
 ### Phase 5: Hardening + scale (~1 h) — branch `phase5/hardening`
