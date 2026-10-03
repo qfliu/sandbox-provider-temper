@@ -45,13 +45,13 @@ func (s *Server) proxySessions(sconn *ssh.ServerConn, chans <-chan ssh.NewChanne
 	lookupCancel()
 	if err != nil || sb.Status != store.StatusRunning || sb.PodIP == "" {
 		s.log.Warn("sandbox not available after login", "sandbox", id, "status", sb.Status, "err", err)
-		rejectAll(chans, ssh.ConnectionFailed, "sandbox is not running")
+		rejectThenClose(sconn, chans, s.rejectGrace, ssh.ConnectionFailed, "sandbox is not running")
 		return
 	}
 	up, err := s.upstream.Dial(ctx, net.JoinHostPort(sb.PodIP, s.sandboxPort), sb.HostPublicKey)
 	if err != nil {
 		s.log.Error("connect to sandbox", "sandbox", id, "err", err)
-		rejectAll(chans, ssh.ConnectionFailed, "sandbox unreachable, try again")
+		rejectThenClose(sconn, chans, s.rejectGrace, ssh.ConnectionFailed, "sandbox unreachable, try again")
 		return
 	}
 	defer up.Close()
@@ -102,6 +102,7 @@ func (s *Server) proxyChannel(nch ssh.NewChannel, up *ssh.Client, id string) {
 	var reqMu sync.Mutex
 	closed := false
 	go func() {
+		defer upCh.Close() // client closed its channel: end the sandbox side too (see below)
 		for r := range downReqs {
 			reqMu.Lock()
 			if closed {
@@ -138,11 +139,26 @@ func (s *Server) proxyChannel(nch ssh.NewChannel, up *ssh.Client, id string) {
 		io.Copy(upCh, downCh)
 		upCh.CloseWrite()
 	}()
-	// Sandbox stdout and stderr → client.
+	// Sandbox stdout and stderr → client. If the client can't take output any
+	// more (it closed the session), close the sandbox side: otherwise nobody
+	// reads it, the command blocks on stdout forever and these goroutines
+	// leak until the whole connection drops (review finding on PR #26).
+	// Closing the channel is what makes the sandbox's sshd end the command,
+	// as OpenSSH does.
 	var out sync.WaitGroup
 	out.Add(2)
-	go func() { defer out.Done(); io.Copy(downCh, upCh) }()
-	go func() { defer out.Done(); io.Copy(downCh.Stderr(), upCh.Stderr()) }()
+	go func() {
+		defer out.Done()
+		if _, err := io.Copy(downCh, upCh); err != nil {
+			upCh.Close()
+		}
+	}()
+	go func() {
+		defer out.Done()
+		if _, err := io.Copy(downCh.Stderr(), upCh.Stderr()); err != nil {
+			upCh.Close()
+		}
+	}()
 	out.Wait()
 	downCh.CloseWrite()
 
@@ -212,7 +228,12 @@ func (s *Server) keepalive(ctx context.Context, sconn *ssh.ServerConn) {
 	}
 }
 
-func rejectAll(chans <-chan ssh.NewChannel, reason ssh.RejectionReason, msg string) {
+// rejectThenClose refuses every channel with msg and closes the connection
+// after grace (enough for the client to receive the rejection), so a client
+// can't hold an idle connection forever.
+func rejectThenClose(sconn *ssh.ServerConn, chans <-chan ssh.NewChannel, grace time.Duration, reason ssh.RejectionReason, msg string) {
+	timer := time.AfterFunc(grace, func() { sconn.Close() })
+	defer timer.Stop()
 	for nch := range chans {
 		nch.Reject(reason, msg)
 	}

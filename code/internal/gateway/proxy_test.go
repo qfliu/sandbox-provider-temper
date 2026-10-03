@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +28,9 @@ type fakeSandboxSSHD struct {
 	addr     string
 	mu       sync.Mutex
 	requests []string
+	// foreverStopped is closed when an exec "forever" command stops writing
+	// because its channel was closed (like sshd killing the command).
+	foreverStopped chan struct{}
 }
 
 func (f *fakeSandboxSSHD) saw(r string) {
@@ -55,7 +59,7 @@ func startSandboxSSHD(t *testing.T, hostKey ssh.Signer, internalKey ssh.PublicKe
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	f := &fakeSandboxSSHD{addr: ln.Addr().String()}
+	f := &fakeSandboxSSHD{addr: ln.Addr().String(), foreverStopped: make(chan struct{})}
 	fs := sftp.InMemHandler()
 	go func() {
 		for {
@@ -96,6 +100,17 @@ func (f *fakeSandboxSSHD) serve(ch ssh.Channel, reqs <-chan *ssh.Request, fs sft
 			var p struct{ Cmd string }
 			ssh.Unmarshal(r.Payload, &p)
 			r.Reply(true, nil)
+			if p.Cmd == "forever" { // like `yes`: writes until the channel goes away
+				go func() {
+					for {
+						if _, err := io.WriteString(ch, "y\n"); err != nil {
+							close(f.foreverStopped)
+							return
+						}
+					}
+				}()
+				continue
+			}
 			var code uint32
 			if n, _ := fmt.Sscanf(p.Cmd, "fail %d", &code); n == 1 {
 				io.WriteString(ch, "out\n")
@@ -138,7 +153,9 @@ type proxyFixture struct {
 	sandbox string
 }
 
-func newProxyFixture(t *testing.T) *proxyFixture {
+// newProxyFixture starts the gateway after applying opts, so tests never
+// change a server setting while its goroutines may be reading it.
+func newProxyFixture(t *testing.T, opts ...func(*Server)) *proxyFixture {
 	t.Helper()
 	gwHost, owner, internal := signer(t), signer(t), signer(t)
 	sbHostPEM, sbHostPub, _ := sshx.GenerateHostKey()
@@ -153,6 +170,9 @@ func newProxyFixture(t *testing.T) *proxyFixture {
 	}}}
 	srv := New(gwHost, rows, sshx.Dialer{Signer: internal}, quietLog())
 	srv.sandboxPort = port
+	for _, o := range opts {
+		o(srv)
+	}
 	return &proxyFixture{gw: start(t, srv), host: gwHost.PublicKey(), owner: owner, sshd: sshd, rows: rows, srv: srv, sandbox: id}
 }
 
@@ -250,8 +270,7 @@ func TestProxyRefusesPortForwarding(t *testing.T) {
 
 // A session must not outlive its sandbox.
 func TestProxyClosesWhenSandboxEnds(t *testing.T) {
-	p := newProxyFixture(t)
-	p.srv.statusInterval = 100 * time.Millisecond
+	p := newProxyFixture(t, func(s *Server) { s.statusInterval = 100 * time.Millisecond })
 	c := p.client(t)
 	sess, _ := c.NewSession()
 	if err := sess.Shell(); err != nil {
@@ -286,5 +305,68 @@ func TestProxyRefusesWrongSandboxHostKey(t *testing.T) {
 
 	if _, err := p.client(t).NewSession(); err == nil || !strings.Contains(err.Error(), "unreachable") {
 		t.Fatalf("session = %v; want refusal (sandbox host key mismatch)", err)
+	}
+}
+
+// Closing one session while keeping the connection must end the command
+// in the sandbox (review finding on PR #26: the gateway only half-closed
+// the sandbox side, so the command blocked on stdout forever and the
+// relay goroutines leaked until the whole connection dropped).
+func TestProxyClosingSessionEndsSandboxCommand(t *testing.T) {
+	p := newProxyFixture(t)
+	c := p.client(t) // the connection stays open throughout
+	sess, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := sess.StdoutPipe()
+	if err := sess.Start("forever"); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 64)
+	if _, err := io.ReadFull(out, buf); err != nil { // it's running
+		t.Fatal(err)
+	}
+	before := runtime.NumGoroutine()
+	sess.Close()
+
+	select {
+	case <-p.sshd.foreverStopped:
+	case <-time.After(3 * time.Second):
+		t.Fatal("sandbox command still running 3s after the client closed its session")
+	}
+	// The relay goroutines for that session are gone too.
+	deadline := time.Now().Add(3 * time.Second)
+	for runtime.NumGoroutine() >= before && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if n := runtime.NumGoroutine(); n >= before {
+		t.Fatalf("goroutines %d → %d after closing the session; relay goroutines leaked", before, n)
+	}
+	// The connection is still usable for new sessions.
+	s2, _ := c.NewSession()
+	if got, err := s2.Output("after"); err != nil || string(got) != "ran: after\n" {
+		t.Fatalf("new session on the same connection: %q, %v", got, err)
+	}
+}
+
+// A connection whose sandbox isn't available must not stay open forever.
+func TestUnavailableSandboxConnectionIsClosed(t *testing.T) {
+	p := newProxyFixture(t, func(s *Server) { s.rejectGrace = 200 * time.Millisecond })
+	p.rows.mu.Lock()
+	sb := p.rows.rows[p.sandbox]
+	sb.PodIP = "" // e.g. the pod is gone
+	p.rows.rows[p.sandbox] = sb
+	p.rows.mu.Unlock()
+
+	// Login succeeds only if running with an IP; force the post-login path by
+	// keeping it running but without a reachable pod.
+	c := p.client(t)
+	done := make(chan error, 1)
+	go func() { done <- c.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("connection to an unavailable sandbox still open after the grace period")
 	}
 }

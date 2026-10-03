@@ -8,10 +8,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"regexp"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -59,6 +61,7 @@ type Server struct {
 	sandboxPort       string        // sshd port in sandbox pods
 	statusInterval    time.Duration // how often an open session re-checks its sandbox
 	keepaliveInterval time.Duration // how often the client is pinged
+	rejectGrace       time.Duration // how long a connection to an unavailable sandbox stays open
 
 	mu      sync.Mutex
 	closing bool // set once shutdown starts; new connections are refused
@@ -78,6 +81,7 @@ func New(hostKey ssh.Signer, sandboxes SandboxLookup, upstream Upstream, log *sl
 		sandboxPort:       "22",
 		statusInterval:    30 * time.Second,
 		keepaliveInterval: 30 * time.Second,
+		rejectGrace:       5 * time.Second,
 		conns:             map[net.Conn]struct{}{},
 	}
 }
@@ -258,7 +262,13 @@ func (s *Server) handle(conn net.Conn) {
 	conn.SetDeadline(time.Now().Add(s.handshakeTimeout))
 	sconn, chans, reqs, err := ssh.NewServerConn(conn, s.newConnConfig())
 	if err != nil {
-		s.log.Info("connection refused", "remote", conn.RemoteAddr().String(), "err", err)
+		// A connection that closes before speaking SSH is a TCP health probe
+		// or a port scan, not a refused login: don't flood the log with it.
+		level := slog.LevelInfo
+		if errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET) {
+			level = slog.LevelDebug // probes end with FIN or RST before the version exchange
+		}
+		s.log.Log(context.Background(), level, "connection refused", "remote", conn.RemoteAddr().String(), "err", err)
 		return
 	}
 	// Only now is the login real: the client proved it holds the key.

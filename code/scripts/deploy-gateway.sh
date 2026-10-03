@@ -18,20 +18,27 @@ LOG="$ROOT/.devenv/state/tmp/gateway-build.log"
 echo "==> read-only database role for the gateway"
 PWFILE="$ROOT/.devenv/state/postgres-gateway-password"
 [ -s "$PWFILE" ] || (umask 077 && openssl rand -hex 24 | tr -d '\n' >"$PWFILE")
-GWPW="$(cat "$PWFILE")"
-kubectl -n sandbox-system exec -i postgres-0 -- psql -q -v ON_ERROR_STOP=1 -U sandbox -d sandbox >/dev/null <<SQL
-DO \$\$ BEGIN
+# The password reaches psql on stdin as a variable (:'pw' quotes it safely),
+# never on a command line where `ps` could show it; the Secret is built from
+# the file for the same reason. (Postgres still receives it inside the
+# ALTER ROLE statement, as with any password change; statement logging is
+# off by default.)
+{
+  printf "\\set pw '%s'\n" "$(cat "$PWFILE")"
+  cat <<'SQL'
+DO $$ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'sandbox_gateway') THEN
     CREATE ROLE sandbox_gateway LOGIN;
   END IF;
-END \$\$;
-ALTER ROLE sandbox_gateway PASSWORD '$GWPW';
+END $$;
+ALTER ROLE sandbox_gateway PASSWORD :'pw';
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM sandbox_gateway;
 GRANT USAGE ON SCHEMA public TO sandbox_gateway;
 GRANT SELECT ON sandboxes TO sandbox_gateway;
 SQL
+} | kubectl -n sandbox-system exec -i postgres-0 -- psql -q -v ON_ERROR_STOP=1 -U sandbox -d sandbox >/dev/null
 kubectl -n sandbox-system create secret generic postgres-gateway-credentials \
-  --from-literal=password="$GWPW" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  --from-file=password="$PWFILE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 echo "==> building sandbox/api:$TAG (API + gateway)"
 minikube image build -t "sandbox/api:$TAG" "$ROOT/code" >"$LOG" 2>&1 \
