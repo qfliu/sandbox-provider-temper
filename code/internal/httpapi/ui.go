@@ -71,6 +71,7 @@ type page struct {
 	// Admin view.
 	Users        []store.UserSummary
 	AllSandboxes []store.OwnedSandbox
+	Truncated    bool // more sandboxes exist than are listed
 }
 
 // createForm keeps what the user typed when the form is shown again with
@@ -384,12 +385,16 @@ func (u *ui) status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (u *ui) delete(w http.ResponseWriter, r *http.Request) {
-	if _, err := u.sandboxes.Delete(r.Context(), userFrom(r.Context()), r.PathValue("id")); err != nil {
+	user := userFrom(r.Context())
+	sb, err := u.sandboxes.Delete(r.Context(), user, r.PathValue("id"))
+	if err != nil {
 		u.fail(w, r, err)
 		return
 	}
 	back := "/ui/"
-	if r.PostFormValue("from") == "admin" { // a fixed value, never a URL from the form
+	// Back to the admin page when deleting from it (a fixed value, never a
+	// URL from the form), or when an admin deleted someone else's sandbox.
+	if r.PostFormValue("from") == "admin" || sb.UserID != user.ID {
 		back = "/ui/admin"
 	}
 	http.Redirect(w, r, back, http.StatusSeeOther)
@@ -400,6 +405,11 @@ func (u *ui) delete(w http.ResponseWriter, r *http.Request) {
 func requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !userFrom(r.Context()).IsAdmin {
+			if r.Header.Get("HX-Request") == "true" {
+				// A demoted admin's open admin page: htmx doesn't swap
+				// errors, so it would keep showing the old table. Leave.
+				w.Header().Set("HX-Redirect", "/ui/")
+			}
 			http.NotFound(w, r)
 			return
 		}
@@ -414,6 +424,9 @@ func (u *ui) adminPage(r *http.Request, withUsers bool) (page, error) {
 	var err error
 	if p.AllSandboxes, err = u.admin.ListAllSandboxes(r.Context(), p.ShowEnded); err != nil {
 		return p, err
+	}
+	if len(p.AllSandboxes) > store.MaxAdminSandboxes {
+		p.AllSandboxes, p.Truncated = p.AllSandboxes[:store.MaxAdminSandboxes], true
 	}
 	if withUsers {
 		p.Users, err = u.admin.ListUsers(r.Context())

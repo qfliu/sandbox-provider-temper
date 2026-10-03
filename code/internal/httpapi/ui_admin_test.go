@@ -2,9 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -76,6 +78,11 @@ func TestUIAdminSeesEveryone(t *testing.T) {
 	if !strings.Contains(uiDo(h, http.MethodGet, "/ui/admin/rows?ended=1", nil, root).Body.String(), "sb-alice0000old") {
 		t.Error("rows?ended=1 doesn't include ended sandboxes")
 	}
+	// The Users table itself rendered (names alone also match the owner
+	// column): root has no sandboxes and an admin badge in that table.
+	if !strings.Contains(body, "<td>root <span class=\"badge\">admin</span></td>") || !strings.Contains(body, "0 / 10") {
+		t.Error("users table not rendered")
+	}
 	if !strings.Contains(uiDo(h, http.MethodGet, "/ui/", nil, root).Body.String(), `href="/ui/admin"`) {
 		t.Error("no Admin link for an admin")
 	}
@@ -96,8 +103,61 @@ func TestUIAdminDeletesAnySandbox(t *testing.T) {
 		t.Fatalf("deleted = %v", sb.deleted)
 	}
 	// "from" only selects between fixed pages; it's never used as a URL.
-	rec = uiDo(h, http.MethodPost, "/ui/sandboxes/sb-alice0000001/delete", url.Values{"from": {"https://evil.example"}}, root)
+	rec = uiDo(h, http.MethodPost, "/ui/sandboxes/sb-alice0000001/delete", url.Values{"from": {"https://evil.example"}}, alice)
 	if loc := rec.Header().Get("Location"); loc != "/ui/" {
 		t.Fatalf("from=<url> redirected to %q, want /ui/", loc)
+	}
+}
+
+// Deleting someone else's sandbox from its detail page (no from field)
+// returns an admin to the admin page, and the detail page links back there.
+func TestUIAdminDeleteFromDetailReturnsToAdmin(t *testing.T) {
+	sb := aliceAndBob()
+	h := adminUI(sb)
+	if body := uiDo(h, http.MethodGet, "/ui/sandboxes/sb-bob000000001", nil, root).Body.String(); !strings.Contains(body, `href="/ui/admin">← Admin`) {
+		t.Error("admin viewing another user's sandbox has no link back to the admin page")
+	}
+	rec := uiDo(h, http.MethodPost, "/ui/sandboxes/sb-bob000000001/delete", url.Values{}, root)
+	if loc := rec.Header().Get("Location"); loc != "/ui/admin" {
+		t.Fatalf("admin delete from detail → %q, want /ui/admin", loc)
+	}
+	if body := uiDo(h, http.MethodGet, "/ui/sandboxes/sb-alice0000001", nil, alice).Body.String(); strings.Contains(body, "← Admin") {
+		t.Error("owner sees a link to the admin page")
+	}
+}
+
+// An open admin page whose user lost admin rights leaves instead of
+// showing a frozen table (htmx doesn't swap error responses).
+func TestUIAdminRowsForDemotedAdmin(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/ui/admin/rows", nil)
+	req.Header.Set("HX-Request", "true")
+	req.AddCookie(alice) // not an admin
+	rec := httptest.NewRecorder()
+	adminUI(aliceAndBob()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound || rec.Header().Get("HX-Redirect") != "/ui/" {
+		t.Fatalf("= %d HX-Redirect %q, want 404 + HX-Redirect /ui/", rec.Code, rec.Header().Get("HX-Redirect"))
+	}
+}
+
+// manySandboxes returns more sandboxes than the admin list shows.
+type manySandboxes struct{ fakeAdmin }
+
+func (manySandboxes) ListAllSandboxes(context.Context, bool) ([]store.OwnedSandbox, error) {
+	out := make([]store.OwnedSandbox, store.MaxAdminSandboxes+1)
+	for i := range out {
+		out[i] = store.OwnedSandbox{Sandbox: store.Sandbox{ID: fmt.Sprintf("sb-%012d", i), Status: store.StatusDeleted}, Owner: "x"}
+	}
+	return out, nil
+}
+
+func TestUIAdminSaysWhenListIsCut(t *testing.T) {
+	h := NewHandler(Deps{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DB: fakeDB{},
+		Auth: uiAuth{}, Sandboxes: aliceAndBob(), Keys: aliceKeys(), Admin: manySandboxes{}})
+	body := uiDo(h, http.MethodGet, "/ui/admin/rows?ended=1", nil, root).Body.String()
+	if !strings.Contains(body, fmt.Sprintf("Showing the newest %d sandboxes only.", store.MaxAdminSandboxes)) {
+		t.Fatal("no notice that the list was cut")
+	}
+	if strings.Contains(body, fmt.Sprintf("sb-%012d", store.MaxAdminSandboxes)) {
+		t.Fatal("the extra row was shown")
 	}
 }

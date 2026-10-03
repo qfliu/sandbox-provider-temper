@@ -240,3 +240,29 @@ func TestListUsersWithCounts(t *testing.T) {
 		t.Fatalf("with ended: %d sandboxes, want 2", len(all))
 	}
 }
+
+// The admin list is newest first, with each sandbox's own owner, and
+// returns one row past the cap so the caller can tell it was cut.
+func TestListAllSandboxesOrderAndOwners(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	bob, _ := s.CreateUser(ctx, "bob", false)
+	old, _ := s.CreateSandbox(ctx, newSandbox(alice.ID, 1))
+	mid, _ := s.CreateSandbox(ctx, newSandbox(bob.ID, 2))
+	recent, _ := s.CreateSandbox(ctx, newSandbox(alice.ID, 3))
+	for i, id := range []string{old.ID, mid.ID, recent.ID} {
+		if _, err := s.pool.Exec(ctx, "UPDATE sandboxes SET created_at = now() - make_interval(hours => $2) WHERE id = $1", id, 3-i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := s.ListAllSandboxes(ctx, false)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("all = %+v, %v", all, err)
+	}
+	for i, want := range []struct{ id, owner string }{{recent.ID, "alice"}, {mid.ID, "bob"}, {old.ID, "alice"}} {
+		if all[i].ID != want.id || all[i].Owner != want.owner {
+			t.Errorf("row %d = %s/%s, want %s/%s", i, all[i].ID, all[i].Owner, want.id, want.owner)
+		}
+	}
+}
