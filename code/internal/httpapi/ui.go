@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"html/template"
@@ -17,7 +16,6 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/qfliu/sandbox-provider-temper/code/internal/auth"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/sandbox"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 	"github.com/qfliu/sandbox-provider-temper/code/web"
@@ -43,7 +41,7 @@ type ui struct {
 	// Sandbox limits shown in and enforced by the create form.
 	ttlChoices  []int
 	idleTimeout time.Duration // the SSH gateway's public host:port, may be empty
-	pages     map[string]*template.Template
+	pages       map[string]*template.Template
 }
 
 // page is what every template gets: the signed-in user (nil on the login
@@ -70,7 +68,7 @@ type page struct {
 
 	// API keys.
 	Keys       []store.APIKey
-	CurrentKey string // display prefix of the key this session uses
+	CurrentKey string // ID of the key this session uses
 	NewKey     string // a just-created key, shown once
 	NewKeyName string
 
@@ -120,6 +118,21 @@ var templateFuncs = template.FuncMap{
 	"ago":   func(t time.Time) string { return humanDuration(time.Since(t)) + " ago" },
 	"until": until,
 	"stamp": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") },
+	"key":   keyLabel,
+}
+
+// keyLabel names the API key that created a sandbox: "ci-runner
+// (sk_vOawHfdi…)", just the prefix for an unnamed key, or "—" for
+// sandboxes created before keys were recorded (step 4.5).
+func keyLabel(k *store.KeyRef) string {
+	switch {
+	case k == nil:
+		return "—"
+	case k.Name == "":
+		return k.Prefix + "…"
+	default:
+		return k.Name + " (" + k.Prefix + "…)"
+	}
 }
 
 // until is "in 52m", or "expired" once t has passed (a live sandbox can be
@@ -232,7 +245,7 @@ func (u *ui) requireSession(next http.Handler) http.Handler {
 			toLogin(w, r)
 			return
 		}
-		user, err := u.auth.UserByAPIKey(r.Context(), c.Value)
+		user, apiKey, err := u.auth.Authenticate(r.Context(), c.Value)
 		if errors.Is(err, store.ErrNotFound) { // revoked or bogus: end the session
 			clearSession(w, r)
 			toLogin(w, r)
@@ -243,7 +256,7 @@ func (u *ui) requireSession(next http.Handler) http.Handler {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, user)))
+		next.ServeHTTP(w, r.WithContext(withCaller(r.Context(), user, apiKey)))
 	})
 }
 
@@ -274,7 +287,7 @@ func (u *ui) loginForm(w http.ResponseWriter, _ *http.Request) {
 
 func (u *ui) login(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimSpace(r.PostFormValue("api_key"))
-	user, err := u.auth.UserByAPIKey(r.Context(), key)
+	user, _, err := u.auth.Authenticate(r.Context(), key)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && key == "") {
 		u.render(w, http.StatusUnauthorized, "login", page{Title: "Sign in", Error: "Invalid or revoked API key."})
 		return
@@ -374,6 +387,7 @@ func (u *ui) create(w http.ResponseWriter, r *http.Request) {
 	} else {
 		sb, err = u.sandboxes.Create(r.Context(), user, sandbox.CreateRequest{
 			Image: form.Image, SSHPublicKey: form.SSHPublicKey, TTLSeconds: form.TTLHours * 3600,
+			CreatedBy: callerKey(r.Context()),
 		})
 	}
 	if err != nil {
@@ -506,9 +520,7 @@ func checkKeyName(name string) string {
 }
 
 // keysPage loads the signed-in user's active keys and notes which one this
-// session uses (by display prefix: 8 random characters, so two of a user's
-// keys sharing one is vanishingly unlikely, and it's only used for display
-// and the revoke warning).
+// session uses.
 func (u *ui) keysPage(r *http.Request) (page, error) {
 	user := userFrom(r.Context())
 	keys, err := u.keys.ListAPIKeys(r.Context(), user.ID)
@@ -516,9 +528,7 @@ func (u *ui) keysPage(r *http.Request) (page, error) {
 	if r.URL.Query().Get("error") == "last-key" { // a fixed code, never echoed text
 		p.Error = "You can't revoke your only API key. Create another one first."
 	}
-	if c, cerr := r.Cookie(sessionCookie); cerr == nil && len(c.Value) >= auth.DisplayPrefixLen {
-		p.CurrentKey = c.Value[:auth.DisplayPrefixLen]
-	}
+	p.CurrentKey = keyFrom(r.Context()).ID
 	return p, err
 }
 

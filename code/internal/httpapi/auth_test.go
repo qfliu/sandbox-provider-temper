@@ -16,14 +16,14 @@ const goodKey = "sk_good"
 // fakeAuth knows one key; "sk_boom" simulates a database error.
 type fakeAuth struct{}
 
-func (fakeAuth) UserByAPIKey(_ context.Context, key string) (store.User, error) {
+func (fakeAuth) Authenticate(_ context.Context, key string) (store.User, store.KeyRef, error) {
 	switch key {
 	case goodKey:
-		return store.User{ID: "u1", Name: "alice"}, nil
+		return store.User{ID: "u1", Name: "alice"}, store.KeyRef{ID: "k-good", Name: "laptop", Prefix: "sk_good"}, nil
 	case "sk_boom":
-		return store.User{}, errors.New("db down")
+		return store.User{}, store.KeyRef{}, errors.New("db down")
 	default:
-		return store.User{}, store.ErrNotFound
+		return store.User{}, store.KeyRef{}, store.ErrNotFound
 	}
 }
 

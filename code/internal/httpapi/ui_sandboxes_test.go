@@ -383,3 +383,62 @@ func TestUICreateFormFollowsConfig(t *testing.T) {
 		t.Error("defaults not applied when limits are unset")
 	}
 }
+
+// Creating a sandbox records the key that made the request, from /v1 and
+// from the dashboard, and a client can't claim another key in the body.
+func TestCreateRecordsKey(t *testing.T) {
+	svc := aliceAndBob()
+	h := sandboxUI(svc, "")
+	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes",
+		strings.NewReader(`{"image":"ubuntu-dev","ssh_public_key":"ssh-ed25519 AAAAkey"}`))
+	req.Header.Set("Authorization", "Bearer "+goodKey)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("/v1 create = %d %s", rec.Code, rec.Body)
+	}
+	if got := svc.created[0].CreatedBy; got == nil || got.ID != "k-good" || got.Name != "laptop" {
+		t.Fatalf("/v1 create recorded %+v, want key k-good", got)
+	}
+
+	spoof := httptest.NewRequest(http.MethodPost, "/v1/sandboxes", strings.NewReader(
+		`{"image":"ubuntu-dev","ssh_public_key":"ssh-ed25519 AAAAkey","created_by":{"id":"k-other"},"CreatedBy":{"id":"k-other"}}`))
+	spoof.Header.Set("Authorization", "Bearer "+goodKey)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, spoof)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("create with a created_by field = %d, want 400", rec.Code)
+	}
+
+	uiDo(h, http.MethodPost, "/ui/sandboxes", url.Values{
+		"image": {"ubuntu-dev"}, "ssh_public_key": {"ssh-ed25519 AAAAkey"}, "ttl_hours": {"1"},
+	}, aliceSession)
+	if got := svc.created[len(svc.created)-1].CreatedBy; got == nil || got.ID != "k-session" {
+		t.Fatalf("dashboard create recorded %+v, want the session key k-session", got)
+	}
+}
+
+func TestUIShowsCreatedByKey(t *testing.T) {
+	sb := aliceAndBob()
+	sb.rows["sb-alice0000001"] = func() store.Sandbox {
+		s := sb.rows["sb-alice0000001"]
+		s.CreatedByKey = &store.KeyRef{ID: "k1", Name: "ci-runner", Prefix: "sk_vOawHfdi"}
+		return s
+	}()
+	h := adminUI(sb)
+	for _, path := range []string{"/ui/", "/ui/sandboxes/sb-alice0000001"} {
+		if body := uiDo(h, http.MethodGet, path, nil, alice).Body.String(); !strings.Contains(body, "ci-runner (sk_vOawHfdi…)") {
+			t.Errorf("%s doesn't show the creating key", path)
+		}
+	}
+	if body := uiDo(h, http.MethodGet, "/ui/admin", nil, root).Body.String(); !strings.Contains(body, "alice <span class=\"muted\">· ci-runner (sk_vOawHfdi…)") {
+		t.Error("admin view doesn't show owner · key")
+	}
+	// Sandboxes created before keys were recorded.
+	if body := uiDo(h, http.MethodGet, "/ui/sandboxes/sb-bob000000001", nil, root).Body.String(); !strings.Contains(body, "<dt>Created by</dt><dd>—</dd>") {
+		t.Error("missing key not shown as —")
+	}
+	if got := keyLabel(&store.KeyRef{Prefix: "sk_abcdefgh"}); got != "sk_abcdefgh…" {
+		t.Errorf("unnamed key label = %q", got)
+	}
+}

@@ -10,20 +10,45 @@ import (
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
 
-// Authenticator resolves an API key to its owner (implemented by
-// store.Store; faked in tests).
+// Authenticator resolves an API key to its owner and the key itself
+// (implemented by store.Store; faked in tests).
 type Authenticator interface {
-	UserByAPIKey(ctx context.Context, key string) (store.User, error)
+	Authenticate(ctx context.Context, key string) (store.User, store.KeyRef, error)
 }
 
 type ctxKey int
 
-const userKey ctxKey = 0
+const (
+	userKey ctxKey = iota
+	apiKeyKey
+)
 
 // userFrom returns the authenticated user for a request that passed
-// requireAuth.
+// requireAuth or requireSession.
 func userFrom(ctx context.Context) store.User {
 	return ctx.Value(userKey).(store.User)
+}
+
+// keyFrom returns the API key the request was authenticated with.
+func keyFrom(ctx context.Context) store.KeyRef {
+	k, _ := ctx.Value(apiKeyKey).(store.KeyRef)
+	return k
+}
+
+// callerKey is the request's key as a sandbox's "created by", or nil when
+// the request wasn't authenticated with a key (shouldn't happen behind
+// requireAuth/requireSession).
+func callerKey(ctx context.Context) *store.KeyRef {
+	k := keyFrom(ctx)
+	if k.ID == "" {
+		return nil
+	}
+	return &k
+}
+
+// withCaller records who made the request: the user and their key.
+func withCaller(ctx context.Context, u store.User, k store.KeyRef) context.Context {
+	return context.WithValue(context.WithValue(ctx, userKey, u), apiKeyKey, k)
 }
 
 // requireAuth only lets requests with a valid "Authorization: Bearer <key>"
@@ -36,7 +61,7 @@ func requireAuth(log *slog.Logger, a Authenticator, next http.Handler) http.Hand
 			unauthorized(w, "missing API key: send Authorization: Bearer <key>")
 			return
 		}
-		user, err := a.UserByAPIKey(r.Context(), key)
+		user, apiKey, err := a.Authenticate(r.Context(), key)
 		if errors.Is(err, store.ErrNotFound) {
 			unauthorized(w, "invalid or revoked API key")
 			return
@@ -46,7 +71,7 @@ func requireAuth(log *slog.Logger, a Authenticator, next http.Handler) http.Hand
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, user)))
+		next.ServeHTTP(w, r.WithContext(withCaller(r.Context(), user, apiKey)))
 	})
 }
 

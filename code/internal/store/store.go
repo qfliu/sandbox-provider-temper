@@ -152,23 +152,31 @@ func (s *Store) RevokeAPIKey(ctx context.Context, userID, keyID string) error {
 // ErrNotFound. It also records when the key was last used, at most once a
 // minute per key, so busy agents don't turn every request into a write.
 func (s *Store) UserByAPIKey(ctx context.Context, plaintext string) (User, error) {
+	u, _, err := s.Authenticate(ctx, plaintext)
+	return u, err
+}
+
+// Authenticate is UserByAPIKey that also says which key it was, so actions
+// can be attributed to a key (and so to an agent, step 4.5).
+func (s *Store) Authenticate(ctx context.Context, plaintext string) (User, KeyRef, error) {
 	if !auth.LooksLikeKey(plaintext) {
-		return User{}, ErrNotFound
+		return User{}, KeyRef{}, ErrNotFound
 	}
-	var keyID string
+	var key KeyRef
 	var u User
 	err := s.pool.QueryRow(ctx, `
-		SELECT k.id::text, u.id::text, u.name, u.is_admin, u.max_sandboxes, u.created_at
+		SELECT k.id::text, k.name, k.prefix, u.id::text, u.name, u.is_admin, u.max_sandboxes, u.created_at
 		FROM api_keys k JOIN users u ON u.id = k.user_id
 		WHERE k.key_hash = $1 AND k.revoked_at IS NULL`,
 		auth.Hash(plaintext),
-	).Scan(&keyID, &u.ID, &u.Name, &u.IsAdmin, &u.MaxSandboxes, &u.CreatedAt)
+	).Scan(&key.ID, &key.Name, &key.Prefix, &u.ID, &u.Name, &u.IsAdmin, &u.MaxSandboxes, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return User{}, ErrNotFound
+		return User{}, KeyRef{}, ErrNotFound
 	}
 	if err != nil {
-		return User{}, err
+		return User{}, KeyRef{}, err
 	}
+	keyID := key.ID
 
 	// Recording last_used_at is bookkeeping: if it fails (lock contention, a
 	// read-only failover…), log it and still authenticate the valid key
@@ -182,7 +190,7 @@ func (s *Store) UserByAPIKey(ctx context.Context, plaintext string) (User, error
 		keyID); err != nil {
 		slog.Warn("could not record API key use", "key_id", keyID, "err", err)
 	}
-	return u, nil
+	return u, key, nil
 }
 
 func isUniqueViolation(err error) bool {

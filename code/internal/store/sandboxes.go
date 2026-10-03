@@ -44,6 +44,17 @@ type Sandbox struct {
 	ExpiresAt      time.Time  `json:"expires_at"`
 	LastActivityAt time.Time  `json:"last_activity_at"`
 	DeletedAt      *time.Time `json:"deleted_at,omitempty"`
+	// CreatedByKey is the API key that created the sandbox (step 4.5); nil
+	// for sandboxes created before that was recorded.
+	CreatedByKey *KeyRef `json:"created_by_key,omitempty"`
+}
+
+// KeyRef identifies an API key without its secret: enough to tell a
+// user's keys (and so their agents) apart.
+type KeyRef struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Prefix string `json:"prefix"`
 }
 
 // NewSandbox is what's needed to insert a sandbox row.
@@ -54,6 +65,7 @@ type NewSandbox struct {
 	SSHPublicKey  string
 	HostPublicKey string
 	TTLSeconds    int
+	CreatedByKey  *KeyRef // the key that made the request; optional
 }
 
 // lastActivity is a sandbox's most recent use: API calls (its own
@@ -65,14 +77,49 @@ const lastActivity = `GREATEST(sandboxes.last_activity_at,
 	(SELECT LEAST(a.last_seen_at, now()) FROM ssh_activity a WHERE a.sandbox_id = sandboxes.id))`
 
 const sandboxColumns = `id, user_id::text, image, status, status_reason, ssh_public_key,
-	pod_name, pod_ip, host_public_key, ttl_seconds, created_at, expires_at, ` + lastActivity + `, deleted_at`
+	pod_name, pod_ip, host_public_key, ttl_seconds, created_at, expires_at, ` + lastActivity + `, deleted_at,
+	created_by_key_id::text, created_by_key_name, created_by_key_prefix`
+
+// sandboxScan scans sandboxColumns into s; call finish after a successful
+// Scan to fill CreatedByKey. Extra destinations go after the columns.
+type sandboxScan struct {
+	s                         *Sandbox
+	keyID, keyName, keyPrefix *string
+}
+
+func newSandboxScan(s *Sandbox) *sandboxScan {
+	return &sandboxScan{s: s, keyID: new(string), keyName: new(string), keyPrefix: new(string)}
+}
+
+func (sc *sandboxScan) dest(extra ...any) []any {
+	s := sc.s
+	return append([]any{&s.ID, &s.UserID, &s.Image, &s.Status, &s.StatusReason, &s.SSHPublicKey,
+		&s.PodName, &s.PodIP, &s.HostPublicKey, &s.TTLSeconds, &s.CreatedAt, &s.ExpiresAt, &s.LastActivityAt,
+		&s.DeletedAt, &sc.keyID, &sc.keyName, &sc.keyPrefix}, extra...)
+}
+
+func (sc *sandboxScan) finish() {
+	if sc.keyID != nil {
+		sc.s.CreatedByKey = &KeyRef{ID: *sc.keyID, Name: deref(sc.keyName), Prefix: deref(sc.keyPrefix)}
+	}
+}
+
+func deref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
 
 func scanSandbox(row pgx.Row) (Sandbox, error) {
 	var s Sandbox
-	err := row.Scan(&s.ID, &s.UserID, &s.Image, &s.Status, &s.StatusReason, &s.SSHPublicKey,
-		&s.PodName, &s.PodIP, &s.HostPublicKey, &s.TTLSeconds, &s.CreatedAt, &s.ExpiresAt, &s.LastActivityAt, &s.DeletedAt)
+	sc := newSandboxScan(&s)
+	err := row.Scan(sc.dest()...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Sandbox{}, ErrNotFound
+	}
+	if err == nil {
+		sc.finish()
 	}
 	return s, err
 }
@@ -82,6 +129,10 @@ func scanSandbox(row pgx.Row) (Sandbox, error) {
 // The user's row is locked (FOR UPDATE) while counting, so two concurrent
 // requests can't both see "9 of 10" and end up at 11.
 func (s *Store) CreateSandbox(ctx context.Context, n NewSandbox) (Sandbox, error) {
+	var keyID, keyName, keyPrefix *string // NULL when no key is given
+	if k := n.CreatedByKey; k != nil {
+		keyID, keyName, keyPrefix = &k.ID, &k.Name, &k.Prefix
+	}
 	var sb Sandbox
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		var max, live int
@@ -100,10 +151,11 @@ func (s *Store) CreateSandbox(ctx context.Context, n NewSandbox) (Sandbox, error
 		}
 		var err error
 		sb, err = scanSandbox(tx.QueryRow(ctx, `
-			INSERT INTO sandboxes (id, user_id, image, ssh_public_key, host_public_key, pod_name, ttl_seconds, expires_at)
-			VALUES ($1, $2, $3, $4, $5, $1, $6::int, now() + make_interval(secs => $6::int))
+			INSERT INTO sandboxes (id, user_id, image, ssh_public_key, host_public_key, pod_name, ttl_seconds, expires_at,
+				created_by_key_id, created_by_key_name, created_by_key_prefix)
+			VALUES ($1, $2, $3, $4, $5, $1, $6::int, now() + make_interval(secs => $6::int), $7::uuid, $8, $9)
 			RETURNING `+sandboxColumns,
-			n.ID, n.UserID, n.Image, n.SSHPublicKey, n.HostPublicKey, n.TTLSeconds))
+			n.ID, n.UserID, n.Image, n.SSHPublicKey, n.HostPublicKey, n.TTLSeconds, keyID, keyName, keyPrefix))
 		return err
 	})
 	return sb, err
@@ -262,12 +314,11 @@ func (s *Store) ListAllSandboxes(ctx context.Context, includeEnded bool) ([]Owne
 	list := []OwnedSandbox{}
 	for rows.Next() {
 		var o OwnedSandbox
-		sb := &o.Sandbox
-		if err := rows.Scan(&sb.ID, &sb.UserID, &sb.Image, &sb.Status, &sb.StatusReason, &sb.SSHPublicKey,
-			&sb.PodName, &sb.PodIP, &sb.HostPublicKey, &sb.TTLSeconds, &sb.CreatedAt, &sb.ExpiresAt,
-			&sb.LastActivityAt, &sb.DeletedAt, &o.Owner); err != nil {
+		sc := newSandboxScan(&o.Sandbox)
+		if err := rows.Scan(sc.dest(&o.Owner)...); err != nil {
 			return nil, err
 		}
+		sc.finish()
 		list = append(list, o)
 	}
 	return list, rows.Err()
