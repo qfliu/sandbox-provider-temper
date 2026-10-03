@@ -1,5 +1,5 @@
 {{define "status"}}
-<section class="card" id="status"{{if live .Sandbox.Status}} hx-get="/ui/sandboxes/{{.Sandbox.ID}}/status" hx-trigger="every 3s" hx-swap="outerHTML"{{end}}>
+<section class="card" id="status">
   <dl class="facts">
     <dt>Status</dt><dd><span class="status s-{{.Sandbox.Status}}">{{.Sandbox.Status}}</span>{{with .Sandbox.StatusReason}} <span class="muted">{{.}}</span>{{end}}</dd>
     <dt>Image</dt><dd>{{.Sandbox.Image}}</dd>

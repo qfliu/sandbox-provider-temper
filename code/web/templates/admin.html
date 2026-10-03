@@ -1,5 +1,8 @@
 {{define "content"}}
-<h1>Admin</h1>
+<div class="head">
+  <h1>Admin</h1>
+  <a href="{{.Self}}">Refresh</a>
+</div>
 <p class="muted">Every user and sandbox on the platform. Admins can delete any sandbox; it's recorded as "deleted by admin {{.User.Name}}".</p>
 
 <h2>Users</h2>
@@ -16,12 +19,12 @@
   {{end}}
   </tbody>
 </table>
+{{template "pager" .UserPager}}
 
 <div class="head spaced">
   <h2>All sandboxes</h2>
   {{if .ShowEnded}}<a href="/ui/admin">Hide ended</a>{{else}}<a href="/ui/admin?ended=1">Show ended</a>{{end}}
 </div>
-<div id="admin-sandboxes" hx-get="/ui/admin/rows{{if .ShowEnded}}?ended=1{{end}}" hx-trigger="every 5s" hx-swap="innerHTML">
 {{template "admin_rows" .}}
-</div>
+{{template "pager" .Pager}}
 {{end}}

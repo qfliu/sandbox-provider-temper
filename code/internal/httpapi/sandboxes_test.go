@@ -28,6 +28,9 @@ func (f fakeSandboxes) Get(_ context.Context, _ store.User, id string) (store.Sa
 func (f fakeSandboxes) List(context.Context, store.User, bool) ([]store.Sandbox, error) {
 	return []store.Sandbox{}, f.err
 }
+func (f fakeSandboxes) ListPage(context.Context, store.User, bool, int, int) ([]store.Sandbox, int, error) {
+	return []store.Sandbox{}, 0, f.err
+}
 func (f fakeSandboxes) Delete(_ context.Context, _ store.User, id string) (store.Sandbox, error) {
 	return store.Sandbox{ID: id, Status: "deleted"}, f.err
 }

@@ -2,12 +2,11 @@ package httpapi
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -18,15 +17,16 @@ import (
 // fakeAdmin serves the admin lists from an ownedSandboxes fake.
 type fakeAdmin struct{ sb *ownedSandboxes }
 
-func (f fakeAdmin) ListUsers(context.Context) ([]store.UserSummary, error) {
-	return []store.UserSummary{
+func (f fakeAdmin) ListUsers(_ context.Context, limit, offset int) ([]store.UserSummary, int, error) {
+	all := []store.UserSummary{
 		{User: store.User{ID: "u1", Name: "alice", MaxSandboxes: 10, CreatedAt: time.Now()}, LiveSandboxes: 1, ActiveKeys: 2},
 		{User: store.User{ID: "u2", Name: "root", IsAdmin: true, MaxSandboxes: 10, CreatedAt: time.Now()}},
 		{User: store.User{ID: "u9", Name: "bob", MaxSandboxes: 3, CreatedAt: time.Now()}, LiveSandboxes: 1, ActiveKeys: 1},
-	}, nil
+	}
+	return pageOf(all, limit, offset), len(all), nil
 }
 
-func (f fakeAdmin) ListAllSandboxes(_ context.Context, includeEnded bool) ([]store.OwnedSandbox, error) {
+func (f fakeAdmin) ListAllSandboxes(_ context.Context, includeEnded bool, limit, offset int) ([]store.OwnedSandbox, int, error) {
 	owners := map[string]string{"u1": "alice", "u9": "bob"}
 	f.sb.mu.Lock()
 	defer f.sb.mu.Unlock()
@@ -36,7 +36,8 @@ func (f fakeAdmin) ListAllSandboxes(_ context.Context, includeEnded bool) ([]sto
 			out = append(out, store.OwnedSandbox{Sandbox: s, Owner: owners[s.UserID]})
 		}
 	}
-	return out, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return pageOf(out, limit, offset), len(out), nil
 }
 
 func adminUI(sb *ownedSandboxes) http.Handler {
@@ -50,7 +51,7 @@ var root = &http.Cookie{Name: sessionCookie, Value: "sk_admin"}
 // pages exist) and see no Admin link.
 func TestUIAdminHiddenFromNonAdmins(t *testing.T) {
 	h := adminUI(aliceAndBob())
-	for _, path := range []string{"/ui/admin", "/ui/admin/rows", "/ui/admin?ended=1"} {
+	for _, path := range []string{"/ui/admin", "/ui/admin?ended=1", "/ui/admin?page=2"} {
 		if rec := uiDo(h, http.MethodGet, path, nil, alice); rec.Code != http.StatusNotFound {
 			t.Errorf("alice GET %s = %d, want 404", path, rec.Code)
 		}
@@ -66,7 +67,7 @@ func TestUIAdminSeesEveryone(t *testing.T) {
 	for _, want := range []string{
 		"alice", "bob", "1 / 10", "1 / 3", // users with live/quota
 		"sb-alice0000001", "sb-bob000000001", // everyone's live sandboxes
-		`hx-get="/ui/admin/rows"`, `name="from" value="admin"`,
+		`<a href="/ui/admin">Refresh</a>`, `name="from" value="admin"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("admin page missing %q", want)
@@ -75,8 +76,8 @@ func TestUIAdminSeesEveryone(t *testing.T) {
 	if strings.Contains(body, "sb-alice0000old") {
 		t.Error("ended sandbox shown without ?ended=1")
 	}
-	if !strings.Contains(uiDo(h, http.MethodGet, "/ui/admin/rows?ended=1", nil, root).Body.String(), "sb-alice0000old") {
-		t.Error("rows?ended=1 doesn't include ended sandboxes")
+	if !strings.Contains(uiDo(h, http.MethodGet, "/ui/admin?ended=1", nil, root).Body.String(), "sb-alice0000old") {
+		t.Error("?ended=1 doesn't include ended sandboxes")
 	}
 	// The Users table itself rendered (names alone also match the owner
 	// column): root has no sandboxes and an admin badge in that table.
@@ -123,55 +124,5 @@ func TestUIAdminDeleteFromDetailReturnsToAdmin(t *testing.T) {
 	}
 	if body := uiDo(h, http.MethodGet, "/ui/sandboxes/sb-alice0000001", nil, alice).Body.String(); strings.Contains(body, "← Admin") {
 		t.Error("owner sees a link to the admin page")
-	}
-}
-
-// An open admin page whose user lost admin rights leaves instead of
-// showing a frozen table (htmx doesn't swap error responses).
-func TestUIAdminRowsForDemotedAdmin(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/ui/admin/rows", nil)
-	req.Header.Set("HX-Request", "true")
-	req.AddCookie(alice) // not an admin
-	rec := httptest.NewRecorder()
-	adminUI(aliceAndBob()).ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound || rec.Header().Get("HX-Redirect") != "/ui/" {
-		t.Fatalf("= %d HX-Redirect %q, want 404 + HX-Redirect /ui/", rec.Code, rec.Header().Get("HX-Redirect"))
-	}
-}
-
-// manySandboxes returns more sandboxes than the admin list shows.
-type manySandboxes struct{ fakeAdmin }
-
-func (manySandboxes) ListAllSandboxes(context.Context, bool) ([]store.OwnedSandbox, error) {
-	out := make([]store.OwnedSandbox, store.MaxAdminSandboxes+1)
-	for i := range out {
-		out[i] = store.OwnedSandbox{Sandbox: store.Sandbox{ID: fmt.Sprintf("sb-%012d", i), Status: store.StatusDeleted}, Owner: "x"}
-	}
-	return out, nil
-}
-
-func TestUIAdminSaysWhenListIsCut(t *testing.T) {
-	h := NewHandler(Deps{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DB: fakeDB{},
-		Auth: uiAuth{}, Sandboxes: aliceAndBob(), Keys: aliceKeys(), Admin: manySandboxes{}})
-	body := uiDo(h, http.MethodGet, "/ui/admin/rows?ended=1", nil, root).Body.String()
-	if !strings.Contains(body, fmt.Sprintf("Showing the newest %d sandboxes only.", store.MaxAdminSandboxes)) {
-		t.Fatal("no notice that the list was cut")
-	}
-	if strings.Contains(body, fmt.Sprintf("sb-%012d", store.MaxAdminSandboxes)) {
-		t.Fatal("the extra row was shown")
-	}
-}
-
-// When a refresh can no longer see its sandbox (e.g. a demoted admin on
-// another user's detail page), the page leaves instead of freezing on stale
-// data: htmx doesn't swap error responses, so a bare 404 would keep it.
-func TestUIStatusRefreshLosesAccess(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/ui/sandboxes/sb-bob000000001/status", nil)
-	req.Header.Set("HX-Request", "true")
-	req.AddCookie(alice) // not bob, not an admin
-	rec := httptest.NewRecorder()
-	adminUI(aliceAndBob()).ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound || rec.Header().Get("HX-Redirect") != "/ui/" {
-		t.Fatalf("= %d HX-Redirect %q, want 404 + HX-Redirect /ui/", rec.Code, rec.Header().Get("HX-Redirect"))
 	}
 }

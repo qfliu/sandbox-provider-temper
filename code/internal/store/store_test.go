@@ -220,7 +220,7 @@ func TestListUsersWithCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	users, err := s.ListUsers(ctx)
+	users, _, err := s.ListUsers(ctx, 50, 0)
 	if err != nil || len(users) != 2 {
 		t.Fatalf("users = %+v, %v", users, err)
 	}
@@ -232,11 +232,11 @@ func TestListUsersWithCounts(t *testing.T) {
 		t.Errorf("root = %+v", r)
 	}
 
-	all, err := s.ListAllSandboxes(ctx, false)
+	all, _, err := s.ListAllSandboxes(ctx, false, 50, 0)
 	if err != nil || len(all) != 1 || all[0].ID != live.ID || all[0].Owner != "alice" {
 		t.Fatalf("live sandboxes = %+v, %v; want alice's live one with its owner", all, err)
 	}
-	if all, _ := s.ListAllSandboxes(ctx, true); len(all) != 2 {
+	if all, _, _ := s.ListAllSandboxes(ctx, true, 50, 0); len(all) != 2 {
 		t.Fatalf("with ended: %d sandboxes, want 2", len(all))
 	}
 }
@@ -256,7 +256,7 @@ func TestListAllSandboxesOrderAndOwners(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	all, err := s.ListAllSandboxes(ctx, false)
+	all, _, err := s.ListAllSandboxes(ctx, false, 50, 0)
 	if err != nil || len(all) != 3 {
 		t.Fatalf("all = %+v, %v", all, err)
 	}
@@ -264,5 +264,60 @@ func TestListAllSandboxesOrderAndOwners(t *testing.T) {
 		if all[i].ID != want.id || all[i].Owner != want.owner {
 			t.Errorf("row %d = %s/%s, want %s/%s", i, all[i].ID, all[i].Owner, want.id, want.owner)
 		}
+	}
+}
+
+// Every dashboard list pages the same way: newest (or by name) first, the
+// right slice for limit/offset, the full total, and the live filter applied
+// to both the rows and the count (step 4.6).
+func TestListPages(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	if _, err := s.pool.Exec(ctx, "UPDATE users SET max_sandboxes = 100 WHERE id = $1", alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string // oldest first
+	for i := 0; i < 7; i++ {
+		sb, err := s.CreateSandbox(ctx, newSandbox(alice.ID, i+1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.pool.Exec(ctx, "UPDATE sandboxes SET created_at = now() - make_interval(mins => $2) WHERE id = $1", sb.ID, 100-i); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, sb.ID)
+	}
+	for _, id := range ids[:2] { // the two oldest have ended
+		if _, err := s.MarkSandboxEnded(ctx, id, StatusDeleted, "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, total, err := s.ListSandboxesPage(ctx, alice.ID, true, 3, 3)
+	if err != nil || total != 7 || len(page) != 3 || page[0].ID != ids[3] || page[2].ID != ids[1] {
+		t.Fatalf("all, page 2 of 3: total %d, %d rows, %v", total, len(page), err)
+	}
+	page, total, _ = s.ListSandboxesPage(ctx, alice.ID, false, 3, 3)
+	if total != 5 || len(page) != 2 || page[1].ID != ids[2] {
+		t.Fatalf("live, page 2: total %d, %d rows", total, len(page))
+	}
+	if page, total, _ = s.ListSandboxesPage(ctx, alice.ID, false, 3, 30); total != 5 || len(page) != 0 {
+		t.Fatalf("past the end: total %d, %d rows", total, len(page))
+	}
+	all, total, _ := s.ListAllSandboxes(ctx, false, 2, 0)
+	if total != 5 || len(all) != 2 || all[0].ID != ids[6] || all[0].Owner != "alice" {
+		t.Fatalf("admin live page: total %d, %+v", total, all)
+	}
+	for i := 0; i < 4; i++ {
+		s.CreateAPIKey(ctx, alice.ID, fmt.Sprint("k", i))
+	}
+	keys, total, _ := s.ListAPIKeysPage(ctx, alice.ID, 3, 0)
+	if total != 4 || len(keys) != 3 || keys[0].Name != "k3" {
+		t.Fatalf("keys page: total %d, %+v", total, keys)
+	}
+	s.CreateUser(ctx, "bob", false)
+	users, total, _ := s.ListUsers(ctx, 1, 1)
+	if total != 2 || len(users) != 1 || users[0].Name != "bob" {
+		t.Fatalf("users page 2: total %d, %+v", total, users)
 	}
 }

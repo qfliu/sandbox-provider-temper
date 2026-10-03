@@ -292,7 +292,7 @@ func TestUITemplateErrorIs500(t *testing.T) {
 func TestUIWithoutOptionalServices(t *testing.T) {
 	h := uiHandler() // no Keys, no Admin
 	for _, c := range []*http.Cookie{{Name: sessionCookie, Value: goodKey}, {Name: sessionCookie, Value: "sk_admin"}} {
-		for _, path := range []string{"/ui/keys", "/ui/admin", "/ui/admin/rows"} {
+		for _, path := range []string{"/ui/keys", "/ui/admin"} {
 			rec := uiDo(h, http.MethodGet, path, nil, c)
 			if rec.Code != http.StatusNotFound {
 				t.Errorf("%s as %s = %d, want 404", path, c.Value, rec.Code)

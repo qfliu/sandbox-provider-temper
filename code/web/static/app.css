@@ -68,3 +68,5 @@ header nav a { color: var(--text); text-decoration: none; }
 header nav a:hover { color: var(--accent); }
 .spaced { margin-top: 32px; }
 tr:target td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.pager { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 12px; font-size: 14px; }
+.actions-inline { display: flex; gap: 16px; }

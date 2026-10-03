@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -297,28 +298,71 @@ type OwnedSandbox struct {
 	Owner string
 }
 
-// MaxAdminSandboxes caps the admin list (ended sandboxes accumulate).
-// ListAllSandboxes returns one more, so callers can tell the list was cut.
-const MaxAdminSandboxes = 500
-
-// ListAllSandboxes returns every user's sandboxes, newest first, with
-// owner names; ended ones only if includeEnded (admin view, D43).
-func (s *Store) ListAllSandboxes(ctx context.Context, includeEnded bool) ([]OwnedSandbox, error) {
-	// Two separate statements rather than "$1 OR status IN (…)": a prepared
-	// statement can switch to one generic plan for both cases, and the live
-	// view would then walk the whole created_at index (review of #47). Each
-	// text now gets its own plan: sandboxes_created_at for all, the live
-	// partial index for live ones.
-	where := "WHERE status IN ('pending', 'running', 'deleting')"
+// liveWhere selects live sandboxes (the default views); "" means all.
+func liveWhere(includeEnded bool) string {
 	if includeEnded {
-		where = ""
+		return ""
+	}
+	return "status IN ('pending', 'running', 'deleting')"
+}
+
+// and joins SQL conditions, skipping empty ones.
+func and(conds ...string) string {
+	var out []string
+	for _, c := range conds {
+		if c != "" {
+			out = append(out, c)
+		}
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return "WHERE " + strings.Join(out, " AND ")
+}
+
+// ListSandboxesPage is one page of a user's sandboxes, newest first, and how
+// many there are in all (dashboard pagination, step 4.6).
+func (s *Store) ListSandboxesPage(ctx context.Context, userID string, includeEnded bool, limit, offset int) ([]Sandbox, int, error) {
+	where := and("user_id = $1", liveWhere(includeEnded))
+	var total int
+	if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM sandboxes "+where, userID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.pool.Query(ctx, "SELECT "+sandboxColumns+" FROM sandboxes "+where+`
+		ORDER BY created_at DESC, id LIMIT $2 OFFSET $3`, userID, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	list := []Sandbox{}
+	for rows.Next() {
+		sb, err := scanSandbox(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		list = append(list, sb)
+	}
+	return list, total, rows.Err()
+}
+
+// ListAllSandboxes is one page of every user's sandboxes, newest first,
+// with owner names, and how many there are in all; ended ones only if
+// includeEnded (admin view, D43, paginated in step 4.6). The live and the
+// all-sandboxes views are separate SQL texts, so each keeps its own plan
+// (review of #47): sandboxes_created_at for all, the live partial index for
+// live ones.
+func (s *Store) ListAllSandboxes(ctx context.Context, includeEnded bool, limit, offset int) ([]OwnedSandbox, int, error) {
+	where := and(liveWhere(includeEnded))
+	var total int
+	if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM sandboxes "+where).Scan(&total); err != nil {
+		return nil, 0, err
 	}
 	rows, err := s.pool.Query(ctx, "SELECT "+sandboxColumns+`,
 			(SELECT name FROM users WHERE users.id = sandboxes.user_id)
 		FROM sandboxes `+where+`
-		ORDER BY created_at DESC, id LIMIT $1`, MaxAdminSandboxes+1)
+		ORDER BY created_at DESC, id LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	list := []OwnedSandbox{}
@@ -326,10 +370,10 @@ func (s *Store) ListAllSandboxes(ctx context.Context, includeEnded bool) ([]Owne
 		var o OwnedSandbox
 		sc := newSandboxScan(&o.Sandbox)
 		if err := rows.Scan(sc.dest(&o.Owner)...); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		sc.finish()
 		list = append(list, o)
 	}
-	return list, rows.Err()
+	return list, total, rows.Err()
 }

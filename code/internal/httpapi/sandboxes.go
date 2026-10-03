@@ -21,6 +21,7 @@ type SandboxService interface {
 	Create(ctx context.Context, user store.User, req sandbox.CreateRequest) (store.Sandbox, error)
 	Get(ctx context.Context, user store.User, id string) (store.Sandbox, error)
 	List(ctx context.Context, user store.User, includeEnded bool) ([]store.Sandbox, error)
+	ListPage(ctx context.Context, user store.User, includeEnded bool, limit, offset int) ([]store.Sandbox, int, error)
 	Delete(ctx context.Context, user store.User, id string) (store.Sandbox, error)
 	Exec(ctx context.Context, user store.User, id string, req sandbox.ExecRequest) (sshx.ExecResult, error)
 	Upload(ctx context.Context, user store.User, id, path string, r io.Reader) (int64, error)
