@@ -27,7 +27,8 @@ type Deps struct {
 //
 // /healthz and /readyz are public (Kubernetes probes them). Everything under
 // /v1/ requires an API key, including unknown /v1 paths, so the API doesn't
-// reveal which routes exist to unauthenticated callers.
+// reveal which routes exist to unauthenticated callers. /ui is the dashboard
+// (D13, D40), signed in with an API key held in a session cookie.
 func NewHandler(d Deps) http.Handler {
 	v1 := http.NewServeMux()
 	v1.HandleFunc("GET /v1/me", handleMe)
@@ -43,6 +44,9 @@ func NewHandler(d Deps) http.Handler {
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /readyz", handleReadyz(d.Log, d.DB))
 	mux.Handle("/v1/", requireAuth(d.Log, d.Auth, v1))
+	ui := newUI(d.Log, d.Auth).routes()
+	mux.Handle("/ui", ui)
+	mux.Handle("/ui/", ui)
 	return logRequests(d.Log, mux)
 }
 
