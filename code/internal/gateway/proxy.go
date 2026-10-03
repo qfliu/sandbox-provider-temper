@@ -60,13 +60,75 @@ func (s *Server) proxySessions(sconn *ssh.ServerConn, chans <-chan ssh.NewChanne
 	go func() { up.Wait(); sconn.Close() }()
 	go s.watchSandbox(ctx, sconn, id)
 	go s.keepalive(ctx, sconn)
+	act := &activity{s: s, id: id}
+	go act.run(ctx)
 
 	for nch := range chans {
 		if nch.ChannelType() != "session" {
 			nch.Reject(ssh.Prohibited, "only sessions are allowed (no port forwarding)")
 			continue
 		}
-		go s.proxyChannel(nch, up, id)
+		go func() {
+			act.sessionOpened(ctx)
+			defer act.sessionClosed()
+			s.proxyChannel(nch, up, id)
+		}()
+	}
+}
+
+// activity records SSH use of a sandbox for the idle reaper: once when a
+// session opens, then every touchInterval while at least one session is
+// open. A connection with no open session doesn't count (D36).
+type activity struct {
+	s      *Server
+	id     string
+	mu     sync.Mutex
+	open   int
+	warned bool
+}
+
+func (a *activity) sessionOpened(ctx context.Context) {
+	a.mu.Lock()
+	a.open++
+	a.mu.Unlock()
+	a.touch(ctx)
+}
+
+func (a *activity) sessionClosed() {
+	a.mu.Lock()
+	a.open--
+	a.mu.Unlock()
+}
+
+func (a *activity) run(ctx context.Context) {
+	t := time.NewTicker(a.s.touchInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		a.mu.Lock()
+		open := a.open
+		a.mu.Unlock()
+		if open > 0 {
+			a.touch(ctx)
+		}
+	}
+}
+
+func (a *activity) touch(ctx context.Context) {
+	tctx, cancel := context.WithTimeout(ctx, lookupTimeout)
+	defer cancel()
+	if err := a.s.sandboxes.TouchSandbox(tctx, a.id); err != nil && ctx.Err() == nil {
+		a.mu.Lock()
+		first := !a.warned
+		a.warned = true
+		a.mu.Unlock()
+		if first { // once per connection
+			a.s.log.Warn("could not record SSH activity", "sandbox", a.id, "err", err)
+		}
 	}
 }
 

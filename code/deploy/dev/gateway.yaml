@@ -40,7 +40,7 @@ spec:
         env:
         - name: POSTGRES_PASSWORD
           valueFrom: {secretKeyRef: {name: postgres-gateway-credentials, key: password}}
-        - name: DATABASE_URL     # read-only role: SELECT on sandboxes only
+        - name: DATABASE_URL     # narrow role: SELECT on sandboxes + UPDATE of last_activity_at only
           value: postgres://sandbox_gateway:$(POSTGRES_PASSWORD)@postgres.sandbox-system:5432/sandbox?sslmode=disable
         - {name: GATEWAY_LISTEN_ADDR, value: ":2222"}
         - {name: GATEWAY_HOST_KEY_FILE, value: /keys/host/ssh_host_ed25519_key}

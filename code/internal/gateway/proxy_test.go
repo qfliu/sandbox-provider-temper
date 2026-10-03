@@ -370,3 +370,35 @@ func TestUnavailableSandboxConnectionIsClosed(t *testing.T) {
 		t.Fatal("connection to an unavailable sandbox still open after the grace period")
 	}
 }
+
+// Open SSH sessions count as activity, so the idle reaper doesn't delete a
+// sandbox someone is working in over SSH (batch review of #22–#26).
+func TestOpenSessionRecordsActivity(t *testing.T) {
+	p := newProxyFixture(t, func(s *Server) { s.touchInterval = 50 * time.Millisecond })
+	c := p.client(t)
+	if n := p.rows.touches.Load(); n != 0 {
+		t.Fatalf("%d touches before any session; a bare connection shouldn't count", n)
+	}
+
+	sess, _ := c.NewSession()
+	// Keep stdin open: with no stdin, Go's client sends EOF at once and the
+	// fake shell would exit immediately, ending the session.
+	stdin, _ := sess.StdinPipe()
+	defer stdin.Close()
+	if err := sess.Shell(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	during := p.rows.touches.Load()
+	if during < 3 {
+		t.Fatalf("%d touches during an open session of ~300ms (interval 50ms), want several", during)
+	}
+
+	sess.Close()
+	time.Sleep(150 * time.Millisecond)
+	after := p.rows.touches.Load()
+	time.Sleep(300 * time.Millisecond)
+	if n := p.rows.touches.Load(); n != after {
+		t.Fatalf("touches kept going after the session closed (%d → %d)", after, n)
+	}
+}

@@ -22,6 +22,12 @@ type fakeSandboxes struct {
 	mu      sync.Mutex
 	rows    map[string]store.Sandbox
 	lookups atomic.Int32
+	touches atomic.Int32
+}
+
+func (f *fakeSandboxes) TouchSandbox(context.Context, string) error {
+	f.touches.Add(1)
+	return nil
 }
 
 func (f *fakeSandboxes) GetSandbox(_ context.Context, id string) (store.Sandbox, error) {

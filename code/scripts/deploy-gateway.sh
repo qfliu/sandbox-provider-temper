@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Builds the platform image (API + gateway) inside minikube and rolls out the
-# SSH gateway to sandbox-system. Also creates the gateway's own read-only
-# Postgres role (SELECT on sandboxes only). Run after deploy-postgres.sh and
-# deploy-api.sh (the API creates the tables). Idempotent.
+# SSH gateway to sandbox-system. Also creates the gateway's own narrow
+# Postgres role: SELECT on sandboxes, plus UPDATE of its last_activity_at
+# column only. Run after deploy-postgres.sh and deploy-api.sh (the API
+# creates the tables). Idempotent.
 #
 # Usage (from the project root): source ./env.sh && ./code/scripts/deploy-gateway.sh
 # Then reach it from your Mac:   kubectl -n sandbox-system port-forward svc/sandbox-gateway 2222:22
@@ -15,7 +16,7 @@ DIRTY="$(git -C "$ROOT" diff --quiet HEAD -- code || echo -dirty)"
 TAG="$(git -C "$ROOT" rev-parse --short HEAD)${DIRTY}-$(date +%s)"
 LOG="$ROOT/.devenv/state/tmp/gateway-build.log"
 
-echo "==> read-only database role for the gateway"
+echo "==> narrow database role for the gateway"
 PWFILE="$ROOT/.devenv/state/postgres-gateway-password"
 [ -s "$PWFILE" ] || (umask 077 && openssl rand -hex 24 | tr -d '\n' >"$PWFILE")
 # The password reaches psql on stdin as a variable (:'pw' quotes it safely),
@@ -35,6 +36,9 @@ ALTER ROLE sandbox_gateway PASSWORD :'pw';
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM sandbox_gateway;
 GRANT USAGE ON SCHEMA public TO sandbox_gateway;
 GRANT SELECT ON sandboxes TO sandbox_gateway;
+-- SSH sessions count as activity for the idle reaper (D36): the gateway may
+-- update exactly this one column, nothing else.
+GRANT UPDATE (last_activity_at) ON sandboxes TO sandbox_gateway;
 SQL
 } | kubectl -n sandbox-system exec -i postgres-0 -- psql -q -v ON_ERROR_STOP=1 -U sandbox -d sandbox >/dev/null
 kubectl -n sandbox-system create secret generic postgres-gateway-credentials \
