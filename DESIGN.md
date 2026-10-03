@@ -217,7 +217,7 @@ Update checkboxes as work progresses. **Workflow:** one branch and one PR **per 
 - [ ] 5.5 Load test script: create N sandboxes concurrently (as many as the laptop allows, e.g. 30–50); record p50/p95 startup time
 - [ ] 5.6 Platform DB user is not a superuser: the API connects as an owner role without SUPERUSER, so an SQL bug in the API can't take over the database server (Phase 3 batch review, D36). If a `SECURITY DEFINER` function is ever added again, it must `SET search_path = <schema>, pg_temp`; then also consider revoking `TEMPORARY` on the database from PUBLIC (decided 2026-10-03: not needed while no such function exists)
 - [ ] 5.7 Gateway limits (Phase 3 batch review, deduced): cap connections overall and per sandbox, size the DB pool, and add a preStop delay so a rollout doesn't refuse new connections; measure with the 5.5 load test
-- [ ] 5.8 Index `sandboxes (created_at DESC)` for the admin list (today a seq scan + sort every 5 s per open admin tab; fine at dev scale, Phase 4 review)
+- [x] 5.8 Index `sandboxes (created_at DESC, id)` for the admin list (migration 0007): "show ended" reads the newest rows from the index and stops at the limit (Index Only Scan, no sort); the live-only list keeps using `sandboxes_user_live`
 - **Done when:** policies are verified by test and startup numbers are recorded. → **PR 5**
 
 ### Phase 6: Package + write-up (~1 h) — branch `phase6/package`
