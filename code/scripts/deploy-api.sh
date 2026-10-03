@@ -22,3 +22,5 @@ sed "s|sandbox/api:IMAGE_TAG|sandbox/api:$TAG|" "$ROOT/code/deploy/dev/api.yaml"
 kubectl -n sandbox-system rollout status deployment/sandbox-api --timeout=180s >/dev/null
 kubectl -n sandbox-system get pods -l app=sandbox-api -o wide | cut -c1-90
 echo "==> sandbox-api ready (sandbox-system/sandbox-api:80)"
+echo "    dashboard: kubectl -n sandbox-system port-forward svc/sandbox-api 18080:80"
+echo "               then open http://localhost:18080/ui and sign in with an API key"

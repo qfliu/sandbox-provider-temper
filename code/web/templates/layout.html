@@ -1,0 +1,23 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · Sandboxes</title>
+<link rel="stylesheet" href="/ui/static/app.css">
+</head>
+<body>
+<header>
+  <a class="brand" href="/ui/">Sandboxes</a>
+  {{with .User}}
+  <nav>
+    <span class="who">{{.Name}}{{if .IsAdmin}} <span class="badge">admin</span>{{end}}</span>
+    <form method="post" action="/ui/logout"><button class="link">Sign out</button></form>
+  </nav>
+  {{end}}
+</header>
+<main>
+{{template "content" .}}
+</main>
+</body>
+</html>{{end}}
