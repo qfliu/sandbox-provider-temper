@@ -181,9 +181,15 @@ func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 				ImagePullPolicy: corev1.PullIfNotPresent,
 				Ports:           []corev1.ContainerPort{{Name: "ssh", ContainerPort: 22}},
 				Resources: corev1.ResourceRequirements{
+					// Requests are what the scheduler reserves. Ephemeral
+					// storage needs an explicit request: with only a limit,
+					// Kubernetes reserves the whole 5 Gi per sandbox, and disk,
+					// not CPU, capped a 37 GB node at ~6 sandboxes (load test,
+					// D48). Each can still grow to its 5 Gi limit.
 					Requests: corev1.ResourceList{
-						corev1.ResourceCPU:    resource.MustParse("250m"),
-						corev1.ResourceMemory: resource.MustParse("256Mi"),
+						corev1.ResourceCPU:              resource.MustParse("250m"),
+						corev1.ResourceMemory:           resource.MustParse("256Mi"),
+						corev1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
 					},
 					Limits: corev1.ResourceList{
 						corev1.ResourceCPU:              resource.MustParse("1"),
@@ -194,7 +200,7 @@ func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 				SecurityContext: SandboxSecurityContext(),
 				ReadinessProbe: &corev1.Probe{
 					ProbeHandler:  corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(22)}},
-					PeriodSeconds: 2,
+					PeriodSeconds: 1, // "running" as soon as sshd answers (load test, D48)
 				},
 				VolumeMounts: []corev1.VolumeMount{
 					{Name: "home", MountPath: "/home/user"},

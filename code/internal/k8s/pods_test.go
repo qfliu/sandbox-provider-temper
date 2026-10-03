@@ -48,6 +48,11 @@ func TestBuildPodIsolation(t *testing.T) {
 	if c.Resources.Limits.StorageEphemeral().IsZero() {
 		t.Fatal("pod must have an ephemeral-storage limit")
 	}
+	// An explicit, smaller request: with only a limit the scheduler
+	// reserves the whole limit, and disk capped the node (load test, D48).
+	if req, lim := c.Resources.Requests.StorageEphemeral(), c.Resources.Limits.StorageEphemeral(); req.IsZero() || req.Cmp(*lim) >= 0 {
+		t.Fatalf("ephemeral-storage request = %v, limit = %v; want an explicit request below the limit", req, lim)
+	}
 	sc := c.SecurityContext
 	if sc == nil || sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
 		t.Fatal("pod must drop all capabilities")
