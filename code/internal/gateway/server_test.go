@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
 
 func signer(t *testing.T) ssh.Signer {
@@ -29,6 +31,13 @@ func signer(t *testing.T) ssh.Signer {
 }
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// noSandboxes is a lookup where no sandbox exists.
+type noSandboxes struct{}
+
+func (noSandboxes) GetSandbox(context.Context, string) (store.Sandbox, error) {
+	return store.Sandbox{}, store.ErrNotFound
+}
 
 // serve runs srv on ln until the returned cancel is called; done receives
 // Serve's result.
@@ -71,7 +80,7 @@ func dial(addr, user string, hostKey ssh.PublicKey, client ssh.Signer) error {
 
 func TestPresentsConfiguredHostKey(t *testing.T) {
 	host := signer(t)
-	addr := start(t, New(host, quietLog()))
+	addr := start(t, New(host, noSandboxes{}, quietLog()))
 
 	// Pinning the right host key gets past the handshake to authentication…
 	err := dial(addr, "sb-0123456789ab", host.PublicKey(), signer(t))
@@ -82,16 +91,6 @@ func TestPresentsConfiguredHostKey(t *testing.T) {
 	err = dial(addr, "sb-0123456789ab", signer(t).PublicKey(), signer(t))
 	if err == nil || !strings.Contains(err.Error(), "host key mismatch") {
 		t.Fatalf("err = %v; want host key mismatch", err)
-	}
-}
-
-func TestRejectsEveryoneForNow(t *testing.T) {
-	host := signer(t)
-	addr := start(t, New(host, quietLog()))
-	for _, user := range []string{"sb-0123456789ab", "root", "sb-XYZ", "user"} {
-		if err := dial(addr, user, host.PublicKey(), signer(t)); err == nil {
-			t.Errorf("user %q was let in; authentication isn't implemented until step 3.2", user)
-		}
 	}
 }
 
@@ -146,7 +145,7 @@ func waitClosed(t *testing.T, r *bufio.Reader, conn net.Conn, limit time.Duratio
 // A client that connects and never speaks must be disconnected at the
 // handshake deadline, not hold a connection forever.
 func TestStalledClientIsDisconnected(t *testing.T) {
-	srv := New(signer(t), quietLog())
+	srv := New(signer(t), noSandboxes{}, quietLog())
 	srv.handshakeTimeout = 300 * time.Millisecond
 	conn, err := net.Dial("tcp", start(t, srv))
 	if err != nil {
@@ -164,7 +163,7 @@ func TestShutdownClosesOpenConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancel, done := serve(New(signer(t), quietLog()), ln)
+	cancel, done := serve(New(signer(t), noSandboxes{}, quietLog()), ln)
 
 	conn, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {
@@ -188,7 +187,7 @@ func TestShutdownClosesOpenConnections(t *testing.T) {
 // A connection that is accepted after shutdown has started (the race where
 // it misses the close-all sweep) must be closed, not tracked.
 func TestConnectionArrivingDuringShutdownIsClosed(t *testing.T) {
-	srv := New(signer(t), quietLog())
+	srv := New(signer(t), noSandboxes{}, quietLog())
 	srv.shutdown()
 
 	client, server := net.Pipe()
@@ -224,7 +223,7 @@ func TestAcceptErrorsAreRetried(t *testing.T) {
 	ln := &flakyListener{Listener: inner}
 	ln.failures.Store(3)
 	host := signer(t)
-	cancel, done := serve(New(host, quietLog()), ln)
+	cancel, done := serve(New(host, noSandboxes{}, quietLog()), ln)
 	defer cancel()
 
 	select { // give the 3 failures (5+10+20 ms backoff) time to happen
