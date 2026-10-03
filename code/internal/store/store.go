@@ -18,6 +18,9 @@ import (
 var (
 	// ErrNotFound means no matching row (or, for API keys, a revoked key).
 	ErrNotFound = errors.New("not found")
+	// ErrLastKey means revoking the key would leave the user with no API
+	// key, locked out of the API and the dashboard.
+	ErrLastKey = errors.New("can't revoke the only remaining API key")
 	// ErrConflict means a unique value (like a user name) is already taken.
 	ErrConflict = errors.New("already exists")
 )
@@ -92,6 +95,57 @@ func (s *Store) CreateAPIKey(ctx context.Context, userID, name string) (plaintex
 		return "", APIKey{}, err
 	}
 	return plaintext, key, nil
+}
+
+// ListAPIKeys returns a user's active (not revoked) keys, newest first.
+func (s *Store) ListAPIKeys(ctx context.Context, userID string) ([]APIKey, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id::text, user_id::text, name, prefix, created_at, last_used_at
+		FROM api_keys WHERE user_id = $1 AND revoked_at IS NULL
+		ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	keys := []APIKey{}
+	for rows.Next() {
+		var k APIKey
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Name, &k.Prefix, &k.CreatedAt, &k.LastUsedAt); err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
+// RevokeAPIKey revokes one of the user's active keys. It's ErrNotFound if
+// the key isn't theirs or is already revoked, and ErrLastKey if it's their
+// only active key. The user's row is locked, so two concurrent revokes of
+// a user's last two keys can't both succeed.
+func (s *Store) RevokeAPIKey(ctx context.Context, userID, keyID string) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SELECT 1 FROM users WHERE id = $1 FOR UPDATE", userID); err != nil {
+			return err
+		}
+		var active int
+		var isActive bool
+		// id::text = $2 so a malformed id is just "not found", not an error.
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*), coalesce(bool_or(id::text = $2), false)
+			FROM api_keys WHERE user_id = $1 AND revoked_at IS NULL`, userID, keyID,
+		).Scan(&active, &isActive); err != nil {
+			return err
+		}
+		if !isActive {
+			return ErrNotFound
+		}
+		if active <= 1 {
+			return ErrLastKey
+		}
+		_, err := tx.Exec(ctx, `UPDATE api_keys SET revoked_at = now()
+			WHERE user_id = $1 AND id::text = $2 AND revoked_at IS NULL`, userID, keyID)
+		return err
+	})
 }
 
 // UserByAPIKey returns the owner of a valid (not revoked) key, or

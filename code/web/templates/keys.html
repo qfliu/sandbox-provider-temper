@@ -1,0 +1,44 @@
+{{define "content"}}
+<h1>API keys</h1>
+<p class="muted">Agents and scripts use a key in <code>Authorization: Bearer &lt;key&gt;</code>; you also sign in here with one. Revoking a key cuts off everything using it.</p>
+{{with .Error}}<p class="error" role="alert">{{.}}</p>{{end}}
+
+{{if .NewKey}}
+<section class="card notice">
+  <h2>New key{{with .NewKeyName}} “{{.}}”{{end}}</h2>
+  <p><strong>Copy it now. It won't be shown again.</strong></p>
+  <div class="copy">
+    <code id="new-key">{{.NewKey}}</code>
+    <button type="button" class="secondary" data-copy="new-key">Copy</button>
+  </div>
+</section>
+{{end}}
+
+<table>
+  <thead><tr><th>Name</th><th>Key</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+  <tbody>
+  {{range .Keys}}
+  <tr>
+    <td>{{if .Name}}{{.Name}}{{else}}<span class="muted">unnamed</span>{{end}}</td>
+    <td><code>{{.Prefix}}…</code>{{if eq .Prefix $.CurrentKey}} <span class="badge">this session</span>{{end}}</td>
+    <td>{{ago .CreatedAt}}</td>
+    <td>{{with .LastUsedAt}}{{ago .}}{{else}}<span class="muted">never</span>{{end}}</td>
+    <td>
+      <form method="post" action="/ui/keys/{{.ID}}/revoke">
+        <button class="link danger-link" data-confirm="{{if eq .Prefix $.CurrentKey}}This is the key you're signed in with: revoking it signs you out. Revoke {{.Prefix}}…?{{else}}Revoke {{.Prefix}}…? Anything using it stops working.{{end}}">Revoke</button>
+      </form>
+    </td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+
+<section class="card">
+  <h2>Create a key</h2>
+  <form method="post" action="/ui/keys">
+    <label for="name">Name</label>
+    <input id="name" name="name" maxlength="100" placeholder="e.g. my-agent">
+    <button type="submit">Create key</button>
+  </form>
+</section>
+{{end}}
