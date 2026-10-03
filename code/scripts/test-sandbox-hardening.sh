@@ -68,6 +68,10 @@ works "apt install (as root)"   "sudo apt-get update -qq >/dev/null 2>&1; sudo a
 works "pip install"             "python3 -m pip install --user --quiet --break-system-packages six >/dev/null 2>&1; python3 -c 'import six; print(\"six ok\")'" "six ok"
 works "gcc compile and run"     "printf '#include <stdio.h>\nint main(){puts(\"c ok\");}' > /tmp/h.c && gcc /tmp/h.c -o /tmp/h && /tmp/h" "c ok"
 works "chown as root"           "touch /tmp/f && sudo chown root:root /tmp/f && stat -c %U /tmp/f" "root"
+# Threads and curl's threaded DNS lookup: these broke when runsc's
+# oci-seccomp was tried (review of #45), so they guard against it.
+works "threads start"           "python3 -c 'import threading; t=threading.Thread(target=print, args=(\"threads ok\",)); t.start(); t.join()'" "threads ok"
+works "curl to the internet"    "curl -sS -m 15 -o /dev/null -w '%{http_code}' https://pypi.org/simple/" "200"
 
 printf "\nwhat was taken away is refused (even for root)\n"
 # Raw sockets are also off in gVisor by default (runsc net-raw=false), so
@@ -77,12 +81,6 @@ r=$(run "sudo python3 -c 'import socket; socket.socket(socket.AF_INET, socket.SO
 [[ "$r" == *"Operation not permitted"* ]] && pass "raw socket refused" || fail "raw socket" "$r"
 r=$(run "sudo mknod /tmp/fifo p && sudo mknod /tmp/null2 c 1 3 2>/dev/null; echo rc=\$?")
 [[ "$r" == *"|rc=1" ]] && pass "device node refused (a FIFO is fine)" || fail "mknod" "$r"
-# The RuntimeDefault seccomp filter is really applied inside gVisor
-# (runsc oci-seccomp): a filter is active and it refuses new user namespaces.
-r=$(run "grep Seccomp: /proc/self/status")
-[[ "$r" == *"2" ]] && pass "seccomp filter active (Seccomp: 2)" || fail "seccomp filter" "$r"
-r=$(run "unshare -U true 2>/dev/null; echo rc=\$?")
-[[ "$r" == *"|rc=1" ]] && pass "unshare -U refused by seccomp" || fail "unshare" "$r"
 r=$(run "sudo grep CapBnd /proc/self/status")
 bnd=$(printf '%s' "${r#*|}" | awk '{print $2}')
 [ "$bnd" = "00000000200404fb" ] && pass "root's capability bounding set is exactly the allowed 10 ($bnd)" ||
