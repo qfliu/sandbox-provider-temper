@@ -43,7 +43,9 @@ const (
 // defaultHandshakeTimeout bounds the SSH handshake (incl. authentication),
 // so a client that connects and stalls can't hold a goroutine forever (the
 // same slowloris lesson as the API's review finding M3).
-const defaultHandshakeTimeout = 30 * time.Second
+// 10 s is plenty for a real client and keeps a flood of stalled
+// connections from holding slots long (review of #50).
+const defaultHandshakeTimeout = 10 * time.Second
 
 // maxAuthTries limits public keys tried per connection.
 const maxAuthTries = 6
@@ -68,10 +70,41 @@ type Server struct {
 	touchInterval     time.Duration // how often an open session records activity
 	touchMinGap       time.Duration // never touch a sandbox more often than this
 
-	mu      sync.Mutex
-	closing bool // set once shutdown starts; new connections are refused
-	conns   map[net.Conn]struct{}
-	wg      sync.WaitGroup
+	// Connection limits (D49): total open connections; connections still
+	// in their handshake from one client (an IPv4 address or an IPv6 /64),
+	// which bounds floods of unauthenticated handshakes without limiting
+	// users behind one NAT once they're logged in; and logged-in
+	// connections to one sandbox.
+	maxConns, maxConnsPerIP, maxConnsPerSandbox int
+
+	mu         sync.Mutex
+	closing    bool // set once shutdown starts; new connections are refused
+	conns      map[net.Conn]struct{}
+	pending    map[net.Conn]string // connections in their handshake → client key
+	perIP      map[string]int      // pending connections per client key
+	perSandbox map[string]int
+	wg         sync.WaitGroup
+}
+
+// Default connection limits; see SetLimits.
+const (
+	DefaultMaxConns           = 1000
+	DefaultMaxConnsPerIP      = 20
+	DefaultMaxConnsPerSandbox = 10
+)
+
+// SetLimits changes the connection limits (values <= 0 keep the current
+// one). Call it before Serve.
+func (s *Server) SetLimits(total, perIP, perSandbox int) {
+	if total > 0 {
+		s.maxConns = total
+	}
+	if perIP > 0 {
+		s.maxConnsPerIP = perIP
+	}
+	if perSandbox > 0 {
+		s.maxConnsPerSandbox = perSandbox
+	}
 }
 
 // New returns a Server presenting hostKey to clients, checking logins
@@ -89,7 +122,14 @@ func New(hostKey ssh.Signer, sandboxes SandboxLookup, upstream Upstream, log *sl
 		rejectGrace:       5 * time.Second,
 		touchInterval:     time.Minute,
 		touchMinGap:       10 * time.Second,
-		conns:             map[net.Conn]struct{}{},
+
+		maxConns:           DefaultMaxConns,
+		maxConnsPerIP:      DefaultMaxConnsPerIP,
+		maxConnsPerSandbox: DefaultMaxConnsPerSandbox,
+		conns:              map[net.Conn]struct{}{},
+		pending:            map[net.Conn]string{},
+		perIP:              map[string]int{},
+		perSandbox:         map[string]int{},
 	}
 }
 
@@ -232,10 +272,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	}
 }
 
-// track records an accepted connection. During shutdown it closes the
-// connection instead and returns false: without this check, a connection
-// accepted just as shutdown swept the map would be missed and shutdown
-// would wait for it.
+// track records an accepted connection. During shutdown, or when a
+// connection limit is reached, it closes the connection instead and
+// returns false: without the shutdown check, a connection accepted just as
+// shutdown swept the map would be missed and shutdown would wait for it.
 func (s *Server) track(c net.Conn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -243,14 +283,85 @@ func (s *Server) track(c net.Conn) bool {
 		c.Close()
 		return false
 	}
+	key := clientKey(c.RemoteAddr())
+	if len(s.conns) >= s.maxConns || s.perIP[key] >= s.maxConnsPerIP {
+		// Closed before the SSH banner: cheap for us, clear for the client.
+		// Debug only, or a flood would also flood the log.
+		s.log.Debug("connection limit reached; closing", "client", key,
+			"open", len(s.conns), "in_handshake_from_client", s.perIP[key])
+		c.Close()
+		return false
+	}
 	s.conns[c] = struct{}{}
+	s.pending[c] = key
+	s.perIP[key]++
 	return true
+}
+
+// loggedIn moves a connection out of the per-client handshake count: users
+// behind one IP (an office NAT, parallel scp) aren't limited once logged
+// in; the per-sandbox limit applies from then on.
+func (s *Server) loggedIn(c net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.donePending(c)
+}
+
+func (s *Server) donePending(c net.Conn) {
+	key, ok := s.pending[c]
+	if !ok {
+		return
+	}
+	delete(s.pending, c)
+	if s.perIP[key]--; s.perIP[key] <= 0 {
+		delete(s.perIP, key)
+	}
 }
 
 func (s *Server) untrack(c net.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.conns, c)
+	s.donePending(c)
+}
+
+// clientKey identifies a client for the handshake limit: its IPv4 address,
+// or its IPv6 /64 (one host can use a whole /64, so per-address limits
+// would be free to evade). It's the real client IP behind the NodePort or
+// LoadBalancer only with externalTrafficPolicy: Local (D38).
+func clientKey(addr net.Addr) string {
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		host = addr.String()
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return host
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.String()
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
+}
+
+// acquireSandbox takes one of a sandbox's connection slots, or reports
+// that it's full.
+func (s *Server) acquireSandbox(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.perSandbox[id] >= s.maxConnsPerSandbox {
+		return false
+	}
+	s.perSandbox[id]++
+	return true
+}
+
+func (s *Server) releaseSandbox(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.perSandbox[id]--; s.perSandbox[id] <= 0 {
+		delete(s.perSandbox, id)
+	}
 }
 
 // shutdown refuses new connections and closes open ones (idempotent).
@@ -279,10 +390,21 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 	// Only now is the login real: the client proved it holds the key.
+	s.loggedIn(conn)
 	s.log.Info("login accepted", "sandbox", sconn.Permissions.Extensions[permSandboxID],
 		"remote", conn.RemoteAddr().String(), "key", sconn.Permissions.Extensions[permKey])
 	conn.SetDeadline(time.Time{})
 	defer sconn.Close()
 
-	s.proxySessions(sconn, chans, reqs, sconn.Permissions.Extensions[permSandboxID])
+	id := sconn.Permissions.Extensions[permSandboxID]
+	if !s.acquireSandbox(id) {
+		s.log.Warn("too many connections to sandbox; refusing", "sandbox", id,
+			"limit", s.maxConnsPerSandbox, "remote", conn.RemoteAddr().String())
+		go ssh.DiscardRequests(reqs) // global requests must be serviced too
+		rejectThenClose(sconn, chans, s.rejectGrace, ssh.ResourceShortage,
+			"too many connections to this sandbox; close one and retry")
+		return
+	}
+	defer s.releaseSandbox(id)
+	s.proxySessions(sconn, chans, reqs, id)
 }

@@ -41,10 +41,23 @@ spec:
         - name: POSTGRES_PASSWORD
           valueFrom: {secretKeyRef: {name: postgres-gateway-credentials, key: password}}
         - name: DATABASE_URL     # narrow role: SELECT on sandboxes; write ssh_activity only
-          value: postgres://sandbox_gateway:$(POSTGRES_PASSWORD)@postgres.sandbox-system:5432/sandbox?sslmode=disable
+          # pool_max_conns: lookups and activity writes share 10 connections
+          # per replica, a fixed share of Postgres's 100 (D49).
+          value: postgres://sandbox_gateway:$(POSTGRES_PASSWORD)@postgres.sandbox-system:5432/sandbox?sslmode=disable&pool_max_conns=10
         - {name: GATEWAY_LISTEN_ADDR, value: ":2222"}
         - {name: GATEWAY_HOST_KEY_FILE, value: /keys/host/ssh_host_ed25519_key}
         - {name: SANDBOX_INTERNAL_KEY_FILE, value: /keys/internal/id}
+        # Connection limits (D49): total, per client IP (counted from
+        # accept, so unauthenticated floods too), per sandbox.
+        - {name: GATEWAY_MAX_CONNS, value: "1000"}
+        - {name: GATEWAY_MAX_CONNS_PER_IP, value: "20"}
+        - {name: GATEWAY_MAX_CONNS_PER_SANDBOX, value: "10"}
+        # On rollout, keep accepting for 5 s after the pod is marked
+        # terminating, while its endpoint is removed from the Services, so
+        # no new connection is sent to a pod that already closed its
+        # listener. (Existing sessions still end on SIGTERM, D35.)
+        lifecycle:
+          preStop: {sleep: {seconds: 5}}
         readinessProbe:
           tcpSocket: {port: ssh}
           periodSeconds: 5
