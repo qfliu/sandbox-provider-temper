@@ -362,8 +362,7 @@ func (u *ui) listPage(r *http.Request) (page, error) {
 	if err != nil {
 		return page{}, err
 	}
-	active, err := u.activeKeys(r, user)
-	return page{ActiveKeys: active,
+	return page{ActiveKeys: u.activeKeys(r, user),
 		Title: "Your sandboxes", User: &user,
 		Sandboxes: list, ShowEnded: showEnded,
 		Images: sandbox.Images, TTLChoices: u.ttlChoices, IdleFor: humanDuration(u.idleTimeout),
@@ -424,20 +423,22 @@ func (u *ui) create(w http.ResponseWriter, r *http.Request) {
 }
 
 // activeKeys is the set of the user's active key IDs, or nil when there's
-// no keys page to link to.
-func (u *ui) activeKeys(r *http.Request, user store.User) (map[string]bool, error) {
+// no keys page to link to. It's only for the "created by" link, so if the
+// keys can't be loaded the page still renders, with a plain label.
+func (u *ui) activeKeys(r *http.Request, user store.User) map[string]bool {
 	if u.keys == nil {
-		return nil, nil
+		return nil
 	}
 	keys, err := u.keys.ListAPIKeys(r.Context(), user.ID)
 	if err != nil {
-		return nil, err
+		u.log.Warn("list api keys for created-by links", "err", err)
+		return nil
 	}
 	active := make(map[string]bool, len(keys))
 	for _, k := range keys {
 		active[k.ID] = true
 	}
-	return active, nil
+	return active
 }
 
 // detailPage loads one sandbox the user may see (their own; any for an
@@ -450,9 +451,7 @@ func (u *ui) detailPage(r *http.Request) (page, error) {
 	}
 	var active map[string]bool
 	if sb.UserID == user.ID { // keys page links only make sense for your own
-		if active, err = u.activeKeys(r, user); err != nil {
-			return page{}, err
-		}
+		active = u.activeKeys(r, user)
 	}
 	return page{ActiveKeys: active,
 		Title: sb.ID, User: &user, Sandbox: sb,

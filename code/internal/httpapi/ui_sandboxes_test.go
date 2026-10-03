@@ -503,3 +503,24 @@ func TestUICreatedByLinksToKey(t *testing.T) {
 		}
 	}
 }
+
+// The key list is only used for the "created by" link, so if it can't be
+// loaded the sandbox pages still work (plain labels), and without a keys
+// service at all they show plain labels too.
+func TestUISandboxPagesSurviveKeyListFailure(t *testing.T) {
+	sb := aliceAndBob()
+	s := sb.rows["sb-alice0000001"]
+	s.CreatedByKey = &store.KeyRef{ID: "k-session", Name: "browser", Prefix: "sk_aliceAAA"}
+	sb.rows["sb-alice0000001"] = s
+	for name, keys := range map[string]KeyService{"list fails": failingListKeys{aliceKeys()}, "no keys service": nil} {
+		h := NewHandler(Deps{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DB: fakeDB{},
+			Auth: uiAuth{}, Sandboxes: sb, Keys: keys})
+		for _, path := range []string{"/ui/", "/ui/sandboxes/rows", "/ui/sandboxes/sb-alice0000001", "/ui/sandboxes/sb-alice0000001/status"} {
+			rec := uiDo(h, http.MethodGet, path, nil, aliceSession)
+			if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "browser (sk_aliceAAA…)") ||
+				strings.Contains(rec.Body.String(), "#key-") {
+				t.Errorf("%s, %s = %d; want 200 with a plain label", name, path, rec.Code)
+			}
+		}
+	}
+}
