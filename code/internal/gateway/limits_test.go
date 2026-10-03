@@ -21,9 +21,8 @@ func gotBanner(t *testing.T, addr string) (net.Conn, bool) {
 	return c, err == nil && strings.HasPrefix(line, "SSH-2.0-")
 }
 
-// One client IP can hold only so many connections at once, counted from
-// accept (so unauthenticated handshakes count too); a slot frees up when a
-// connection closes.
+// One client can have only so many connections in their handshake at once
+// (unauthenticated floods); a slot frees up when a connection closes.
 func TestPerIPConnectionLimit(t *testing.T) {
 	srv := New(signer(t), noSandboxes{}, nil, quietLog())
 	srv.SetLimits(0, 2, 0)
@@ -40,11 +39,47 @@ func TestPerIPConnectionLimit(t *testing.T) {
 		t.Fatal("third connection from the same IP accepted; want it closed")
 	}
 	a.Close()
-	time.Sleep(100 * time.Millisecond) // let the gateway notice the close
-	d, okD := gotBanner(t, addr)
-	defer d.Close()
-	if !okD {
-		t.Fatal("slot not freed after a connection closed")
+	deadline := time.Now().Add(3 * time.Second) // poll: the gateway notices the close asynchronously
+	for {
+		d, okD := gotBanner(t, addr)
+		d.Close()
+		if okD {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("slot not freed after a connection closed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Logged-in connections don't count toward the per-client handshake limit:
+// users behind one NAT, or a tool opening many connections, aren't capped
+// once they've authenticated (review of #50).
+func TestLoggedInConnectionsLeaveTheHandshakeLimit(t *testing.T) {
+	p := newProxyFixture(t, func(s *Server) { s.SetLimits(0, 1, 0) })
+	first := p.client(t) // logged in: no longer counted
+	if _, err := first.NewSession(); err != nil {
+		t.Fatal(err)
+	}
+	second := p.client(t) // would be refused if logged-in connections counted
+	if _, err := second.NewSession(); err != nil {
+		t.Fatalf("second login from the same IP: %v", err)
+	}
+}
+
+func TestClientKey(t *testing.T) {
+	for addr, want := range map[string]string{
+		"192.0.2.7:51234":                "192.0.2.7",
+		"[2001:db8:1:2:aaaa::1]:22":      "2001:db8:1:2::/64",
+		"[2001:db8:1:2:ffff:ffff::9]:22": "2001:db8:1:2::/64", // same /64, same client
+		"[2001:db8:1:3::1]:22":           "2001:db8:1:3::/64",
+		"[::ffff:192.0.2.7]:22":          "192.0.2.7", // IPv4-mapped counts as the IPv4 client
+	} {
+		a, _ := net.ResolveTCPAddr("tcp", addr)
+		if got := clientKey(a); got != want {
+			t.Errorf("clientKey(%s) = %q, want %q", addr, got, want)
+		}
 	}
 }
 
@@ -73,7 +108,7 @@ func TestPerSandboxConnectionLimit(t *testing.T) {
 	}
 	second := p.client(t) // login itself succeeds
 	_, err := second.NewSession()
-	if err == nil || !strings.Contains(err.Error(), "too many connections to this sandbox") {
+	if err == nil || !strings.Contains(err.Error(), "too many connections to this sandbox; close one and retry") {
 		t.Fatalf("second connection's session: %v; want the per-sandbox limit message", err)
 	}
 	first.Close()
