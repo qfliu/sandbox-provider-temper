@@ -286,3 +286,21 @@ func TestUITemplateErrorIs500(t *testing.T) {
 		t.Fatalf("= %d %q, want a clean 500", rec.Code, rec.Body)
 	}
 }
+
+// Keys and Admin are optional in Deps: without them their pages are 404
+// (and their nav links hidden) instead of a nil-pointer panic.
+func TestUIWithoutOptionalServices(t *testing.T) {
+	h := uiHandler() // no Keys, no Admin
+	for _, c := range []*http.Cookie{{Name: sessionCookie, Value: goodKey}, {Name: sessionCookie, Value: "sk_admin"}} {
+		for _, path := range []string{"/ui/keys", "/ui/admin", "/ui/admin/rows"} {
+			rec := uiDo(h, http.MethodGet, path, nil, c)
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("%s as %s = %d, want 404", path, c.Value, rec.Code)
+			}
+		}
+		body := uiDo(h, http.MethodGet, "/ui/", nil, c).Body.String()
+		if strings.Contains(body, `href="/ui/keys"`) || strings.Contains(body, `href="/ui/admin"`) {
+			t.Errorf("nav links to missing pages for %s", c.Value)
+		}
+	}
+}

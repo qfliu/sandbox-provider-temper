@@ -49,6 +49,8 @@ type page struct {
 	Title string
 	User  *store.User
 	Error string
+	// Which optional sections exist (for the nav); set by render.
+	HasKeys, HasAdmin bool
 
 	// Sandbox list and create form.
 	Sandboxes  []store.Sandbox
@@ -154,11 +156,17 @@ func (u *ui) routes() http.Handler {
 	mux.Handle("GET /ui/sandboxes/{id}", u.requireSession(http.HandlerFunc(u.detail)))
 	mux.Handle("GET /ui/sandboxes/{id}/status", u.requireSession(http.HandlerFunc(u.status)))
 	mux.Handle("POST /ui/sandboxes/{id}/delete", u.requireSession(http.HandlerFunc(u.delete)))
-	mux.Handle("GET /ui/keys", u.requireSession(http.HandlerFunc(u.listKeys)))
-	mux.Handle("POST /ui/keys", u.requireSession(http.HandlerFunc(u.createKey)))
-	mux.Handle("POST /ui/keys/{id}/revoke", u.requireSession(http.HandlerFunc(u.revokeKey)))
-	mux.Handle("GET /ui/admin", u.requireSession(requireAdmin(http.HandlerFunc(u.adminView))))
-	mux.Handle("GET /ui/admin/rows", u.requireSession(requireAdmin(http.HandlerFunc(u.adminRows))))
+	// Keys and Admin are optional dependencies: without them those pages
+	// don't exist (404) rather than crash.
+	if u.keys != nil {
+		mux.Handle("GET /ui/keys", u.requireSession(http.HandlerFunc(u.listKeys)))
+		mux.Handle("POST /ui/keys", u.requireSession(http.HandlerFunc(u.createKey)))
+		mux.Handle("POST /ui/keys/{id}/revoke", u.requireSession(http.HandlerFunc(u.revokeKey)))
+	}
+	if u.admin != nil {
+		mux.Handle("GET /ui/admin", u.requireSession(requireAdmin(http.HandlerFunc(u.adminView))))
+		mux.Handle("GET /ui/admin/rows", u.requireSession(requireAdmin(http.HandlerFunc(u.adminRows))))
+	}
 	return securityHeaders(http.NewCrossOriginProtection().Handler(mux))
 }
 
@@ -221,6 +229,7 @@ func (u *ui) render(w http.ResponseWriter, status int, name string, p page) {
 // renderTemplate renders one named template of a page; partials (htmx
 // refreshes) use it directly.
 func (u *ui) renderTemplate(w http.ResponseWriter, status int, name, tmpl string, p page) {
+	p.HasKeys, p.HasAdmin = u.keys != nil, u.admin != nil
 	var buf bytes.Buffer
 	if err := u.pages[name].ExecuteTemplate(&buf, tmpl, p); err != nil {
 		u.log.Error("render page", "page", name, "err", err)
