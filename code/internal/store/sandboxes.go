@@ -56,8 +56,16 @@ type NewSandbox struct {
 	TTLSeconds    int
 }
 
+// lastActivity is a sandbox's most recent use: API calls (its own
+// last_activity_at) or open SSH sessions (ssh_activity, written by the
+// gateway, D36). An SSH time is capped at now(), so a bogus future value
+// can't break reads; GREATEST ignores a missing (NULL) SSH row and can't be
+// pulled down by an ancient one.
+const lastActivity = `GREATEST(sandboxes.last_activity_at,
+	(SELECT LEAST(a.last_seen_at, now()) FROM ssh_activity a WHERE a.sandbox_id = sandboxes.id))`
+
 const sandboxColumns = `id, user_id::text, image, status, status_reason, ssh_public_key,
-	pod_name, pod_ip, host_public_key, ttl_seconds, created_at, expires_at, last_activity_at, deleted_at`
+	pod_name, pod_ip, host_public_key, ttl_seconds, created_at, expires_at, ` + lastActivity + `, deleted_at`
 
 func scanSandbox(row pgx.Row) (Sandbox, error) {
 	var s Sandbox
@@ -179,14 +187,24 @@ func (s *Store) ListLiveSandboxes(ctx context.Context) ([]Sandbox, error) {
 	return list, rows.Err()
 }
 
-// TouchSandbox records activity (exec, file transfer, SSH) for the idle
+// TouchSandbox records API activity (exec, file transfer) for the idle
 // reaper on a running sandbox. Writes at most every 10 seconds per
 // sandbox, so a busy agent doesn't turn every call into a database write.
 func (s *Store) TouchSandbox(ctx context.Context, id string) error {
-	// touch_sandbox (migration 0003) only sets now(), only on a running
-	// sandbox, at most every 10 s; the gateway's role may call it but can't
-	// UPDATE the table.
-	_, err := s.pool.Exec(ctx, `SELECT touch_sandbox($1)`, id)
+	_, err := s.pool.Exec(ctx, `UPDATE sandboxes SET last_activity_at = now()
+		WHERE id = $1 AND status = 'running'
+		  AND last_activity_at < now() - interval '10 seconds'`, id)
+	return err
+}
+
+// RecordSSHActivity records that an SSH session on the sandbox is open
+// (D36). Used by the gateway, whose database role may write ssh_activity
+// but not the sandboxes table. At most one write every 10 seconds per
+// sandbox.
+func (s *Store) RecordSSHActivity(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO ssh_activity (sandbox_id, last_seen_at) VALUES ($1, now())
+		ON CONFLICT (sandbox_id) DO UPDATE SET last_seen_at = now()
+		WHERE ssh_activity.last_seen_at < now() - interval '10 seconds'`, id)
 	return err
 }
 
@@ -202,7 +220,7 @@ func (s *Store) ClaimForReaping(ctx context.Context, idleFor time.Duration, idle
 			WHEN expires_at <= now() THEN 'expired: TTL reached'
 			ELSE $2 END
 		WHERE status IN ('pending', 'running')
-		  AND (expires_at <= now() OR last_activity_at <= now() - make_interval(secs => $1::double precision))
+		  AND (expires_at <= now() OR `+lastActivity+` <= now() - make_interval(secs => $1::double precision))
 		RETURNING `+sandboxColumns, idleFor.Seconds(), idleReason)
 	if err != nil {
 		return nil, err

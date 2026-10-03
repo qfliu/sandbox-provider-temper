@@ -128,7 +128,7 @@ func (a *activity) run(ctx context.Context) {
 func (a *activity) touch(ctx context.Context) {
 	tctx, cancel := context.WithTimeout(ctx, lookupTimeout)
 	defer cancel()
-	err := a.s.sandboxes.TouchSandbox(tctx, a.id)
+	err := a.s.sandboxes.RecordSSHActivity(tctx, a.id)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err == nil {
