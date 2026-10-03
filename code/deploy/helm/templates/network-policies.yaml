@@ -1,17 +1,17 @@
-# Network isolation (D18, D37). Enforced by Calico (minikube --cni=calico).
-# Applied by cluster-up.sh; verified by code/scripts/test-network-policy.sh.
+{{- if .Values.networkPolicies.enabled }}
+{{- $sb := .Values.sandboxNamespace }}
+# Network isolation (D18, D37); verified by code/scripts/test-network-policy.sh.
 #
 # Sandboxes run untrusted code. They may reach the internet (pip, npm, git)
 # and DNS, and nothing else: not each other, the platform (API, gateway,
 # Postgres), the Kubernetes API, node IPs, or the cloud metadata endpoint.
 # Only the API and the gateway may connect to a sandbox, and only on port 22.
-
-# --- sandboxes namespace: deny everything not allowed below -----------------
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: default-deny
-  namespace: sandboxes
+  namespace: {{ $sb }}
+  labels: {{- include "sp.labels" . | nindent 4 }}
 spec:
   podSelector: {}
   policyTypes: [Ingress, Egress]
@@ -21,29 +21,31 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: ssh-from-platform
-  namespace: sandboxes
+  namespace: {{ $sb }}
+  labels: {{- include "sp.labels" . | nindent 4 }}
 spec:
   podSelector: {}
   policyTypes: [Ingress]
   ingress:
   - from:
     - namespaceSelector:
-        matchLabels: {kubernetes.io/metadata.name: sandbox-system}
+        matchLabels: {kubernetes.io/metadata.name: {{ .Release.Namespace }}}
       podSelector:
         matchExpressions:
-        - {key: app, operator: In, values: [sandbox-api, sandbox-gateway]}
+        - {key: app, operator: In, values: {{ include "sp.platformApps" . }}}
     ports:
     - {protocol: TCP, port: 22}
 ---
 # Egress: DNS (cluster DNS only) and the public internet. Private and
 # link-local ranges are excluded, which covers the pod and service networks,
 # the nodes (and so the Kubernetes API), a cloud VPC, and the metadata
-# endpoint 169.254.169.254, without knowing each cluster's exact CIDRs.
+# endpoint, without knowing each cluster's exact CIDRs.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: dns-and-internet
-  namespace: sandboxes
+  namespace: {{ $sb }}
+  labels: {{- include "sp.labels" . | nindent 4 }}
 spec:
   podSelector: {}
   policyTypes: [Egress]
@@ -59,20 +61,16 @@ spec:
   - to:
     - ipBlock:
         cidr: 0.0.0.0/0
-        except:
-        - 10.0.0.0/8        # private (pods, services, typical VPCs)
-        - 172.16.0.0/12     # private
-        - 192.168.0.0/16    # private (minikube's node network)
-        - 100.64.0.0/10     # carrier-grade NAT (some cloud VPCs)
-        - 169.254.0.0/16    # link-local, incl. cloud metadata 169.254.169.254
-        - 127.0.0.0/8       # loopback
+        except: {{- toYaml .Values.networkPolicies.blockedRanges | nindent 8 }}
 ---
-# --- sandbox-system: Postgres only from the API and gateway (defence in depth)
+# Postgres only from the API, the gateway and the db-setup Job (defence in
+# depth).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: postgres-from-platform
-  namespace: sandbox-system
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "sp.labels" . | nindent 4 }}
 spec:
   podSelector:
     matchLabels: {app: postgres}
@@ -81,6 +79,7 @@ spec:
   - from:
     - podSelector:
         matchExpressions:
-        - {key: app, operator: In, values: [sandbox-api, sandbox-gateway]}
+        - {key: app, operator: In, values: [sandbox-api, sandbox-gateway, sandbox-db-setup]}
     ports:
     - {protocol: TCP, port: 5432}
+{{- end }}

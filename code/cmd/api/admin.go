@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/qfliu/sandbox-provider-temper/code/internal/config"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/db"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/sshx"
@@ -161,4 +163,22 @@ func runCheckSSH(ctx context.Context, args []string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "OK %s at %s: host key verified, %s\n", sb.ID, target, strings.TrimSpace(string(whoami)))
 	return nil
+}
+
+// runPublicKey prints the public half of a private SSH key file in
+// authorized_keys / known_hosts format. The Helm chart generates keys in
+// PKCS#8 PEM, which some ssh-keygen builds (macOS) can't read, so this is
+// how to get the gateway's host key for known_hosts:
+//
+//	kubectl exec deploy/sandbox-gateway -- /api public-key /keys/host/ssh_host_ed25519_key
+func runPublicKey(args []string, out io.Writer) error {
+	if len(args) != 1 {
+		return errors.New("public-key: want exactly one argument, the private key file")
+	}
+	signer, err := sshx.LoadSigner(args[0])
+	if err != nil {
+		return err
+	}
+	_, err = out.Write(ssh.MarshalAuthorizedKey(signer.PublicKey()))
+	return err
 }

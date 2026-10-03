@@ -127,3 +127,32 @@ func TestCleanupSecrets(t *testing.T) {
 		t.Fatalf("deleted %v, %v; want only sb-dead-hostkey", deleted, err)
 	}
 }
+
+// The API publishes its public key for sandbox sshd: created, left alone
+// when equal, replaced when the key changed, and never removed by the
+// leftover-Secret cleanup.
+func TestPublishInternalKey(t *testing.T) {
+	client := fake.NewClientset()
+	pods := NewPods(client, testCfg)
+	ctx := context.Background()
+	get := func() string {
+		s, err := client.CoreV1().Secrets("sandboxes").Get(ctx, testCfg.InternalKeySecret, metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(s.Data[AuthorizedKeysFile])
+	}
+	for _, key := range []string{"ssh-ed25519 AAAA1\n", "ssh-ed25519 AAAA1\n", "ssh-ed25519 AAAA2\n"} {
+		if err := pods.PublishInternalKey(ctx, []byte(key)); err != nil {
+			t.Fatal(err)
+		}
+		if got := get(); got != key {
+			t.Fatalf("secret holds %q, want %q", got, key)
+		}
+	}
+	deleted, err := pods.CleanupSecrets(ctx, func(string) bool { return false })
+	if err != nil || len(deleted) != 0 {
+		t.Fatalf("cleanup deleted %v (%v); the internal key must survive", deleted, err)
+	}
+	get()
+}

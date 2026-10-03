@@ -1,0 +1,22 @@
+Sandbox provider installed in namespace {{ .Release.Namespace }} (sandboxes run in {{ .Values.sandboxNamespace }}).
+
+Requires gVisor and the `gvisor` RuntimeClass on every node; without it
+sandbox pods are rejected by the admission policy.
+
+1. First admin user and API key (printed once):
+     kubectl -n {{ .Release.Namespace }} exec deploy/sandbox-api -- /api create-user --name admin --admin
+
+2. Dashboard and API (port 80 of service sandbox-api):
+     kubectl -n {{ .Release.Namespace }} port-forward svc/sandbox-api 18080:80
+     open http://localhost:18080/ui
+
+3. SSH: ssh <sandbox-id>@{{ default "<gateway address>" .Values.api.sshGatewayAddr }}
+   The gateway's host key, for known_hosts:
+     kubectl -n {{ .Release.Namespace }} exec deploy/sandbox-gateway -- /api public-key /keys/host/ssh_host_ed25519_key
+
+Uninstall: helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
+  Keeps the Postgres volume and the generated credentials/keys, so a
+  reinstall picks up where it left off. To wipe everything, delete the
+  namespace AND make sure the volume's data is gone: some provisioners
+  (minikube's) keep it, and a later install then can't log in to it.
+  On minikube: ./down.sh --delete (deletes the VM).

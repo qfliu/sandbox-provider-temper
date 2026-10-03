@@ -1,4 +1,5 @@
 # Admission policy for the sandboxes namespace (review finding H3).
+# Cluster-wide objects (one release per cluster).
 #
 # The API's ServiceAccount may create pods there. Without this policy, a
 # compromised API (or a mistaken admin) could create a pod that skips gVisor,
@@ -9,6 +10,7 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
   name: sandbox-pods
+  labels: {{- include "sp.labels" . | nindent 4 }}
 spec:
   failurePolicy: Fail
   matchConstraints:
@@ -70,10 +72,11 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
 metadata:
   name: sandbox-pods
+  labels: {{- include "sp.labels" . | nindent 4 }}
 spec:
   policyName: sandbox-pods
   validationActions: [Deny]
   matchResources:
     namespaceSelector:
       matchLabels:
-        kubernetes.io/metadata.name: sandboxes
+        kubernetes.io/metadata.name: {{ .Values.sandboxNamespace }}

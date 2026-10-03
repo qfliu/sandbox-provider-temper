@@ -1,0 +1,13 @@
+# Sandbox pods (untrusted code) live in their own namespace (D24, D26).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.sandboxNamespace }}
+  labels:
+    {{- include "sp.labels" . | nindent 4 }}
+    # Pod Security Admission: reject privileged pods, host namespaces,
+    # hostPath, extra capabilities, etc. "restricted" isn't possible because
+    # sandbox sshd runs as root. sandbox-pod-policy.yaml adds the gVisor
+    # requirement and the rest (H3).
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest

@@ -42,7 +42,8 @@ if [ "$(minikube ssh -- "cat /data/gvisor/RELEASE 2>/dev/null || true" 2>/dev/nu
   echo "==> copying gVisor into the minikube node"
   minikube ssh -- "sudo rm -rf /data/gvisor && sudo mkdir -p /data/gvisor/gvisor-bin"
   for f in runsc containerd-shim-runsc-v1 $(cd "$CACHE" && ls -d gvisor-bin/*); do
-    minikube cp "$CACHE/$f" "minikube:/data/gvisor/$f" >/dev/null
+    # No node prefix: the current profile's primary node (not always "minikube").
+    minikube cp "$CACHE/$f" "/data/gvisor/$f" >/dev/null
   done
   minikube ssh -- "sudo chmod 755 /data/gvisor/runsc /data/gvisor/containerd-shim-runsc-v1 /data/gvisor/gvisor-bin/* \
     && echo $GVISOR_RELEASE | sudo tee /data/gvisor/RELEASE >/dev/null"

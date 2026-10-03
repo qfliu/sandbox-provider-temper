@@ -20,6 +20,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/qfliu/sandbox-provider-temper/code/internal/config"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/db"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/httpapi"
@@ -43,8 +45,10 @@ func main() {
 		err = runCreateKey(context.Background(), os.Args[2:], os.Stdout)
 	case "check-ssh":
 		err = runCheckSSH(context.Background(), os.Args[2:], os.Stdout)
+	case "public-key":
+		err = runPublicKey(os.Args[2:], os.Stdout)
 	default:
-		err = fmt.Errorf("unknown command %q (want serve, create-user, create-key or check-ssh)", cmd)
+		err = fmt.Errorf("unknown command %q (want serve, create-user, create-key, check-ssh or public-key)", cmd)
 	}
 	if err != nil {
 		log.Error("api exited", "err", err)
@@ -127,6 +131,10 @@ func serve(log *slog.Logger) error {
 	}
 	st := store.New(pool)
 	pods := k8s.NewPods(kube, cfg.Sandbox)
+	// Sandbox sshd trusts the public half of the key loaded above.
+	if err := pods.PublishInternalKey(ctx, ssh.MarshalAuthorizedKey(signer.PublicKey())); err != nil {
+		return fmt.Errorf("publish internal key: %w", err)
+	}
 	sandboxes := sandbox.NewService(st, pods, sshPool, cfg.Sandbox, log)
 
 	// Keep sandbox statuses in line with their pods (live events + a

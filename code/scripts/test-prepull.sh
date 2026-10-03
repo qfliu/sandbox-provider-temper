@@ -43,7 +43,7 @@ if minikube ssh -- "sudo crictl inspecti $IMAGE" >/dev/null 2>&1; then
 fi
 pass "node starts without the image"
 
-# The same shape as deploy/dev/prepull.yaml: an init container that uses the
+# The same shape as the chart's prepull.yaml: an init container that uses the
 # image and runs `true`, then idle on pause.
 kubectl apply -f - >/dev/null <<EOF
 apiVersion: apps/v1

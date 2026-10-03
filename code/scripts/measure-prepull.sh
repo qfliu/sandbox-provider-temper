@@ -20,7 +20,6 @@
 # Usage (from the project root): source ./env.sh && ./code/scripts/measure-prepull.sh
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 : "${KUBECONFIG:?source ./env.sh first}"
 NS=sandbox-system
 REG=localhost:5000
@@ -60,9 +59,22 @@ restore() {
 			echo "   docker.io/sandbox/$img:0.1 MISSING: rebuild with cluster-up.sh" >&2
 		fi
 	done
-	kubectl apply -f "$ROOT/code/deploy/dev/prepull.yaml" >/dev/null && echo "   pre-pull DaemonSet re-applied"
+	# The DaemonSet as it was (Helm's labels and annotations included), so
+	# the release still owns it.
+	if [ -s "$SAVED_DS" ] && ! kubectl -n "$NS" get daemonset sandbox-image-prepull >/dev/null 2>&1; then
+		kubectl create -f "$SAVED_DS" >/dev/null && echo "   pre-pull DaemonSet restored"
+	fi
+	rm -f "$SAVED_DS"
 	[ "$REG_WAS_ON" = enabled ] || { minikube addons disable registry >/dev/null 2>&1 && echo "   registry addon disabled again"; }
 }
+SAVED_DS=$(mktemp)
+kubectl -n "$NS" get daemonset sandbox-image-prepull -o json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+for k in ("resourceVersion", "uid", "creationTimestamp", "generation", "managedFields"):
+    d["metadata"].pop(k, None)
+d.pop("status", None)
+json.dump(d, sys.stdout)' >"$SAVED_DS" || { echo "no pre-pull DaemonSet to measure against (run deploy.sh)" >&2; exit 1; }
 trap restore EXIT
 
 echo "== registry"

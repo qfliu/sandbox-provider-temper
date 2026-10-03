@@ -270,7 +270,7 @@ func TestSSHCommand(t *testing.T) {
 		"gw.example.com":     "ssh sb-x@gw.example.com",
 		"":                   "ssh sb-x@<gateway>",
 		":30022":             "ssh sb-x@<gateway>", // `minikube ip` failed
-		"SSH_GATEWAY_ADDR":   "ssh sb-x@<gateway>", // manifest applied without deploy-api.sh
+		"SSH_GATEWAY_ADDR":   "ssh sb-x@<gateway>", // chart installed without api.sshGatewayAddr
 	} {
 		if got := sshCommand("sb-x", gateway); got != want {
 			t.Errorf("sshCommand(%q) = %q, want %q", gateway, got, want)

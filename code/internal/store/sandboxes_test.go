@@ -354,7 +354,7 @@ func TestSSHActivity(t *testing.T) {
 	}
 }
 
-// The gateway's database role (deploy-gateway.sh grants) must not be able to
+// The gateway's database role (the Helm chart's db-setup grants) must not be able to
 // change the sandboxes table, and doesn't need to: recording SSH activity
 // works with its own grants alone. Runs as a throwaway role with exactly
 // those grants.

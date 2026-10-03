@@ -8,8 +8,7 @@
 # .devenv/state/smoke-keys/ and reused while valid, so repeated runs don't
 # pile up users or keys. Every sandbox it creates is deleted.
 #
-# Usage (from the project root, after cluster-up / deploy-postgres /
-# deploy-api):
+# Usage (from the project root, after cluster-up.sh and deploy.sh):
 #   source ./env.sh && ./code/scripts/smoke-api.sh
 set -uo pipefail   # no -e: a failed check is reported, not fatal
 
@@ -56,8 +55,8 @@ die() { printf "setup failed: %s\n" "$1" >&2; exit 1; }
 # Fail fast (instead of minute-long kubectl waits and 27 confusing failures)
 # if the API isn't deployed and ready.
 READY=$(kubectl -n sandbox-system get deploy sandbox-api -o jsonpath='{.status.readyReplicas}' 2>&1) ||
-	die "can't read deployment sandbox-api: $READY (run deploy-api.sh)"
-[ "${READY:-0}" -ge 1 ] 2>/dev/null || die "sandbox-api has no ready pods (run deploy-api.sh)"
+	die "can't read deployment sandbox-api: $READY (run deploy.sh)"
+[ "${READY:-0}" -ge 1 ] 2>/dev/null || die "sandbox-api has no ready pods (run deploy.sh)"
 
 kubectl -n sandbox-system port-forward svc/sandbox-api "$PORT:80" >/dev/null 2>&1 &
 PF=$!

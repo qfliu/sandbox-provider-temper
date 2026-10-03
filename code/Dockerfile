@@ -1,6 +1,5 @@
 # Platform image with both binaries, /api (control plane) and /gateway (SSH
-# entry point). Built inside minikube by code/scripts/deploy-api.sh and
-# deploy-gateway.sh:
+# entry point). Built inside minikube by code/scripts/deploy.sh:
 #   minikube image build -t sandbox/api:<tag> code
 #
 # Stage 1 compiles a static binary; stage 2 is distroless: no shell, no
