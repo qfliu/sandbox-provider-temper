@@ -17,6 +17,9 @@ spec:
       apiVersions: [v1]
       operations: [CREATE, UPDATE]
       resources: [pods]
+  variables:
+  - name: containers
+    expression: "object.spec.containers + (has(object.spec.initContainers) ? object.spec.initContainers : [])"
   validations:
   - expression: "has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor'"
     message: "sandbox pods must run under gVisor (runtimeClassName: gvisor)"
@@ -24,6 +27,31 @@ spec:
     message: "sandbox pods must not mount a service account token"
   - expression: "has(object.metadata.labels) && 'app.kubernetes.io/managed-by' in object.metadata.labels && object.metadata.labels['app.kubernetes.io/managed-by'] == 'sandbox-api'"
     message: "pods in the sandboxes namespace must be created by the sandbox API"
+  # Step 5.2: least privilege inside gVisor too (k8s.SandboxSecurityContext).
+  - expression: >-
+      variables.containers.all(c, has(c.securityContext) && has(c.securityContext.capabilities) &&
+        has(c.securityContext.capabilities.drop) && 'ALL' in c.securityContext.capabilities.drop)
+    message: "sandbox containers must drop ALL capabilities"
+  - expression: >-
+      variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.capabilities) ||
+        !has(c.securityContext.capabilities.add) ||
+        c.securityContext.capabilities.add.all(a, a in ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID',
+          'SETUID', 'SETGID', 'KILL', 'NET_BIND_SERVICE', 'SYS_CHROOT', 'AUDIT_WRITE']))
+    message: "sandbox containers may only add back the capabilities sshd and sudo need"
+  - expression: >-
+      variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.privileged) ||
+        c.securityContext.privileged == false)
+    message: "sandbox containers must not be privileged"
+  - expression: >-
+      variables.containers.all(c, (has(c.securityContext) && has(c.securityContext.seccompProfile) &&
+        c.securityContext.seccompProfile.type == 'RuntimeDefault') ||
+        (has(object.spec.securityContext) && has(object.spec.securityContext.seccompProfile) &&
+        object.spec.securityContext.seccompProfile.type == 'RuntimeDefault'))
+    message: "sandbox containers must use the RuntimeDefault seccomp profile"
+  - expression: >-
+      variables.containers.all(c, has(c.resources) && has(c.resources.limits) &&
+        'cpu' in c.resources.limits && 'memory' in c.resources.limits)
+    message: "sandbox containers must have CPU and memory limits"
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

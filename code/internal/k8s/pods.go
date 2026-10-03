@@ -191,6 +191,7 @@ func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 						corev1.ResourceEphemeralStorage: resource.MustParse("5Gi"),
 					},
 				},
+				SecurityContext: SandboxSecurityContext(),
 				ReadinessProbe: &corev1.Probe{
 					ProbeHandler:  corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(22)}},
 					PeriodSeconds: 2,
@@ -224,6 +225,34 @@ func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 				},
 			},
 		},
+	}
+}
+
+// SandboxCapabilities are the only Linux capabilities a sandbox keeps (step
+// 5.2): what sshd needs (switch users, chroot for privilege separation, bind
+// port 22) and what the sandbox's root user needs for everyday admin work
+// (sudo, apt, chown/chmod of others' files). Everything else the container
+// runtime would grant by default is dropped, notably NET_RAW (raw packets:
+// spoofing, ping), MKNOD, SETPCAP and SETFCAP. The admission policy
+// (deploy/dev/sandbox-pod-policy.yaml) enforces the same list.
+var SandboxCapabilities = []corev1.Capability{
+	"CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "SETUID", "SETGID",
+	"KILL", "NET_BIND_SERVICE", "SYS_CHROOT", "AUDIT_WRITE",
+}
+
+// SandboxSecurityContext is the sandbox container's security context: drop
+// all capabilities but SandboxCapabilities, and the runtime's default
+// seccomp filter on top of gVisor. Privilege escalation stays allowed
+// because sudo (setuid) is part of the sandbox (D2): the user is meant to
+// be root inside their own gVisor sandbox.
+func SandboxSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+			Add:  SandboxCapabilities,
+		},
+		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+		Privileged:     ptr(false),
 	}
 }
 

@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	corev1 "k8s.io/api/core/v1"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,6 +44,24 @@ func TestBuildPodIsolation(t *testing.T) {
 	}
 	if c.Resources.Limits.Cpu().IsZero() || c.Resources.Limits.Memory().IsZero() {
 		t.Fatal("pod must have CPU and memory limits")
+	}
+	if c.Resources.Limits.StorageEphemeral().IsZero() {
+		t.Fatal("pod must have an ephemeral-storage limit")
+	}
+	sc := c.SecurityContext
+	if sc == nil || sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
+		t.Fatal("pod must drop all capabilities")
+	}
+	for _, capability := range sc.Capabilities.Add {
+		if capability == "NET_RAW" || capability == "SYS_ADMIN" || capability == "MKNOD" || capability == "NET_ADMIN" {
+			t.Fatalf("pod adds dangerous capability %s", capability)
+		}
+	}
+	if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Fatal("pod must use the RuntimeDefault seccomp profile")
+	}
+	if sc.Privileged == nil || *sc.Privileged {
+		t.Fatal("pod must not be privileged")
 	}
 	var hostKeyVol bool
 	for _, v := range spec.Volumes {
