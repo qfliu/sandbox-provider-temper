@@ -146,7 +146,9 @@ idle_secs() { # seconds since last_activity_at
 t=re.sub(r'(\.\d{6})\d*', r'\1', sys.argv[1]).replace('Z','+00:00')
 print(int((datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(t)).total_seconds()))" "$(api_field "$A" last_activity_at)"
 }
-echo "UPDATE sandboxes SET last_activity_at = now() - interval '25 minutes' WHERE id = '$A';" |
+# Both kinds of activity: the API's, and the SSH sessions earlier checks opened.
+echo "UPDATE sandboxes SET last_activity_at = now() - interval '25 minutes' WHERE id = '$A';
+UPDATE ssh_activity SET last_seen_at = now() - interval '25 minutes' WHERE sandbox_id = '$A';" |
 	kubectl -n sandbox-system exec -i postgres-0 -- psql -q -v ON_ERROR_STOP=1 -U sandbox -d sandbox >/dev/null ||
 	die "could not backdate last_activity_at"
 before=$(idle_secs)

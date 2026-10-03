@@ -39,7 +39,7 @@ func (noSandboxes) GetSandbox(context.Context, string) (store.Sandbox, error) {
 	return store.Sandbox{}, store.ErrNotFound
 }
 
-func (noSandboxes) TouchSandbox(context.Context, string) error { return nil }
+func (noSandboxes) RecordSSHActivity(context.Context, string) error { return nil }
 
 // serve runs srv on ln until the returned cancel is called; done receives
 // Serve's result.
