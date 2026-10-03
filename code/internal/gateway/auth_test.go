@@ -1,8 +1,11 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"net"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -101,5 +104,123 @@ func TestBadUserNameSkipsLookup(t *testing.T) {
 	}
 	if n := f.lookups.Load(); n != 0 {
 		t.Fatalf("%d database lookups for invalid user names, want 0", n)
+	}
+}
+
+// logBuffer captures log output so tests can check what was logged.
+func logBuffer() (*slog.Logger, *bytes.Buffer) {
+	var buf bytes.Buffer
+	return slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})), &buf
+}
+
+type fakeMeta struct {
+	ssh.ConnMetadata
+	user string
+}
+
+func (m fakeMeta) User() string          { return m.user }
+func (m fakeMeta) RemoteAddr() net.Addr  { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)} }
+func (m fakeMeta) SessionID() []byte     { return []byte("s") }
+func (m fakeMeta) ClientVersion() []byte { return nil }
+
+func running(id string, owner ssh.PublicKey) store.Sandbox {
+	return store.Sandbox{ID: id, Status: store.StatusRunning, SSHPublicKey: authorized(owner)}
+}
+
+// A "query" (is this key OK?) runs the callback without proving the client
+// holds the key. It must not be logged as a login; only a completed
+// handshake is (review finding 1: someone with just the public key made
+// the log say "login accepted").
+func TestOnlyCompletedLoginsAreLoggedAsAccepted(t *testing.T) {
+	host, owner := signer(t), signer(t)
+	f := &fakeSandboxes{rows: map[string]store.Sandbox{"sb-00000000000a": running("sb-00000000000a", owner.PublicKey())}}
+	log, buf := logBuffer()
+	srv := New(host, f, log)
+
+	perms, err := (&connAuth{s: srv}).authenticate(fakeMeta{user: "sb-00000000000a"}, owner.PublicKey())
+	if err != nil || perms.Extensions[permSandboxID] != "sb-00000000000a" {
+		t.Fatalf("matching key: %v, %v", perms, err)
+	}
+	if strings.Contains(buf.String(), "login accepted") {
+		t.Fatal("a key match without a completed handshake was logged as a login")
+	}
+
+	if !tryLogin(t, start(t, srv), "sb-00000000000a", host.PublicKey(), owner) {
+		t.Fatal("owner login failed")
+	}
+	if n := strings.Count(buf.String(), "login accepted"); n != 1 {
+		t.Fatalf("%d 'login accepted' lines after one real login, want 1:\n%s", n, buf)
+	}
+}
+
+// One connection may only try one sandbox, and at most maxAuthTries lookups
+// (review finding 2: up to 128 DB lookups per connection otherwise).
+func TestPerConnectionLimits(t *testing.T) {
+	owner := signer(t)
+	f := &fakeSandboxes{rows: map[string]store.Sandbox{
+		"sb-00000000000a": running("sb-00000000000a", owner.PublicKey()),
+		"sb-00000000000b": running("sb-00000000000b", owner.PublicKey()),
+	}}
+	srv := New(signer(t), f, quietLog())
+
+	a := &connAuth{s: srv}
+	if _, err := a.authenticate(fakeMeta{user: "sb-00000000000a"}, owner.PublicKey()); err != nil {
+		t.Fatal(err)
+	}
+	before := f.lookups.Load()
+	if _, err := a.authenticate(fakeMeta{user: "sb-00000000000b"}, owner.PublicKey()); err == nil {
+		t.Fatal("user name changed mid-connection and was accepted")
+	}
+	if f.lookups.Load() != before {
+		t.Fatal("a changed user name still cost a database lookup")
+	}
+
+	b := &connAuth{s: srv}
+	stranger := signer(t)
+	for i := 0; i < 50; i++ {
+		b.authenticate(fakeMeta{user: "sb-00000000000a"}, stranger.PublicKey())
+	}
+	if got := f.lookups.Load() - before; got != maxAuthTries {
+		t.Fatalf("%d lookups for 50 attempts on one connection, want %d", got, maxAuthTries)
+	}
+}
+
+// While the database is down, one connection logs at most one warning
+// (review finding 3).
+func TestLookupErrorWarnsOncePerConnection(t *testing.T) {
+	log, buf := logBuffer()
+	a := &connAuth{s: New(signer(t), &fakeSandboxes{}, log)}
+	for i := 0; i < maxAuthTries; i++ {
+		a.authenticate(fakeMeta{user: "sb-0000000000db"}, signer(t).PublicKey())
+	}
+	if n := strings.Count(buf.String(), "sandbox lookup failed"); n != 1 {
+		t.Fatalf("%d lookup warnings for one connection, want 1", n)
+	}
+}
+
+// Offering a wrong key first and the right one second still logs in (what
+// OpenSSH does when several keys are loaded).
+func TestWrongKeyThenRightKey(t *testing.T) {
+	host, owner := signer(t), signer(t)
+	f := &fakeSandboxes{rows: map[string]store.Sandbox{"sb-00000000000a": running("sb-00000000000a", owner.PublicKey())}}
+	addr := start(t, New(host, f, quietLog()))
+	c, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+		User:            "sb-00000000000a",
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer(t), signer(t), owner)},
+		HostKeyCallback: ssh.FixedHostKey(host.PublicKey()),
+	})
+	if err != nil {
+		t.Fatalf("owner key offered third was refused: %v", err)
+	}
+	c.Close()
+}
+
+func TestUnparseableStoredKeyIsRefused(t *testing.T) {
+	f := &fakeSandboxes{rows: map[string]store.Sandbox{
+		"sb-00000000000a": {ID: "sb-00000000000a", Status: store.StatusRunning, SSHPublicKey: "garbage"},
+	}}
+	a := &connAuth{s: New(signer(t), f, quietLog())}
+	if _, err := a.authenticate(fakeMeta{user: "sb-00000000000a"}, signer(t).PublicKey()); err == nil {
+		t.Fatal("a sandbox with an unparseable stored key let someone in")
 	}
 }

@@ -196,9 +196,18 @@ func normalizeSSHKey(raw string) (string, error) {
 	if raw == "" {
 		return "", &ValidationError{"ssh_public_key is required"}
 	}
-	key, comment, _, rest, err := ssh.ParseAuthorizedKey([]byte(raw))
+	key, comment, options, rest, err := ssh.ParseAuthorizedKey([]byte(raw))
 	if err != nil || len(strings.TrimSpace(string(rest))) > 0 {
 		return "", &ValidationError{"ssh_public_key must be a single OpenSSH public key, e.g. the contents of ~/.ssh/id_ed25519.pub"}
+	}
+	// The gateway compares raw key bytes and enforces no authorized_keys
+	// options or certificate rules, so don't accept either rather than
+	// silently ignore them.
+	if len(options) > 0 {
+		return "", &ValidationError{"ssh_public_key must not have authorized_keys options (like from=)"}
+	}
+	if _, isCert := key.(*ssh.Certificate); isCert {
+		return "", &ValidationError{"ssh_public_key must be a plain public key, not a certificate"}
 	}
 	out := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
 	if comment != "" {

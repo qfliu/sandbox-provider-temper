@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"io"
 	"log/slog"
@@ -131,13 +133,15 @@ func TestCreate(t *testing.T) {
 func TestCreateValidation(t *testing.T) {
 	f := newFixture(t)
 	cases := map[string]CreateRequest{
-		"unknown image": {Image: "alpine", SSHPublicKey: validKey},
-		"missing key":   {Image: "ubuntu-dev"},
-		"not a key":     {Image: "ubuntu-dev", SSHPublicKey: "hello"},
-		"two keys":      {Image: "ubuntu-dev", SSHPublicKey: validKey + "\n" + validKey},
-		"ttl too short": {Image: "ubuntu-dev", SSHPublicKey: validKey, TTLSeconds: 10},
-		"ttl too long":  {Image: "ubuntu-dev", SSHPublicKey: validKey, TTLSeconds: 25 * 3600},
-		"negative ttl":  {Image: "ubuntu-dev", SSHPublicKey: validKey, TTLSeconds: -5},
+		"unknown image":    {Image: "alpine", SSHPublicKey: validKey},
+		"missing key":      {Image: "ubuntu-dev"},
+		"not a key":        {Image: "ubuntu-dev", SSHPublicKey: "hello"},
+		"two keys":         {Image: "ubuntu-dev", SSHPublicKey: validKey + "\n" + validKey},
+		"ttl too short":    {Image: "ubuntu-dev", SSHPublicKey: validKey, TTLSeconds: 10},
+		"ttl too long":     {Image: "ubuntu-dev", SSHPublicKey: validKey, TTLSeconds: 25 * 3600},
+		"negative ttl":     {Image: "ubuntu-dev", SSHPublicKey: validKey, TTLSeconds: -5},
+		"key with options": {Image: "ubuntu-dev", SSHPublicKey: `from="10.0.0.1" ` + validKey},
+		"certificate":      {Image: "ubuntu-dev", SSHPublicKey: testCertificate(t)},
 	}
 	for name, req := range cases {
 		var verr *ValidationError
@@ -209,4 +213,20 @@ func TestDeleteIsIdempotent(t *testing.T) {
 	if _, err := f.svc.Get(ctx, f.alice, "sb-doesnotexist"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("unknown id: err = %v", err)
 	}
+}
+
+// testCertificate returns an OpenSSH user certificate in authorized_keys
+// form (signed by a throwaway CA).
+func testCertificate(t *testing.T) string {
+	t.Helper()
+	_, caPriv, _ := ed25519.GenerateKey(rand.Reader)
+	ca, _ := ssh.NewSignerFromKey(caPriv)
+	userPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	sshPub, _ := ssh.NewPublicKey(userPub)
+	cert := &ssh.Certificate{Key: sshPub, CertType: ssh.UserCert, ValidPrincipals: []string{"user"},
+		ValidBefore: ssh.CertTimeInfinity}
+	if err := cert.SignCert(rand.Reader, ca); err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(cert)))
 }
