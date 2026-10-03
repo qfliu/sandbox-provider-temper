@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/retry"
 
 	"github.com/qfliu/sandbox-provider-temper/code/internal/config"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
@@ -155,16 +156,20 @@ func (p *Pods) PublishInternalKey(ctx context.Context, authorizedKey []byte) err
 	if !apierrors.IsAlreadyExists(err) {
 		return err
 	}
-	have, err := secrets.Get(ctx, want.Name, metav1.GetOptions{})
-	if err != nil {
+	// Retried on a conflict: another replica updated it between our Get
+	// and Update (only possible while the key itself is being replaced).
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		have, err := secrets.Get(ctx, want.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if string(have.Data[AuthorizedKeysFile]) == string(authorizedKey) {
+			return nil
+		}
+		have.Data = want.Data
+		_, err = secrets.Update(ctx, have, metav1.UpdateOptions{})
 		return err
-	}
-	if string(have.Data[AuthorizedKeysFile]) == string(authorizedKey) {
-		return nil
-	}
-	have.Data = want.Data
-	_, err = secrets.Update(ctx, have, metav1.UpdateOptions{})
-	return err
+	})
 }
 
 func labelsFor(sb store.Sandbox, component string) map[string]string {

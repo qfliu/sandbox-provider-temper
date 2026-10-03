@@ -103,6 +103,9 @@ metadata:
   annotations: {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
+  {{- if not (has .Values.gateway.service.type (list "NodePort" "LoadBalancer")) }}
+  {{- fail "gateway.service.type must be NodePort or LoadBalancer (in-cluster access already has the sandbox-gateway Service)" }}
+  {{- end }}
   type: {{ .Values.gateway.service.type }}
   externalTrafficPolicy: Local
   selector: {app: sandbox-gateway}

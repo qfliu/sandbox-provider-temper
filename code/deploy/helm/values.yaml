@@ -7,6 +7,11 @@
 # Prerequisite on every node: gVisor and the `gvisor` RuntimeClass
 # (code/scripts/install-gvisor.sh on minikube). The chart can't install
 # node software.
+#
+# Install only with `helm upgrade --install` (as above). The chart reuses
+# its generated passwords and keys by reading them from the cluster, which
+# Helm only does then: `helm template | kubectl apply` or a GitOps tool that
+# renders with `helm template` would generate new ones on every render.
 
 # Platform image: one image holds the API (/api) and the SSH gateway (/gateway).
 image:
@@ -46,8 +51,8 @@ gateway:
   maxConns: 1000
   maxConnsPerIP: 20
   maxConnsPerSandbox: 10
-  # How users reach the gateway from outside the cluster. NodePort for
-  # minikube; LoadBalancer (port 22) in a cloud. externalTrafficPolicy
+  # How users reach the gateway from outside the cluster: NodePort for
+  # minikube, LoadBalancer (port 22) in a cloud; nothing else is allowed. externalTrafficPolicy
   # Local keeps the client's real IP for the per-client limit.
   service:
     type: NodePort

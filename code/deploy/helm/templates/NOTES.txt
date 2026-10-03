@@ -15,8 +15,10 @@ sandbox pods are rejected by the admission policy.
      kubectl -n {{ .Release.Namespace }} exec deploy/sandbox-gateway -- /api public-key /keys/host/ssh_host_ed25519_key
 
 Uninstall: helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
-  Keeps the Postgres volume and the generated credentials/keys, so a
-  reinstall picks up where it left off. To wipe everything, delete the
+  Deletes the {{ .Values.sandboxNamespace }} namespace and with it every
+  sandbox (a reinstall marks their records lost). Keeps the Postgres volume
+  and the generated credentials/keys, so users, keys and history survive
+  a reinstall. To wipe everything, delete the
   namespace AND make sure the volume's data is gone: some provisioners
   (minikube's) keep it, and a later install then can't log in to it.
   On minikube: ./down.sh --delete (deletes the VM).
