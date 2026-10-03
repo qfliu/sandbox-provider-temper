@@ -34,6 +34,8 @@ echo "==> namespaces and the internal SSH key"
 kubectl apply -f "$ROOT/code/deploy/dev/namespaces.yaml" >/dev/null
 # Admission guard rails for sandbox pods (gVisor required, no SA token).
 kubectl apply -f "$ROOT/code/deploy/dev/sandbox-pod-policy.yaml" >/dev/null
+# Keep the sandbox images cached on every node (D19, step 5.3).
+kubectl apply -f "$ROOT/code/deploy/dev/prepull.yaml" >/dev/null
 # Network isolation (D18, D37): sandboxes reach only DNS + the internet;
 # only the API and gateway reach sandboxes (port 22) and Postgres.
 kubectl apply -f "$ROOT/code/deploy/dev/network-policies.yaml" >/dev/null
