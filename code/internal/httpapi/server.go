@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
 
 // Pinger reports whether a dependency (Postgres) is reachable.
@@ -24,6 +26,16 @@ type Deps struct {
 	// SSHGateway is the gateway's public "host:port", shown in the
 	// dashboard's ssh command (optional).
 	SSHGateway string
+	// Keys manages users' API keys from the dashboard.
+	Keys KeyService
+}
+
+// KeyService lists, issues and revokes a user's API keys (implemented by
+// store.Store; faked in tests).
+type KeyService interface {
+	ListAPIKeys(ctx context.Context, userID string) ([]store.APIKey, error)
+	CreateAPIKey(ctx context.Context, userID, name string) (string, store.APIKey, error)
+	RevokeAPIKey(ctx context.Context, userID, keyID string) error
 }
 
 // NewHandler returns the API's root handler with all routes registered.
@@ -47,7 +59,7 @@ func NewHandler(d Deps) http.Handler {
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /readyz", handleReadyz(d.Log, d.DB))
 	mux.Handle("/v1/", requireAuth(d.Log, d.Auth, v1))
-	ui := newUI(d.Log, d.Auth, d.Sandboxes, d.SSHGateway).routes()
+	ui := newUI(d.Log, d.Auth, d.Sandboxes, d.Keys, d.SSHGateway).routes()
 	mux.Handle("/ui", ui)
 	mux.Handle("/ui/", ui)
 	return logRequests(d.Log, mux)

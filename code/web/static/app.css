@@ -62,3 +62,7 @@ button.secondary { color: var(--accent); background: none; border: 1px solid var
 button.danger { background: var(--danger); }
 h1 code { font-size: inherit; }
 .actions { margin-top: 16px; }
+.notice { border-color: var(--accent); }
+button.danger-link { color: var(--danger); }
+header nav a { color: var(--text); text-decoration: none; }
+header nav a:hover { color: var(--accent); }

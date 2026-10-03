@@ -22,6 +22,8 @@ func (uiAuth) UserByAPIKey(ctx context.Context, key string) (store.User, error) 
 	switch key {
 	case "sk_admin":
 		return store.User{ID: "u2", Name: "root", IsAdmin: true}, nil
+	case aliceLongKey: // long enough to have a display prefix
+		return store.User{ID: "u1", Name: "alice"}, nil
 	case "sk_html":
 		return store.User{ID: "u3", Name: `<script>alert(1)</script>`}, nil
 	}
@@ -276,7 +278,7 @@ func TestV1IgnoresSessionCookie(t *testing.T) {
 
 // A template error is a clean 500, not a 200 with half a page.
 func TestUITemplateErrorIs500(t *testing.T) {
-	u := newUI(slog.New(slog.NewTextHandler(io.Discard, nil)), uiAuth{}, fakeSandboxes{}, "")
+	u := newUI(slog.New(slog.NewTextHandler(io.Discard, nil)), uiAuth{}, fakeSandboxes{}, nil, "")
 	u.pages["broken"] = template.Must(template.New("layout").Parse(`partial {{.Missing.Field}}`))
 	rec := httptest.NewRecorder()
 	u.render(rec, http.StatusOK, "broken", page{})

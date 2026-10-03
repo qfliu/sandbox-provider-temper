@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qfliu/sandbox-provider-temper/code/internal/auth"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/sandbox"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 	"github.com/qfliu/sandbox-provider-temper/code/web"
@@ -34,6 +35,7 @@ type ui struct {
 	log       *slog.Logger
 	auth      Authenticator
 	sandboxes SandboxService
+	keys      KeyService
 	gateway   string // the SSH gateway's public host:port, may be empty
 	pages     map[string]*template.Template
 }
@@ -56,6 +58,12 @@ type page struct {
 	Sandbox    store.Sandbox
 	SSHCommand string
 	GatewaySet bool
+
+	// API keys.
+	Keys       []store.APIKey
+	CurrentKey string // display prefix of the key this session uses
+	NewKey     string // a just-created key, shown once
+	NewKeyName string
 }
 
 // createForm keeps what the user typed when the form is shown again with
@@ -104,10 +112,10 @@ func humanDuration(d time.Duration) string {
 	return fmt.Sprintf("%dh %dm", h, m)
 }
 
-func newUI(log *slog.Logger, auth Authenticator, sandboxes SandboxService, gateway string) *ui {
-	u := &ui{log: log, auth: auth, sandboxes: sandboxes, gateway: gateway, pages: map[string]*template.Template{}}
+func newUI(log *slog.Logger, auth Authenticator, sandboxes SandboxService, keys KeyService, gateway string) *ui {
+	u := &ui{log: log, auth: auth, sandboxes: sandboxes, keys: keys, gateway: gateway, pages: map[string]*template.Template{}}
 	partials := []string{"templates/rows.html", "templates/status.html"}
-	for _, name := range []string{"login", "list", "detail"} {
+	for _, name := range []string{"login", "list", "detail", "keys"} {
 		files := append([]string{"templates/layout.html", "templates/" + name + ".html"}, partials...)
 		u.pages[name] = template.Must(template.New(name).Funcs(templateFuncs).ParseFS(web.Templates, files...))
 	}
@@ -138,6 +146,9 @@ func (u *ui) routes() http.Handler {
 	mux.Handle("GET /ui/sandboxes/{id}", u.requireSession(http.HandlerFunc(u.detail)))
 	mux.Handle("GET /ui/sandboxes/{id}/status", u.requireSession(http.HandlerFunc(u.status)))
 	mux.Handle("POST /ui/sandboxes/{id}/delete", u.requireSession(http.HandlerFunc(u.delete)))
+	mux.Handle("GET /ui/keys", u.requireSession(http.HandlerFunc(u.listKeys)))
+	mux.Handle("POST /ui/keys", u.requireSession(http.HandlerFunc(u.createKey)))
+	mux.Handle("POST /ui/keys/{id}/revoke", u.requireSession(http.HandlerFunc(u.revokeKey)))
 	return securityHeaders(http.NewCrossOriginProtection().Handler(mux))
 }
 
@@ -369,6 +380,87 @@ func (u *ui) delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/ui/", http.StatusSeeOther)
+}
+
+// maxKeyNameLen bounds a key's label.
+const maxKeyNameLen = 100
+
+// keysPage loads the signed-in user's active keys and notes which one this
+// session uses (by display prefix: 8 random characters, so two of a user's
+// keys sharing one is vanishingly unlikely, and it's only used for display
+// and the revoke warning).
+func (u *ui) keysPage(r *http.Request) (page, error) {
+	user := userFrom(r.Context())
+	keys, err := u.keys.ListAPIKeys(r.Context(), user.ID)
+	p := page{Title: "API keys", User: &user, Keys: keys}
+	if r.URL.Query().Get("error") == "last-key" { // a fixed code, never echoed text
+		p.Error = "You can't revoke your only API key. Create another one first."
+	}
+	if c, cerr := r.Cookie(sessionCookie); cerr == nil && len(c.Value) >= auth.DisplayPrefixLen {
+		p.CurrentKey = c.Value[:auth.DisplayPrefixLen]
+	}
+	return p, err
+}
+
+func (u *ui) listKeys(w http.ResponseWriter, r *http.Request) {
+	p, err := u.keysPage(r)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	u.render(w, http.StatusOK, "keys", p)
+}
+
+// createKey issues a key and shows it in this response only: it's never
+// stored in plain text, and the page isn't cached (no-store).
+func (u *ui) createKey(w http.ResponseWriter, r *http.Request) {
+	user := userFrom(r.Context())
+	name := strings.TrimSpace(r.PostFormValue("name"))
+	if len(name) > maxKeyNameLen {
+		p, err := u.keysPage(r)
+		if err != nil {
+			u.fail(w, r, err)
+			return
+		}
+		p.Error = fmt.Sprintf("Name too long (at most %d characters).", maxKeyNameLen)
+		u.render(w, http.StatusBadRequest, "keys", p)
+		return
+	}
+	plaintext, key, err := u.keys.CreateAPIKey(r.Context(), user.ID, name)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	u.log.Info("api key created", "user", user.Name, "key", key.Prefix)
+	p, err := u.keysPage(r)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	p.NewKey, p.NewKeyName = plaintext, key.Name
+	u.render(w, http.StatusOK, "keys", p)
+}
+
+func (u *ui) revokeKey(w http.ResponseWriter, r *http.Request) {
+	user := userFrom(r.Context())
+	err := u.keys.RevokeAPIKey(r.Context(), user.ID, r.PathValue("id"))
+	if errors.Is(err, store.ErrLastKey) {
+		// Redirect (not render) so a reload doesn't resend the POST.
+		http.Redirect(w, r, "/ui/keys?error=last-key", http.StatusSeeOther)
+		return
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "API key not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	u.log.Info("api key revoked", "user", user.Name, "key_id", r.PathValue("id"))
+	// If that was this session's key, the next page load signs the user out
+	// (requireSession rejects revoked keys).
+	http.Redirect(w, r, "/ui/keys", http.StatusSeeOther)
 }
 
 // fail shows a service error as a plain error page (or, for an htmx

@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/qfliu/sandbox-provider-temper/code/internal/db"
@@ -122,5 +124,81 @@ func TestUserByAPIKeySurvivesLastUsedWriteFailure(t *testing.T) {
 	got, err := s.UserByAPIKey(ctx, key)
 	if err != nil || got.ID != alice.ID {
 		t.Fatalf("valid key rejected because last_used_at couldn't be written: %+v, %v", got, err)
+	}
+}
+
+func TestListAndRevokeAPIKeys(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	alice, _ := s.CreateUser(ctx, "alice", false)
+	bob, _ := s.CreateUser(ctx, "bob", false)
+	plain1, k1, _ := s.CreateAPIKey(ctx, alice.ID, "laptop")
+	_, k2, _ := s.CreateAPIKey(ctx, alice.ID, "agent")
+	_, bobKey, _ := s.CreateAPIKey(ctx, bob.ID, "bob")
+
+	keys, err := s.ListAPIKeys(ctx, alice.ID)
+	if err != nil || len(keys) != 2 || keys[0].ID != k2.ID {
+		t.Fatalf("keys = %+v, %v; want alice's 2 keys, newest first", keys, err)
+	}
+
+	// Someone else's key, a malformed id, and an unknown id all look the same.
+	for _, id := range []string{bobKey.ID, "not-a-uuid", "00000000-0000-0000-0000-000000000000"} {
+		if err := s.RevokeAPIKey(ctx, alice.ID, id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("revoke %q as alice: %v, want ErrNotFound", id, err)
+		}
+	}
+	if err := s.RevokeAPIKey(ctx, alice.ID, k1.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UserByAPIKey(ctx, plain1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked key still authenticates: %v", err)
+	}
+	if err := s.RevokeAPIKey(ctx, alice.ID, k1.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoking twice: %v, want ErrNotFound", err)
+	}
+	// k2 is now alice's only key: revoking it would lock her out.
+	if err := s.RevokeAPIKey(ctx, alice.ID, k2.ID); !errors.Is(err, ErrLastKey) {
+		t.Fatalf("revoking the last key: %v, want ErrLastKey", err)
+	}
+	if keys, _ := s.ListAPIKeys(ctx, alice.ID); len(keys) != 1 || keys[0].ID != k2.ID {
+		t.Fatalf("after revoke, keys = %+v", keys)
+	}
+}
+
+// Two concurrent revokes of a user's last two keys must not both succeed.
+// Many users at once, so the race window is actually hit without the lock.
+func TestRevokeLastTwoKeysConcurrently(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	const users = 40
+	type pair struct{ user, k1, k2 string }
+	pairs := make([]pair, users)
+	for i := range pairs {
+		u, err := s.CreateUser(ctx, fmt.Sprintf("u%d", i), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, k1, _ := s.CreateAPIKey(ctx, u.ID, "a")
+		_, k2, _ := s.CreateAPIKey(ctx, u.ID, "b")
+		pairs[i] = pair{u.ID, k1.ID, k2.ID}
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, p := range pairs {
+		for _, id := range []string{p.k1, p.k2} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				s.RevokeAPIKey(ctx, p.user, id)
+			}()
+		}
+	}
+	close(start)
+	wg.Wait()
+	for i, p := range pairs {
+		if keys, _ := s.ListAPIKeys(ctx, p.user); len(keys) != 1 {
+			t.Errorf("user %d has %d active keys, want 1", i, len(keys))
+		}
 	}
 }
