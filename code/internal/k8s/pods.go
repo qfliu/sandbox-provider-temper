@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/retry"
 
 	"github.com/qfliu/sandbox-provider-temper/code/internal/config"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
@@ -125,6 +126,50 @@ func (p *Pods) CleanupSecrets(ctx context.Context, isLive func(sandboxID string)
 		deleted = append(deleted, s.Name)
 	}
 	return deleted, nil
+}
+
+// AuthorizedKeysFile is the key inside the internal-key Secret that sandbox
+// pods mount: the platform's public key in authorized_keys format (D7).
+const AuthorizedKeysFile = "authorized_keys"
+
+// PublishInternalKey writes the public half of the API's internal SSH key
+// into the Secret every sandbox mounts (cfg.InternalKeySecret), so sshd
+// trusts exactly the key the API and gateway log in with. The deployment
+// only provides the private key (a Helm chart can generate one but can't
+// derive the OpenSSH public key); the API publishes the rest at startup.
+// Idempotent: it updates the Secret only when it differs, so replicas
+// starting together agree.
+//
+// The Secret deliberately lacks the managed-by label: CleanupSecrets
+// deletes every such Secret that belongs to no live sandbox.
+func (p *Pods) PublishInternalKey(ctx context.Context, authorizedKey []byte) error {
+	secrets := p.client.CoreV1().Secrets(p.cfg.Namespace)
+	want := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      p.cfg.InternalKeySecret,
+			Namespace: p.cfg.Namespace,
+			Labels:    map[string]string{LabelComponent: "internal-key"},
+		},
+		Data: map[string][]byte{AuthorizedKeysFile: authorizedKey},
+	}
+	_, err := secrets.Create(ctx, want, metav1.CreateOptions{})
+	if !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	// Retried on a conflict: another replica updated it between our Get
+	// and Update (only possible while the key itself is being replaced).
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		have, err := secrets.Get(ctx, want.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if string(have.Data[AuthorizedKeysFile]) == string(authorizedKey) {
+			return nil
+		}
+		have.Data = want.Data
+		_, err = secrets.Update(ctx, have, metav1.UpdateOptions{})
+		return err
+	})
 }
 
 func labelsFor(sb store.Sandbox, component string) map[string]string {
@@ -240,7 +285,7 @@ func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 // (sudo, apt, chown/chmod of others' files). Everything else the container
 // runtime would grant by default is dropped, notably NET_RAW (raw packets:
 // spoofing, ping), MKNOD, SETPCAP and SETFCAP. The admission policy
-// (deploy/dev/sandbox-pod-policy.yaml) enforces the same list.
+// (deploy/helm/templates/sandbox-pod-policy.yaml) enforces the same list.
 var SandboxCapabilities = []corev1.Capability{
 	"CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "SETUID", "SETGID",
 	"KILL", "NET_BIND_SERVICE", "SYS_CHROOT", "AUDIT_WRITE",

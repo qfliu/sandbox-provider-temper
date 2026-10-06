@@ -42,7 +42,11 @@ curl -s -m 2 -o /dev/null "http://127.0.0.1:$PORT/healthz" || die "API not reach
 
 # Pin the gateway's host key: a client that skipped this would be open to a
 # man in the middle. StrictHostKeyChecking=yes makes a mismatch fatal.
-echo "[$GW_HOST]:$GW_PORT $(cut -d' ' -f1,2 "$ROOT/.devenv/state/gateway-host-key.pub")" >"$TMP/known_hosts"
+# (Derived from the chart-generated private key by the gateway pod itself:
+# macOS ssh-keygen can't read its PKCS#8 format.)
+GW_PUB=$(kubectl -n sandbox-system exec deploy/sandbox-gateway -- /api public-key /keys/host/ssh_host_ed25519_key | cut -d' ' -f1,2)
+[ -n "$GW_PUB" ] || die "can't read the gateway's host key"
+echo "[$GW_HOST]:$GW_PORT $GW_PUB" >"$TMP/known_hosts"
 
 # Only the options given here count: no ~/.ssh/config, no ssh-agent keys.
 # (ssh uses the first value given for an option, so a test that needs a

@@ -1,0 +1,49 @@
+{{- if .Values.prepull.enabled }}
+# Image pre-pull (D19, D46, D51): one small pod per node whose init
+# containers use each sandbox image, so every node has them cached and a
+# new sandbox never waits on a download (~5 s for ubuntu-dev even from a
+# registry on the same machine). The init containers just run `true`; the
+# pod then idles on the tiny pause image. The image list and tag are the
+# same values the API uses, so the two can't drift apart.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: sandbox-image-prepull
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: sandbox-image-prepull
+    {{- include "sp.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: {app: sandbox-image-prepull}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 100%}   # nothing serves traffic; update all nodes at once
+  template:
+    metadata:
+      labels: {app: sandbox-image-prepull}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 1
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534        # nobody
+        runAsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+      {{- range .Values.sandboxImages.names }}
+      - name: {{ . }}
+        image: {{ $.Values.sandboxImages.repository }}{{ . }}:{{ $.Values.sandboxImages.tag }}
+        imagePullPolicy: IfNotPresent
+        command: ["true"]
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+        resources: {requests: {cpu: 10m, memory: 16Mi}, limits: {cpu: 100m, memory: 32Mi}}
+      {{- end }}
+      containers:
+      - name: pause
+        image: {{ .Values.prepull.pauseImage }}
+        imagePullPolicy: IfNotPresent
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+        resources: {requests: {cpu: 10m, memory: 16Mi}, limits: {cpu: 100m, memory: 32Mi}}
+{{- end }}

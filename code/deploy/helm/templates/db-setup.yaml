@@ -1,0 +1,143 @@
+{{- /*
+Database roles (D36, D47), run after every install and upgrade (idempotent):
+sandbox_app for the API (owns the platform's tables, not a superuser) and
+sandbox_gateway (reads sandboxes, writes ssh_activity). The API can't log in
+until the first part has run, so its first start may fail and be restarted;
+the gateway's grants wait for the tables the API's migrations create.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sandbox-db-setup
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "sp.labels" . | nindent 4 }}
+data:
+  setup.sh: |
+    set -eu
+    export PGHOST=postgres PGDATABASE=sandbox
+    until pg_isready -q; do sleep 2; done
+    if ! err=$(psql -tAq -c 'SELECT 1' 2>&1 >/dev/null); then
+      echo "$err" >&2
+      case "$err" in *"password authentication failed"*)
+        echo "Postgres's data was created with a different superuser password than Secret" >&2
+        echo "postgres-credentials holds: the Secret was deleted (e.g. with the namespace) but" >&2
+        echo "the volume was kept. Restore the old Secret, or delete the volume (PVC" >&2
+        echo "data-postgres-0; on minikube also the node's hostpath directory) to start empty." >&2
+      esac
+      exit 1
+    fi
+    # Passwords go to psql on stdin, never on a command line.
+    { printf '%s\n' "\\set app_pw '$APP_PW'"; cat /sql/roles.sql; } | psql -q -v ON_ERROR_STOP=1
+    echo "roles ready; waiting for the API's migrations"
+    until [ "$(psql -tAq -c "SELECT to_regclass('public.ssh_activity') IS NOT NULL")" = t ]; do sleep 2; done
+    { printf '%s\n' "\\set gw_pw '$GW_PW'"; cat /sql/gateway.sql; } | psql -q -v ON_ERROR_STOP=1
+    echo "gateway grants ready"
+  roles.sql: |
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'sandbox_app') THEN
+        CREATE ROLE sandbox_app LOGIN;
+      END IF;
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'sandbox_gateway') THEN
+        CREATE ROLE sandbox_gateway LOGIN;
+      END IF;
+    END $$;
+    ALTER ROLE sandbox_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'app_pw';
+    -- Owning the public schema is all its migrations need. The database itself
+    -- stays the superuser's: a database owner could set its connection limit
+    -- to 0, change database-wide settings or drop it (review of #48).
+    ALTER DATABASE sandbox OWNER TO CURRENT_USER;
+    ALTER SCHEMA public OWNER TO sandbox_app;
+    -- Nothing database-level for ordinary roles: no new schemas and no
+    -- extensions (trusted extensions need CREATE on the database), and no
+    -- connecting to the maintenance databases. The superuser is unaffected.
+    REVOKE CREATE ON DATABASE sandbox FROM PUBLIC;
+    REVOKE CONNECT, TEMPORARY ON DATABASE postgres FROM PUBLIC;
+    REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;
+    -- Hand over anything an older deploy created as the superuser. Tables
+    -- bring their indexes and the sequences they own; ACLs such as the
+    -- gateway's grants are kept.
+    DO $$ DECLARE r record; BEGIN
+      FOR r IN
+        SELECT format('ALTER %s %I.%I OWNER TO sandbox_app',
+                      CASE c.relkind WHEN 'S' THEN 'SEQUENCE' WHEN 'v' THEN 'VIEW'
+                                     WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'f' THEN 'FOREIGN TABLE'
+                                     ELSE 'TABLE' END,
+                      n.nspname, c.relname) AS stmt
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
+          AND pg_get_userbyid(c.relowner) <> 'sandbox_app'
+          AND NOT (c.relkind = 'S' AND EXISTS (  -- serial/identity: follows its table
+            SELECT 1 FROM pg_depend d WHERE d.objid = c.oid AND d.deptype IN ('a', 'i')))
+          AND NOT c.relispartition               -- partitions follow their parent
+      LOOP EXECUTE r.stmt; END LOOP;
+      FOR r IN
+        SELECT format('ALTER ROUTINE %s OWNER TO sandbox_app', p.oid::regprocedure) AS stmt
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.prokind IN ('f', 'p')
+          AND pg_get_userbyid(p.proowner) <> 'sandbox_app'
+      LOOP EXECUTE r.stmt; END LOOP;
+      FOR r IN  -- enums, domains, standalone composite types
+        SELECT format('ALTER TYPE %I.%I OWNER TO sandbox_app', n.nspname, t.typname) AS stmt
+        FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE n.nspname = 'public' AND t.typtype IN ('e', 'd', 'c')
+          AND (t.typtype <> 'c' OR (SELECT relkind FROM pg_class WHERE oid = t.typrelid) = 'c')
+          AND pg_get_userbyid(t.typowner) <> 'sandbox_app'
+      LOOP EXECUTE r.stmt; END LOOP;
+    END $$;
+  gateway.sql: |
+    ALTER ROLE sandbox_gateway LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'gw_pw';
+    REVOKE ALL ON ALL TABLES IN SCHEMA public FROM sandbox_gateway;
+    GRANT USAGE ON SCHEMA public TO sandbox_gateway;
+    GRANT SELECT ON sandboxes TO sandbox_gateway;
+    -- SSH sessions count as activity for the idle reaper (D36): the gateway
+    -- writes its own table and can't change the sandboxes table at all.
+    -- SELECT is needed for INSERT … ON CONFLICT DO UPDATE.
+    GRANT SELECT, INSERT, UPDATE ON ssh_activity TO sandbox_gateway;
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sandbox-db-setup
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "sp.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels: {app: sandbox-db-setup}
+    spec:
+      restartPolicy: Never      # failed pods stay, with their logs
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999          # the postgres image's postgres user
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+      - name: setup
+        image: {{ .Values.postgres.image }}
+        command: ["sh", "/sql/setup.sh"]
+        env:
+        - name: PGUSER
+          valueFrom: {secretKeyRef: {name: postgres-credentials, key: username}}
+        - name: PGPASSWORD
+          valueFrom: {secretKeyRef: {name: postgres-credentials, key: password}}
+        - name: APP_PW
+          valueFrom: {secretKeyRef: {name: postgres-app-credentials, key: password}}
+        - name: GW_PW
+          valueFrom: {secretKeyRef: {name: postgres-gateway-credentials, key: password}}
+        resources:
+          requests: {cpu: 10m, memory: 32Mi}
+          limits: {cpu: 500m, memory: 128Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+        volumeMounts:
+        - {name: sql, mountPath: /sql, readOnly: true}
+      volumes:
+      - name: sql
+        configMap: {name: sandbox-db-setup}

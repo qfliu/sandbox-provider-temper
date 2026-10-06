@@ -1,16 +1,11 @@
-# Postgres for local development (D11). The Helm chart replaces this in
-# Phase 6. Expects Secret `postgres-credentials` (created by
-# code/scripts/deploy-postgres.sh, never committed).
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: sandbox-system           # platform services; sandboxes live elsewhere (D24)
----
+# Postgres for the platform's state (D8, D11): one replica, data on a
+# persistent volume that survives restarts, upgrades and uninstall.
 apiVersion: v1
 kind: Service
 metadata:
   name: postgres
-  namespace: sandbox-system
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "sp.labels" . | nindent 4 }}
 spec:
   selector: {app: postgres}
   ports:
@@ -20,7 +15,8 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: postgres
-  namespace: sandbox-system
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "sp.labels" . | nindent 4 }}
 spec:
   serviceName: postgres
   replicas: 1
@@ -30,9 +26,10 @@ spec:
     metadata:
       labels: {app: postgres}
     spec:
+      automountServiceAccountToken: false
       containers:
       - name: postgres
-        image: postgres:18.6
+        image: {{ .Values.postgres.image }}
         ports:
         - {name: postgres, containerPort: 5432}
         env:
@@ -45,14 +42,15 @@ spec:
         readinessProbe:
           exec: {command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d sandbox"]}
           periodSeconds: 3
-        resources:
-          requests: {cpu: 100m, memory: 256Mi}
-          limits:   {cpu: "1", memory: 1Gi}
+        resources: {{- toYaml .Values.postgres.resources | nindent 10 }}
         volumeMounts:
         - {name: data, mountPath: /var/lib/postgresql/data}
-  volumeClaimTemplates:          # data survives pod restarts (platform durability, D8)
+  volumeClaimTemplates:
   - metadata: {name: data}
     spec:
       accessModes: [ReadWriteOnce]
+      {{- with .Values.postgres.storageClassName }}
+      storageClassName: {{ . }}
+      {{- end }}
       resources:
-        requests: {storage: 2Gi}
+        requests: {storage: {{ .Values.postgres.storage }}}

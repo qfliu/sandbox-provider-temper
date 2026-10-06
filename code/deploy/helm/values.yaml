@@ -1,0 +1,91 @@
+# Settings for the sandbox provider. One release per cluster, installed into
+# the platform namespace (sandbox-system by convention):
+#
+#   helm upgrade --install sandbox code/deploy/helm -n sandbox-system --create-namespace \
+#     --set image.tag=<tag> --set api.sshGatewayAddr=<host:port users ssh to>
+#
+# Prerequisite on every node: gVisor and the `gvisor` RuntimeClass
+# (code/scripts/install-gvisor.sh on minikube). The chart can't install
+# node software.
+#
+# Install only with `helm upgrade --install` (as above). The chart reuses
+# its generated passwords and keys by reading them from the cluster, which
+# Helm only does then: `helm template | kubectl apply` or a GitOps tool that
+# renders with `helm template` would generate new ones on every render.
+
+# Platform image: one image holds the API (/api) and the SSH gateway (/gateway).
+image:
+  repository: sandbox/api
+  tag: ""                  # required: built per commit (code/scripts/deploy.sh)
+  pullPolicy: IfNotPresent
+
+# Images users can pick for a sandbox: <repository><name>:<tag>. The names
+# must match sandbox.Images in the API (a unit test checks), and the same
+# values configure both the API and the pre-pull DaemonSet, so they can't
+# drift apart. Release new images under a NEW tag (D46).
+sandboxImages:
+  repository: sandbox/
+  tag: "0.1"
+  names: [ubuntu-base, ubuntu-dev]
+
+# Namespace for sandbox pods (untrusted code); created by the chart.
+sandboxNamespace: sandboxes
+
+api:
+  replicas: 2
+  # Shown in the dashboard as the ssh address (host:port). On minikube:
+  # <minikube ip>:30022; in a cloud, the gateway LoadBalancer's address.
+  sshGatewayAddr: ""
+  # Optional overrides of the API's defaults (Go durations, e.g. "2h").
+  # Empty means the built-in default (1h default TTL, 24h max, 30m idle).
+  defaultTTL: ""
+  maxTTL: ""
+  idleTimeout: ""
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: "1", memory: 512Mi}
+
+gateway:
+  replicas: 2
+  # Connection limits per replica (D49).
+  maxConns: 1000
+  maxConnsPerIP: 20
+  maxConnsPerSandbox: 10
+  # How users reach the gateway from outside the cluster: NodePort for
+  # minikube, LoadBalancer (port 22) in a cloud; nothing else is allowed. externalTrafficPolicy
+  # Local keeps the client's real IP for the per-client limit.
+  service:
+    type: NodePort
+    port: 22
+    nodePort: 30022
+    annotations: {}
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: "1", memory: 256Mi}
+
+# In-cluster Postgres (one replica with a persistent volume, D8, D11).
+postgres:
+  image: postgres:18.6
+  storage: 2Gi
+  storageClassName: ""     # empty: the cluster's default
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 1Gi}
+
+# One small pod per node keeps the sandbox images cached (D19, D46).
+prepull:
+  enabled: true
+  pauseImage: registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4
+
+# Network isolation (D18, D37). Needs a CNI that enforces NetworkPolicies
+# (Calico on minikube). Sandboxes may reach DNS and the public internet
+# only; private ranges below are blocked.
+networkPolicies:
+  enabled: true
+  blockedRanges:
+    - 10.0.0.0/8        # private (pods, services, typical VPCs)
+    - 172.16.0.0/12     # private
+    - 192.168.0.0/16    # private (minikube's node network)
+    - 100.64.0.0/10     # carrier-grade NAT (some cloud VPCs)
+    - 169.254.0.0/16    # link-local, incl. cloud metadata 169.254.169.254
+    - 127.0.0.0/8       # loopback

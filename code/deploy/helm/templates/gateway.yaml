@@ -1,0 +1,118 @@
+# The SSH gateway (D6, D35): `ssh <sandbox-id>@<gateway>` with the user's
+# own key, proxied to the sandbox with the internal key.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-gateway
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "sp.labels" . | nindent 4 }}
+automountServiceAccountToken: false   # the gateway needs no Kubernetes API access
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-gateway
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "sp.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels: {app: sandbox-gateway}
+  template:
+    metadata:
+      labels: {app: sandbox-gateway}
+    spec:
+      serviceAccountName: sandbox-gateway
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+      - name: gateway
+        image: {{ include "sp.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/gateway"]
+        ports:
+        - {name: ssh, containerPort: 2222}
+        env:
+        - name: POSTGRES_PASSWORD
+          valueFrom: {secretKeyRef: {name: postgres-gateway-credentials, key: password}}
+        - name: DATABASE_URL     # narrow role: SELECT on sandboxes; write ssh_activity only
+          # pool_max_conns: lookups and activity writes share 10 connections
+          # per replica, a fixed share of Postgres's 100 (D49).
+          value: postgres://sandbox_gateway:$(POSTGRES_PASSWORD)@postgres.{{ .Release.Namespace }}:5432/sandbox?sslmode=disable&pool_max_conns=10
+        - {name: GATEWAY_LISTEN_ADDR, value: ":2222"}
+        - {name: GATEWAY_HOST_KEY_FILE, value: /keys/host/ssh_host_ed25519_key}
+        - {name: SANDBOX_INTERNAL_KEY_FILE, value: /keys/internal/id}
+        # Connection limits per replica (D49): total; per client (IPv4
+        # address or IPv6 /64), only while in the handshake; per sandbox.
+        - {name: GATEWAY_MAX_CONNS, value: {{ .Values.gateway.maxConns | quote }}}
+        - {name: GATEWAY_MAX_CONNS_PER_IP, value: {{ .Values.gateway.maxConnsPerIP | quote }}}
+        - {name: GATEWAY_MAX_CONNS_PER_SANDBOX, value: {{ .Values.gateway.maxConnsPerSandbox | quote }}}
+        # On rollout, keep accepting for 5 s while the pod's endpoint is
+        # removed from the Services (existing sessions still end, D35).
+        lifecycle:
+          preStop: {sleep: {seconds: 5}}
+        readinessProbe:
+          tcpSocket: {port: ssh}
+          periodSeconds: 5
+        livenessProbe:
+          tcpSocket: {port: ssh}
+          periodSeconds: 10
+        resources: {{- toYaml .Values.gateway.resources | nindent 10 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+        volumeMounts:
+        - {name: host-key, mountPath: /keys/host, readOnly: true}
+        - {name: internal-key, mountPath: /keys/internal, readOnly: true}
+      volumes:
+      - name: host-key
+        secret: {secretName: gateway-host-key, defaultMode: 0440}
+      - name: internal-key
+        secret: {secretName: sandbox-internal-key-private, defaultMode: 0440}
+---
+# In-cluster address (the API's own tooling and tests).
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-gateway
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "sp.labels" . | nindent 4 }}
+spec:
+  selector: {app: sandbox-gateway}
+  ports:
+  - {name: ssh, port: 22, targetPort: ssh}
+---
+# How users reach the gateway: NodePort on minikube, LoadBalancer in a cloud
+# (the name predates the LoadBalancer option; kept so upgrades replace
+# nothing).
+# Local: no SNAT, so the gateway sees the client's real IP (per-client
+# limits, logs); traffic only goes to gateway pods on the node it arrived at,
+# and a cloud LoadBalancer health-checks nodes so it only sends to those.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-gateway-nodeport
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "sp.labels" . | nindent 4 }}
+  {{- with .Values.gateway.service.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not (has .Values.gateway.service.type (list "NodePort" "LoadBalancer")) }}
+  {{- fail "gateway.service.type must be NodePort or LoadBalancer (in-cluster access already has the sandbox-gateway Service)" }}
+  {{- end }}
+  type: {{ .Values.gateway.service.type }}
+  externalTrafficPolicy: Local
+  selector: {app: sandbox-gateway}
+  ports:
+  - name: ssh
+    port: {{ .Values.gateway.service.port }}
+    targetPort: ssh
+    {{- if eq .Values.gateway.service.type "NodePort" }}
+    nodePort: {{ .Values.gateway.service.nodePort }}
+    {{- end }}
