@@ -1,0 +1,234 @@
+# Sandbox provider
+
+Isolated Linux sandboxes for AI agents, on Kubernetes. An agent with an API
+key creates a sandbox, runs commands in it, moves files in and out, and can
+SSH in, like a person would. Each sandbox is an Ubuntu pod running under
+**gVisor**, a user-space kernel, so code in it never talks to the host's
+kernel directly. It is cut off from the cluster and other sandboxes by
+NetworkPolicies, and it is deleted when its owner says so, when it has been
+idle for 30 minutes, or when its lifetime runs out.
+
+- **HTTP API** (`/v1`) for agents: create, list, exec, upload, download, delete.
+- **SSH gateway**: `ssh <sandbox-id>@<gateway>` with the key given at create.
+- **Dashboard** (`/ui`): your sandboxes and API keys; for admins, every user and sandbox.
+- **Helm chart** for any cluster with gVisor; scripts for a laptop.
+
+Design decisions and the reasons for them are logged in [DESIGN.md](DESIGN.md)
+(D1–D53); [WRITEUP.md](WRITEUP.md) covers the trade-offs and what comes next.
+
+## Quickstart (macOS)
+
+Needs a Mac (Apple Silicon or Intel) with about 10 GB of free memory and 40 GB
+of disk, plus `git`, `curl`, `openssl`, `ssh-keygen` and `python3` (all part
+of macOS with the Xcode command line tools). Clone to a short path (about 40
+characters at most, e.g. `~/sandbox-provider`): minikube's VM driver uses a
+socket inside the clone, and macOS limits socket paths. Nothing is installed
+system-wide: the tools (Go, kubectl, Helm, minikube, vfkit), their caches and
+the VM all live in `./.devenv`.
+
+```bash
+./up.sh      # tools, a minikube VM with gVisor, images, the platform, an admin key
+./demo.sh    # a narrated walkthrough: create, exec, files, SSH, isolation, delete
+./down.sh    # stop the VM (./up.sh resumes); --delete removes it, --purge also ./.devenv
+```
+
+`up.sh` takes about 6 minutes from a fresh clone (downloads included) and
+about 1.5 minutes when run again. It is safe to re-run after a code change. The
+admin API key is saved to `.devenv/state/admin-api-key` and never printed.
+
+Dashboard:
+
+```bash
+source ./env.sh && kubectl -n sandbox-system port-forward svc/sandbox-api 18080:80
+```
+
+Then open <http://localhost:18080/ui> and sign in with that key.
+
+To work on the code, run `source ./env.sh` (like a Python venv; `deactivate_sandbox_env` undoes it). After that:
+
+| Script | What it does |
+|---|---|
+| `code/scripts/cluster-up.sh` | minikube (vfkit, containerd, Calico) + gVisor + sandbox images |
+| `code/scripts/deploy.sh` | builds the platform image, `helm upgrade --install` |
+| `code/scripts/test-db.sh` | all Go tests, including the ones against Postgres |
+| `code/scripts/smoke-api.sh` | API end to end (28 checks) |
+| `code/scripts/test-gateway-e2e.sh` | SSH gateway end to end, incl. attacks (16 checks) |
+| `code/scripts/test-sandbox-hardening.sh` | what code inside a sandbox can and can't do (18 checks) |
+| `code/scripts/test-network-policy.sh` | sandbox network isolation (15 checks) |
+| `code/scripts/load-test.sh N [image]` | N sandboxes at once, startup percentiles |
+| `code/scripts/test-prepull.sh`, `measure-prepull.sh` | image pre-pull proof and timing |
+
+## Architecture
+
+```mermaid
+flowchart LR
+  agent["Agent / user<br/>(API key)"] -- "HTTPS /v1, /ui" --> api
+  agent -- "ssh sb-…@gateway<br/>(user's key)" --> gw
+  subgraph sys["namespace sandbox-system"]
+    api["API + dashboard<br/>(2 replicas)"]
+    gw["SSH gateway<br/>(2 replicas)"]
+    pg[("Postgres<br/>users, keys, sandboxes")]
+    pre["pre-pull DaemonSet"]
+  end
+  subgraph sbx["namespace sandboxes (gVisor, default-deny network)"]
+    s1["sandbox pod<br/>Ubuntu + sshd"]
+    s2["sandbox pod"]
+  end
+  api -- "create/delete pods<br/>(namespaced RBAC)" --> k8s["Kubernetes API"]
+  api -- "exec, files: SSH/SFTP<br/>(internal key, pinned host key)" --> s1
+  gw -- "SSH proxy<br/>(internal key)" --> s1
+  api --> pg
+  gw -- "read sandboxes,<br/>record activity" --> pg
+  s1 -. "DNS + public internet only" .-> net(("internet"))
+```
+
+- **API** (Go, `code/cmd/api`): authenticates API keys (only hashes are
+  stored), enforces each user's quota (10 live sandboxes), creates the pod and
+  a per-sandbox host key, and keeps each sandbox's status in step with its pod
+  (watch + periodic reconcile). It reaps sandboxes that are expired or idle.
+  It runs commands and moves files over SSH/SFTP to the pod using a
+  platform-internal key that users never see. It also serves the dashboard,
+  rendered on the server.
+- **SSH gateway** (Go, `code/cmd/gateway`): one address for every sandbox. It
+  checks the user's key against the one stored for that sandbox, then proxies
+  the connection to the pod with the internal key, pinning the pod's host
+  key. It's stateless and has connection limits per replica, per client and
+  per sandbox.
+- **Sandboxes**: `ubuntu-base` (git, curl, build tools, sshd) or `ubuntu-dev`
+  (plus Python 3, Node.js, package managers).
+  - Runtime: gVisor, as `root` inside the pod with only the capabilities sshd
+    and sudo need. The agent works as `user`.
+  - Limits: 1 CPU / 1 GiB memory / 5 GiB disk.
+  - Workspace: `/home/user` survives restarts of the process, not loss of the
+    pod or its node; a lost sandbox is marked `lost`, not recreated.
+- **Guard rails in the cluster**:
+  - An admission policy rejects any pod in the sandboxes namespace that isn't
+    gVisor, mounts a token, adds capabilities beyond the ones sshd and sudo
+    need, or skips limits, even if the request comes from the API.
+  - Pod Security `baseline` applies on top.
+  - NetworkPolicies let sandboxes reach DNS and the public internet only. Only
+    the API and gateway may reach a sandbox, on port 22.
+  - Postgres roles keep the API off superuser and limit the gateway to
+    reading sandboxes and recording SSH activity.
+
+## API
+
+Every call needs `Authorization: Bearer <api key>`. Errors are
+`{"error": "message"}` with a matching status code.
+
+| Call | Does |
+|---|---|
+| `GET /v1/me` | the key's user: `id`, `name`, `is_admin`, `max_sandboxes` |
+| `POST /v1/sandboxes` | create: `{"image": "ubuntu-dev", "ssh_public_key": "ssh-ed25519 …", "ttl_seconds": 3600}` → **201** with the sandbox, `status: "pending"` |
+| `GET /v1/sandboxes[?include_ended=true]` | your sandboxes (`{"sandboxes": [...]}`); live ones unless `include_ended` |
+| `GET /v1/sandboxes/{id}` | one sandbox; poll until `status` is `running` |
+| `POST /v1/sandboxes/{id}/exec` | run a command: `{"command": "pytest -q", "timeout_seconds": 60, "workdir": "proj"}` → `stdout`, `stderr`, `exit_code`, `timed_out`, `truncated`, `duration_ms` |
+| `PUT /v1/sandboxes/{id}/files?path=p` | upload the request body to `p` (relative to `/home/user`), up to 100 MiB |
+| `GET /v1/sandboxes/{id}/files?path=p` | download `p` as raw bytes |
+| `DELETE /v1/sandboxes/{id}` | delete now |
+
+Notes:
+
+- **Create**
+  - `image` is `ubuntu-base` or `ubuntu-dev`.
+  - `ttl_seconds` runs from 60 to 86400; the default is 3600.
+  - `ssh_public_key` is the only key the gateway accepts for this sandbox.
+- **Exec**
+  - `command` runs in `bash -c` as `user`, who has passwordless `sudo`.
+  - `timeout_seconds` can be up to 600 (default 60); a command that runs out
+    of time is stopped and returns `timed_out: true` (exit code 124, or 137 if
+    it ignored SIGTERM).
+  - stdout and stderr are capped at 1 MiB each (`truncated: true`).
+- **Lifetime**: a sandbox ends on `DELETE`, after 30 minutes idle, or when
+  `ttl_seconds` runs out. Idle means no exec, no file transfer and no SSH
+  session; reading its status doesn't count, so an agent that only polls is
+  still reaped.
+- **Status**:
+  - Live: `pending` → `running` (→ `deleting`).
+  - Ended: `deleted`, `failed` (couldn't start) or `lost` (the pod disappeared).
+  - `status_reason` says why. Ended sandboxes stay listed for history.
+- **Status codes**:
+  - 400: invalid input.
+  - 401: missing, unknown or revoked API key.
+  - 403: the sandbox's own file permissions refused a file operation.
+  - 404: not yours, no such sandbox, or no such file.
+  - 409: not running yet or anymore.
+  - 413: upload over 100 MiB.
+  - 429: quota reached.
+  - 502: the sandbox didn't answer.
+  - 503: the cluster is busy.
+- **Admins** can do all of this to anyone's sandbox, and see every user and
+  sandbox in the dashboard. A first admin is made with
+  `kubectl -n sandbox-system exec deploy/sandbox-api -- /api create-user --name <name> --admin`
+  (it prints the key once); `create-key --user <name>` issues more keys.
+
+SSH:
+
+```bash
+ssh -p 30022 sb-1a2b3c4d5e6f@$(minikube ip)                     # minikube NodePort
+ssh sb-1a2b3c4d5e6f@gateway.example.com                          # behind a LoadBalancer
+```
+
+To pin the gateway's host key instead of trusting the first connection:
+`kubectl -n sandbox-system exec deploy/sandbox-gateway -- /api public-key /keys/host/ssh_host_ed25519_key`
+prints it (`ssh-ed25519 AAAA…`). Put `[host]:port ` in front of it for a
+`known_hosts` line; `deploy.sh` prints the whole line.
+
+## Measured
+
+On a MacBook (minikube VM with 4 CPUs and 8 GB, vfkit, gVisor), images
+already on the node:
+
+| What | Time |
+|---|---|
+| One sandbox, create → `running` | **1.1 s** (first exec 1.2 s) |
+| 10 at once, `ubuntu-base`, → `running` | **p50 2.4 s, p95 4.4 s** (10/10) |
+| 10 at once, `ubuntu-dev` | p50 3.1 s, p95 4.3 s (10/10) |
+| First `ubuntu-dev` sandbox on a node **without** the pre-pull | ~5.5 s (4.8–5.1 s of it is the image download + unpack, from a registry on the same VM) |
+| … **with** the pre-pull DaemonSet | 0.6 s |
+| `up.sh` from a fresh clone / again (VM stopped) | 305–367 s / 84 s |
+| `deploy.sh` (platform image build + `helm upgrade --install`) on a cluster with gVisor and images | ~20 s |
+
+Capacity on this VM is about 10 sandboxes (250m CPU requested each); past
+that, creates succeed but stay `pending` until room frees up (D48). The
+download time is a lower bound: from a real registry it is
+bandwidth-bound, which is why the images are pre-pulled on every node
+(D46, D51).
+
+## Deploying to another cluster
+
+The chart in `code/deploy/helm` needs:
+
+- **gVisor and a `gvisor` RuntimeClass on every node.** The chart can't
+  install node software. Add `runsc` and its containerd shim to the node
+  image (or a privileged installer DaemonSet), as
+  `code/scripts/install-gvisor.sh` does on minikube.
+- **A CNI that enforces NetworkPolicies.**
+- **The images in a registry the nodes can pull from.** That's the platform
+  image (`code/Dockerfile`) and the two sandbox images
+  (`code/images/sandbox`, targets `base` and `dev`).
+
+```bash
+helm upgrade --install sandbox code/deploy/helm -n sandbox-system --create-namespace \
+  --set image.repository=REGISTRY/sandbox/api --set image.tag=TAG \
+  --set sandboxImages.repository=REGISTRY/sandbox/ \
+  --set gateway.service.type=LoadBalancer \
+  --set api.sshGatewayAddr=GATEWAY_HOST
+```
+
+Values (`values.yaml`) also cover replicas, resources, sandbox TTL and idle
+limits, gateway connection limits, Postgres storage, and the egress ranges
+sandboxes may not reach. Passwords and keys are generated on first install
+and kept across upgrades. Install only with `helm upgrade --install`, not
+`helm template`. Expose the API with your own Ingress and TLS.
+
+## Uninstall
+
+- **Laptop**: `./down.sh --delete` deletes the VM and all data;
+  `./down.sh --purge` also removes `./.devenv`, which leaves the clone as
+  cloned.
+- **Any cluster**: `helm uninstall sandbox -n sandbox-system` deletes every
+  sandbox and the platform. It keeps the Postgres volume and the generated
+  Secrets, so a reinstall keeps users and keys. `kubectl delete namespace
+  sandbox-system` removes those too. Some storage provisioners, including
+  minikube's, keep a deleted volume's data.
