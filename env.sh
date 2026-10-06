@@ -25,6 +25,16 @@ export TMPDIR="$_SB_STATE/tmp"    # go build and other tools' scratch files
 
 # Kubernetes
 export MINIKUBE_HOME="$_SB_STATE/minikube"
+# Each clone gets its own minikube profile (VM name). minikube's vfkit driver
+# derives the VM's MAC address, and so its IP, from that name: two VMs both
+# called "minikube" (another clone, or your own minikube) get the same IP
+# and cut each other off. A clone that already has a "minikube" VM keeps it.
+if [ -d "$MINIKUBE_HOME/.minikube/profiles/minikube" ]; then
+  export MINIKUBE_PROFILE=minikube
+else
+  # (the physical path, so reaching the clone through a symlink doesn't change it)
+  export MINIKUBE_PROFILE="sp-$(cd "$_SB_ROOT" && pwd -P | tr -d '\n' | shasum | cut -c1-4)"  # short: it is part of a socket path (cluster-up.sh)
+fi
 export KUBECONFIG="$_SB_STATE/kube/config"
 export KUBECACHEDIR="$_SB_STATE/kube/cache"   # kubectl discovery/http cache (default ~/.kube/cache)
 export HELM_CONFIG_HOME="$_SB_STATE/helm/config"
@@ -40,7 +50,7 @@ deactivate_sandbox_env() {
   export PS1="$_SB_OLD_PS1"
   export TMPDIR="$_SB_OLD_TMPDIR"
   unset GOROOT GOPATH GOMODCACHE GOCACHE GOTOOLCHAIN GOENV \
-        MINIKUBE_HOME KUBECONFIG KUBECACHEDIR \
+        MINIKUBE_HOME MINIKUBE_PROFILE KUBECONFIG KUBECACHEDIR \
         HELM_CONFIG_HOME HELM_CACHE_HOME HELM_DATA_HOME
   unset -f deactivate_sandbox_env
 }

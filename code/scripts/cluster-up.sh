@@ -10,6 +10,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 IMAGE_TAG=0.1
 
+# vfkit talks to the VM over a Unix socket under MINIKUBE_HOME, and macOS
+# caps socket paths at 104 bytes; past that, minikube just times out after
+# 6 minutes. Fail fast instead: a clone path of about 40 characters fits.
+SOCK="${MINIKUBE_HOME:?source ./env.sh first}/.minikube/machines/${MINIKUBE_PROFILE:-minikube}/vfkit.sock"
+SOCK_BYTES=$(printf %s "$SOCK" | LC_ALL=C wc -c | tr -d ' ')   # bytes, not characters
+if [ "$SOCK_BYTES" -gt 103 ]; then
+  echo "This clone's path is too long for minikube's vfkit driver: its socket" >&2
+  echo "  $SOCK" >&2
+  echo "would be $SOCK_BYTES bytes (macOS allows 103). Clone the repo to a shorter" >&2
+  echo "path, e.g. ~/sandbox-provider, and run ./up.sh there." >&2
+  exit 1
+fi
+
 echo "==> starting minikube"
 minikube start \
   --driver=vfkit \
