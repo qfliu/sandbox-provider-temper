@@ -1,17 +1,23 @@
 # gVisor on cloud nodes (Phase 7, D54): the counterpart of
 # code/scripts/install-gvisor.sh for nodes we can't ssh into (AKS). One
 # privileged pod per node:
-#   1. downloads the gVisor release (SHA-512 checked) inside the container
-#      and copies it to the node's /opt/gvisor/<release>;
+#   1. downloads the gVisor release inside the container, checks it against
+#      the SHA-512 pinned below (not one fetched next to the download), and
+#      unpacks it to the node's /opt/gvisor/<release>;
 #   2. links runsc and its containerd shim into /usr/local/bin, writes
 #      /etc/containerd/runsc.toml and adds the runsc runtime to containerd's
 #      config (containerd 1.x's version 2 section names, or 2.x's for
-#      config versions 3 and 4), then restarts containerd (running
-#      containers keep running). That restart can make the kubelet run this
-#      init container once more; the second run finds the config in place
-#      and logs "already has the runsc runtime";
+#      config versions 3 and 4). The edit is made on a copy that containerd
+#      must accept (`config dump`) before it replaces the real file, and if
+#      containerd isn't healthy after the restart the old config is put back,
+#      so a bad edit can't leave a node without a container runtime (there's
+#      no ssh into AKS nodes to fix one). Running containers survive the
+#      restart; it can make the kubelet run this init container once more,
+#      and the second run finds the config in place ("already has ...");
 #   3. idles on pause, so a new node gets the same treatment.
 # Idempotent: a node that already has this release and config is left alone.
+# To upgrade gVisor, change GVISOR_RELEASE and both SHA-512s in the pod
+# template below: that rolls the DaemonSet, so every node reruns this.
 # The same runsc settings as minikube: allow-suid for sudo inside sandboxes
 # (D22), no oci-seccomp (breaks threads under gVisor, D45), raw sockets off.
 #
@@ -31,20 +37,23 @@ metadata:
   name: gvisor-installer
   namespace: gvisor-system
 data:
-  RELEASE: "20260928"
   fetch.sh: |
     # Runs in the container: download, verify, unpack into the node's /opt.
     set -eu
-    REL=$(cat /config/RELEASE)
-    case "$(uname -m)" in aarch64) ARCH=aarch64 ;; x86_64) ARCH=x86_64 ;; *) echo "unsupported arch" >&2; exit 1 ;; esac
+    REL=$GVISOR_RELEASE
+    case "$(uname -m)" in
+      aarch64) ARCH=aarch64 WANT=$SHA512_AARCH64 ;;
+      x86_64) ARCH=x86_64 WANT=$SHA512_X86_64 ;;
+      *) echo "unsupported arch" >&2; exit 1 ;;
+    esac
     DEST=/host/opt/gvisor/$REL
     if [ -x "$DEST/runsc" ]; then echo "gVisor $REL already on the node"; exit 0; fi
     URL=https://storage.googleapis.com/gvisor/releases/release/$REL/$ARCH/gvisor.tar.bz2
     cd /tmp
     wget -q -O gvisor.tar.bz2 "$URL"
-    wget -q -O gvisor.tar.bz2.sha512 "$URL.sha512"
-    [ "$(sha512sum gvisor.tar.bz2 | cut -d' ' -f1)" = "$(cut -d' ' -f1 gvisor.tar.bz2.sha512)" ] ||
+    [ "$(sha512sum gvisor.tar.bz2 | cut -d' ' -f1)" = "$WANT" ] ||
       { echo "checksum mismatch for $URL" >&2; exit 1; }
+    rm -rf "$DEST" "$DEST.tmp"
     mkdir -p "$DEST.tmp"
     tar -xjf gvisor.tar.bz2 -C "$DEST.tmp"
     chmod 755 "$DEST.tmp/runsc" "$DEST.tmp/containerd-shim-runsc-v1" "$DEST.tmp"/gvisor-bin/*
@@ -71,10 +80,26 @@ data:
       echo "containerd already has the runsc runtime (config version ${VER:-2})"
       exit 0
     fi
-    cp "$CONF" "$CONF.before-gvisor"
+    # Edit a copy, let containerd check it, then swap it in.
+    cp "$CONF" "$CONF.gvisor-new"
     printf '\n[%s.containerd.runtimes.runsc]\n  runtime_type = "io.containerd.runsc.v1"\n[%s.containerd.runtimes.runsc.options]\n  TypeUrl = "io.containerd.runsc.v1.options"\n  ConfigPath = "/etc/containerd/runsc.toml"\n' \
-      "$CRI" "$CRI" >>"$CONF"
+      "$CRI" "$CRI" >>"$CONF.gvisor-new"
+    if ! containerd --config "$CONF.gvisor-new" config dump >/dev/null 2>&1; then
+      echo "containerd rejects the edited config; node left unchanged:" >&2
+      containerd --config "$CONF.gvisor-new" config dump 2>&1 >/dev/null | tail -3 >&2
+      rm -f "$CONF.gvisor-new"
+      exit 1
+    fi
+    cp "$CONF" "$CONF.before-gvisor"
+    mv "$CONF.gvisor-new" "$CONF"
     systemctl restart containerd
+    sleep 3
+    if ! systemctl is-active --quiet containerd; then
+      echo "containerd didn't come back with the new config; restoring the old one" >&2
+      cp "$CONF.before-gvisor" "$CONF"
+      systemctl restart containerd
+      exit 1
+    fi
     echo "containerd configured for runsc (config version ${VER:-2}, $CRI) and restarted"
 ---
 apiVersion: apps/v1
@@ -88,7 +113,10 @@ spec:
     matchLabels: {app: gvisor-installer}
   updateStrategy:
     type: RollingUpdate
-    rollingUpdate: {maxUnavailable: 1}   # one node's containerd restarts at a time
+    # On a template change, one node's containerd restarts at a time. (On
+    # the first install every node starts at once; running containers
+    # survive a containerd restart either way.)
+    rollingUpdate: {maxUnavailable: 1}
   template:
     metadata:
       labels: {app: gvisor-installer}
@@ -100,15 +128,24 @@ spec:
       - operator: Exists          # every node, including tainted ones
       initContainers:
       - name: fetch
-        image: alpine:3.22
+        image: alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
         command: ["sh", "/config/fetch.sh"]
+        env: &release
+        - {name: GVISOR_RELEASE, value: "20260928"}
+        - {name: SHA512_AARCH64, value: "926538a4f20056d44838f230297ecec9192db2562e2523a207295f706b76126725f2ff7b4e59d747147510c5714057eeec862a0f77d43bf625746592b5f51b00"}
+        - {name: SHA512_X86_64, value: "c8d3a9fd4d4c4f5b8ff213caa4517356be128d18659ec4cde37828fe797f61a9725a602a846c81a8ed19c057a996515d31c081eba343ed4613a89951ba32ed59"}
+        # The ~100 MB download and its unpacked files count against the
+        # memory limit (page cache), so fetch gets room; configure is small.
+        resources: {requests: {cpu: 10m, memory: 32Mi}, limits: {cpu: 1, memory: 1Gi}}
         volumeMounts:
         - {name: host-opt, mountPath: /host/opt}
         - {name: config, mountPath: /config}
       - name: configure
-        image: alpine:3.22
+        image: alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
         securityContext: {privileged: true}
-        command: ["sh", "-c", "nsenter -t 1 -m -u -i -n -p -- sh -s \"$(cat /config/RELEASE)\" < /config/configure.sh"]
+        command: ["sh", "-c", "nsenter -t 1 -m -u -i -n -p -- sh -s \"$GVISOR_RELEASE\" < /config/configure.sh"]
+        env: *release
+        resources: {requests: {cpu: 10m, memory: 16Mi}, limits: {cpu: 500m, memory: 128Mi}}
         volumeMounts:
         - {name: config, mountPath: /config}
       containers:
@@ -123,7 +160,10 @@ spec:
         configMap: {name: gvisor-installer}
 ---
 # Pods opt in with `runtimeClassName: gvisor` (sandbox pods always do; the
-# admission policy requires it).
+# admission policy requires it). No scheduling constraint: a node added later
+# could get a sandbox pod before its installer finishes; that pod fails to
+# start ("no runtime for runsc") and is retried, never run without gVisor.
+# cloud-up.sh waits for the DaemonSet before installing the platform.
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
 metadata:
