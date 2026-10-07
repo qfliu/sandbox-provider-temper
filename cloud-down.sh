@@ -38,5 +38,8 @@ if [ -n "$left" ]; then
 	exit 1
 fi
 [ -z "${FAILED:-}" ] || exit 1
-rm -f "$KUBECONFIG" "$SANDBOX_KEYFILE"
-echo "    no resource groups left for $NAME; local kubeconfig and key removed"
+# Keys for a database that no longer exists: the admin's, the load test's
+# and any testers' not yet handed out.
+rm -f "$KUBECONFIG" "$SANDBOX_KEYFILE" .devenv/state/aks/load-test-key
+rm -rf .devenv/state/aks/testers
+echo "    no resource groups left for $NAME; local kubeconfig and keys removed"
