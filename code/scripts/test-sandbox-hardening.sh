@@ -16,6 +16,8 @@ PORT="${HARDEN_PORT:-18098}"
 API="http://127.0.0.1:$PORT/v1"
 KEY="$(cat "${SANDBOX_KEYFILE:-$ROOT/.devenv/state/admin-api-key}")"
 TMP="$(mktemp -d "$ROOT/.devenv/state/tmp/harden.XXXXXX")"
+# The key goes to curl in a header file, never on its command line (ps).
+(umask 077 && printf 'Authorization: Bearer %s\n' "$KEY" >"$TMP/auth")
 PASSED=0 FAILED=0 SB=""
 
 pass() { PASSED=$((PASSED + 1)); printf "  \033[32mPASS\033[0m  %s\n" "$1"; }
@@ -24,7 +26,7 @@ die() { printf "setup failed: %s\n" "$1" >&2; exit 1; }
 
 cleanup() {
 	kubectl -n sandboxes delete serviceaccount hardening-probe --ignore-not-found >/dev/null 2>&1
-	[ -n "$SB" ] && curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $KEY" "$API/sandboxes/$SB"
+	[ -n "$SB" ] && curl -s -o /dev/null -X DELETE -H @"$TMP/auth" "$API/sandboxes/$SB"
 	[ -n "${PF:-}" ] && { kill "$PF"; wait "$PF"; } 2>/dev/null
 	rm -rf "$TMP"
 }
@@ -35,12 +37,12 @@ PF=$!
 for _ in $(seq 1 40); do curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/healthz" && break; sleep 0.25; done
 
 ssh-keygen -q -t ed25519 -N "" -f "$TMP/k"
-SB=$(curl -s -H "Authorization: Bearer $KEY" -X POST "$API/sandboxes" \
+SB=$(curl -s -H @"$TMP/auth" -X POST "$API/sandboxes" \
 	-d "{\"image\":\"ubuntu-dev\",\"ssh_public_key\":\"$(cat "$TMP/k.pub")\"}" |
 	python3 -c "import json,sys; print(json.load(sys.stdin)['id'])") || die "could not create a sandbox"
 s=""
 for _ in $(seq 1 90); do
-	s=$(curl -s -H "Authorization: Bearer $KEY" "$API/sandboxes/$SB" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
+	s=$(curl -s -H @"$TMP/auth" "$API/sandboxes/$SB" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
 	[ "$s" = running ] && break
 	sleep 1
 done
@@ -49,7 +51,7 @@ printf "sandbox %s (ubuntu-dev)\n" "$SB"
 
 # run <command>: exec in the sandbox; prints "<exit_code>|<last output line>"
 run() {
-	curl -s -H "Authorization: Bearer $KEY" -X POST "$API/sandboxes/$SB/exec" \
+	curl -s -H @"$TMP/auth" -X POST "$API/sandboxes/$SB/exec" \
 		-d "$(python3 -c 'import json,sys; print(json.dumps({"command": sys.argv[1], "timeout_seconds": 240}))' "$1")" |
 		python3 -c "import json,sys
 try:

@@ -44,7 +44,7 @@ cat <<MSG
 
 Sandbox provider is up ($(( $(date +%s) - START )) s).
   Walkthrough:  ./demo.sh
-  Dashboard:    source ./env.sh && kubectl -n sandbox-system port-forward svc/sandbox-api 18080:80
+  Dashboard:    source ./env.sh local && kubectl -n sandbox-system port-forward svc/sandbox-api 18080:80
                 then open http://localhost:18080/ui and sign in with the key in $KEYFILE
   Stop:         ./down.sh            (keeps everything; ./up.sh resumes)
   Remove:       ./down.sh --delete   (deletes the VM and all data)

@@ -23,6 +23,8 @@ source "$ROOT/code/scripts/gateway-addr.sh"
 read -r GW_HOST GW_PORT <<<"$(gateway_addr)"
 [ -n "${GW_PORT:-}" ] || { echo "setup failed: can't find the SSH gateway's address" >&2; exit 1; }
 TMP="$(mktemp -d "$ROOT/.devenv/state/tmp/e2e.XXXXXX")"
+# The key goes to curl in a header file, never on its command line (ps).
+(umask 077 && printf 'Authorization: Bearer %s\n' "$KEY" >"$TMP/auth")
 PASSED=0 FAILED=0 SANDBOXES=()
 
 pass() { PASSED=$((PASSED + 1)); printf "  \033[32mPASS\033[0m  %s\n" "$1"; }
@@ -31,7 +33,7 @@ die() { printf "setup failed: %s\n" "$1" >&2; exit 1; }
 
 cleanup() {
 	for id in ${SANDBOXES[@]+"${SANDBOXES[@]}"}; do
-		curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $KEY" "$API/sandboxes/$id" || true
+		curl -s -o /dev/null -X DELETE -H @"$TMP/auth" "$API/sandboxes/$id" || true
 	done
 	[ -n "${PF:-}" ] && { kill "$PF"; wait "$PF"; } 2>/dev/null
 	rm -rf "$TMP"
@@ -64,14 +66,14 @@ gw_ssh() { local k=$1 sb=$2; shift 2; ssh "${SSH_OPTS[@]}" -i "$TMP/$k" -p "$GW_
 
 # api_field <sandbox> <field>: a field of GET /sandboxes/<id> ("" on error)
 api_field() {
-	curl -s -H "Authorization: Bearer $KEY" "$API/sandboxes/$1" |
+	curl -s -H @"$TMP/auth" "$API/sandboxes/$1" |
 		python3 -c "import json,sys
 try: print(json.load(sys.stdin)['$2'])
 except Exception: print('')"
 }
 new_sandbox() { # new_sandbox <key name>: creates key + sandbox, prints its id
 	ssh-keygen -q -t ed25519 -N "" -C "e2e-$1" -f "$TMP/$1"
-	curl -s -H "Authorization: Bearer $KEY" -X POST "$API/sandboxes" \
+	curl -s -H @"$TMP/auth" -X POST "$API/sandboxes" \
 		-d "{\"image\":\"ubuntu-base\",\"ssh_public_key\":\"$(cat "$TMP/$1.pub")\"}" |
 		python3 -c "import json,sys; print(json.load(sys.stdin)['id'])"
 }
@@ -177,7 +179,7 @@ printf "\nafter delete\n"
 # refusal below is caused by the delete.
 out=$(gw_ssh b "$B" -n 'echo in' 2>&1)
 [ "$out" = in ] && pass "sandbox B's own key → in (before delete)" || fail "B's own key before delete" "$out"
-curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $KEY" "$API/sandboxes/$B"
+curl -s -o /dev/null -X DELETE -H @"$TMP/auth" "$API/sandboxes/$B"
 for _ in $(seq 1 30); do
 	s=$(api_field "$B" status)
 	[ "$s" != running ] && break
