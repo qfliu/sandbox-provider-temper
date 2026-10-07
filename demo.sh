@@ -105,13 +105,15 @@ run 'python3 job.py && ls -l result.json'
 call GET "/sandboxes/$ID/files?path=result.json"
 
 bold "5. SSH in through the gateway, with my own key (as a person or an agent would)."
-GW_HOST=$(minikube ip)
+# shellcheck source=code/scripts/gateway-addr.sh
+source code/scripts/gateway-addr.sh
+read -r GW_HOST GW_PORT <<<"$(gateway_addr)" && [ -n "$GW_PORT" ] || { echo "can't find the SSH gateway's address" >&2; exit 1; }
 GW_PUB=$(kubectl -n sandbox-system exec deploy/sandbox-gateway -- /api public-key /keys/host/ssh_host_ed25519_key | cut -d' ' -f1,2)
-echo "[$GW_HOST]:30022 $GW_PUB" >"$TMP/known_hosts"
+echo "[$GW_HOST]:$GW_PORT $GW_PUB" >"$TMP/known_hosts"
 note "(the gateway's host key is pinned, so a man in the middle would be refused)"
-printf '  \033[2m$ ssh -p 30022 %s@%s '"'"'hostname; cat job.py | wc -l'"'"'\033[0m\n' "$ID" "$GW_HOST"
+printf '  \033[2m$ ssh -p %s %s@%s '"'"'hostname; cat job.py | wc -l'"'"'\033[0m\n' "$GW_PORT" "$ID" "$GW_HOST"
 ssh -F /dev/null -i "$TMP/id" -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes \
-	-o UserKnownHostsFile="$TMP/known_hosts" -o StrictHostKeyChecking=yes -p 30022 \
+	-o UserKnownHostsFile="$TMP/known_hosts" -o StrictHostKeyChecking=yes -p "$GW_PORT" \
 	"$ID@$GW_HOST" 'hostname; cat job.py | wc -l' 2>&1 | sed 's/^/    /'
 
 bold "6. Isolation: the internet works, the cluster doesn't."

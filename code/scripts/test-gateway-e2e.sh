@@ -17,8 +17,10 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PORT="${E2E_PORT:-18096}"
 API="http://127.0.0.1:$PORT/v1"
 KEY="$(cat "$ROOT/.devenv/state/admin-api-key")"
-GW_HOST="$(minikube ip)"
-GW_PORT=30022
+# shellcheck source=gateway-addr.sh
+source "$ROOT/code/scripts/gateway-addr.sh"
+read -r GW_HOST GW_PORT <<<"$(gateway_addr)"
+[ -n "${GW_PORT:-}" ] || { echo "setup failed: can't find the SSH gateway's address" >&2; exit 1; }
 TMP="$(mktemp -d "$ROOT/.devenv/state/tmp/e2e.XXXXXX")"
 PASSED=0 FAILED=0 SANDBOXES=()
 
