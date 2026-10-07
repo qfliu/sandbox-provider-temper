@@ -21,6 +21,53 @@ Comparable products: E2B, Modal Sandboxes, Daytona. This is a smaller self-built
 
 ## 2. Requirements (from task brief)
 
+The brief is a 2.5-minute video from Nick Raziborsky (Temper), 2026-10-01; its
+key phrases, quoted from Loom's transcript (2026-10-07), are below. Before
+that, this section was written from memory; R1–R8 match it.
+
+> "what agents need … to be able to write, interact with, … code is … secure
+> cloud environments" · "either Kubernetes-based or in some other
+> scheduler-based … scalable … sandbox provider … that can allow for hundreds
+> or thousands of … agent sandboxes … that are strongly isolated" · "should be
+> able to run on AWS, or Azure, or other clouds … shouldn't use … other cloud
+> infrastructure primitives from them, … like AWS has a sandbox service" · "a
+> full dashboard to see and interact with it" · "you can take this as … far as
+> you want" · "baseline is … an agent is able to, with an API key, … create,
+> spin up these sandboxes, interact with them, should be, like, yeah, proper
+> Linux desktops" · "stretch goals are … seeing the remote desktop, … being
+> able to put it behind something like TailScape [Tailscale], like a …
+> private network" · "being able to SSH in … should also be … not stretch
+> goal, but, like, primary criterion" · "should work … really well, and be
+> durable, … a nice, admin interface as well" · "reliability, startup time" ·
+> "should be able to scale, so it shouldn't just be one thing".
+
+**Readings** of the phrases that allow more than one:
+- **"proper Linux desktops"** (baseline): full Linux machines an agent can do
+  real work on (headless Ubuntu with SSH, D1). A *graphical* desktop is
+  "seeing the remote desktop", which the brief lists as a stretch goal.
+- **"be durable"**: the *platform* is durable (D8). Sandbox-level durability
+  (snapshot, pause/resume) is the other reading; see the follow-ups below.
+- **"see and interact with it"** (dashboard): the dashboard shows, creates and
+  deletes sandboxes; working *inside* one from the browser (commands, files,
+  a terminal) is the fuller reading, asked about below.
+
+**Follow-ups with Nick:**
+- 2026-10-06, his answers: run it "on proper k8s on AWS or Azure" with cheap
+  nodes for a few hours (done: Phase 7, D54–D57); "fine to only target
+  MacOS"; and "as for gVisor, that won't handle the snapshot/restore behavior
+  all sandbox providers offer. If we only do gVisor / Kata on regular k8s, its
+  a few line config setting."
+- 2026-10-07, our scope questions (awaiting answers): is snapshot/restore
+  required, and if so files only or full running state, pause/resume of the
+  same sandbox or new sandboxes from a snapshot; are streaming output and
+  background processes, custom images, public URLs for sandbox ports, and
+  environment variables/secrets expected; should the dashboard's "interact"
+  include commands and files, or a web terminal. Snapshot/restore is not in
+  the video. (gVisor itself can checkpoint and restore a running sandbox,
+  `runsc checkpoint`/`restore`; plain Kubernetes can't restore that into a new
+  pod, which is the work it would take.) Comparison with hosted providers:
+  WRITEUP.md, "Compared with hosted sandbox providers".
+
 ### Must have
 - R1. Sandbox provider for agents to securely run code.
 - R2. Kubernetes- (or other scheduler-) based; scales to hundreds or thousands of sandboxes; not a single box.

@@ -18,6 +18,53 @@ would add. The full decision log, with every alternative considered, is
 - **Startup time matters**, so the target is about a second for one sandbox
   on a warm node (met on the laptop; ~3 s on AKS with gVisor, ~7 s with
   Kata), and no image download on the critical path.
+- **"Proper Linux desktops"** (in the baseline) means full Linux machines an
+  agent can do real work on; a graphical desktop is "seeing the remote
+  desktop", which the brief lists as a stretch goal (D1).
+
+The brief's own words, and the assigner's later answers on scope, are in
+DESIGN.md §2.
+
+## Compared with hosted sandbox providers
+
+E2B, Modal and Daytona, from their documentation (October 2026), against
+what this platform has.
+
+**What we have, as they do:**
+- create, list and delete sandboxes;
+- commands with exit codes and timeouts, from the API and the dashboard;
+- file upload and download;
+- SSH (also scp/sftp);
+- lifetime and idle timeouts;
+- per-user limits;
+- API keys and an admin view;
+- isolation: gVisor (Modal's default runtime too) or a VM per sandbox
+  (Kata, as E2B's Firecracker microVMs);
+- Docker inside a sandbox (build, run, compose with ports);
+- URLs to a port in the sandbox (preview an app the agent starts);
+- internet access with private networks blocked.
+
+**What they have and we don't:**
+
+| Feature | Who offers it | Here |
+|---|---|---|
+| **Snapshot / restore / fork, pause / resume** | all three: files everywhere; memory and running processes as well in E2B and Modal | none: a sandbox's files last as long as its pod (D8) |
+| **Streaming command output, background processes, stdin** | all three | commands run to completion and return their output; SSH streams |
+| **Custom images / templates** (your own Dockerfile, start and ready commands) | all three | three fixed images; build and run any image *inside* `ubuntu-docker` |
+| **Environment variables and secrets at create** | all three | none |
+| **Per-sandbox network controls** (internet off, allowlists) | all three | one policy for all |
+| **Per-sandbox CPU and memory** | Modal, Daytona | fixed per image (1 CPU / 1 GiB; Docker 2 / 4 GiB) |
+| **Richer file API** (list, stat, mkdir, delete, watch) | E2B, Daytona | single-file upload and download |
+| **Tags / metadata and filtered lists** | E2B, Modal | none |
+| **Volumes** shared or kept across sandboxes | all three | none (D8) |
+| **Terminal in the API or browser** (PTY, web terminal) | E2B, Daytona | SSH, and one-off commands in the dashboard |
+| **SDKs and a CLI** | all three | HTTP API only |
+| **Metrics, lifecycle webhooks, log streaming, OpenTelemetry** | E2B, Daytona | server logs only |
+| **Code interpreter, desktop / computer use, warm pools, teams and SSO, MCP, git/LSP helpers** | some | none |
+
+**Most important next** (the ranking is in "Optional features"): streaming
+output and background processes, then secrets, then custom images; snapshots
+only if pause/resume becomes a requirement.
 
 ## Main trade-offs
 
