@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end test of SSH access (D6, D35, D36) the way a user or agent on
-# this Mac uses it: real OpenSSH tools (ssh, scp, sftp) against the gateway's
-# NodePort on the minikube node, with the gateway's host key pinned. Covers:
+# this Mac uses it: real OpenSSH tools (ssh, scp, sftp) against the gateway
+# (minikube's NodePort, or a cloud LoadBalancer; see gateway-addr.sh), with
+# the gateway's host key pinned. Covers:
 # login with the sandbox's key; refusal of a wrong key, of another
 # sandbox's key, of an unknown and of a deleted sandbox; exit codes; an
 # interactive terminal; scp and sftp; port forwarding refused; and an SSH

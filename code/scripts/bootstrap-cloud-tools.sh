@@ -2,9 +2,14 @@
 # Installs the extra tools for the Azure deployment (Phase 7) into
 # ./.devenv/tools, like bootstrap-tools.sh does for the local ones: Terraform
 # (one binary) and the Azure CLI (a Python package, in its own virtualenv).
-# Nothing is written outside the project; their config and caches live in
-# .devenv/state (AZURE_CONFIG_DIR, TF_PLUGIN_CACHE_DIR in env.sh).
+# Nothing is written outside the project: pip's cache, Terraform's update
+# check and the CLI's login all point into .devenv (here and in env.sh).
 # Not needed for the local setup, so up.sh never runs it.
+#
+# Integrity: Terraform's zip is checked against HashiCorp's SHA256SUMS
+# (catches a corrupt download; the file's GPG signature isn't checked, macOS
+# has no gpg). The Azure CLI is pinned to one version; pip resolves its
+# dependencies, which aren't hash-pinned.
 #
 # Usage (from the project root): ./code/scripts/bootstrap-cloud-tools.sh   then   source ./env.sh
 set -euo pipefail
@@ -17,6 +22,8 @@ TOOLS="$ROOT/.devenv/tools"
 BIN="$TOOLS/bin"
 TMPD="$ROOT/.devenv/tmp"
 mkdir -p "$BIN" "$TMPD"
+export PIP_CACHE_DIR="$ROOT/.devenv/state/pip-cache" PIP_DISABLE_PIP_VERSION_CHECK=1
+export CHECKPOINT_DISABLE=1   # terraform: no update check (it writes ~/.terraform.d)
 
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64)  OS=darwin; ARCH=arm64 ;;
@@ -40,16 +47,27 @@ fi
 
 echo "==> azure-cli $AZURE_CLI_VERSION (virtualenv in .devenv/tools/azure-cli)"
 VENV="$TOOLS/azure-cli"
+# The Azure CLI needs Python 3.10+; macOS's own python3 is 3.9.
+PY=""
+for c in python3.13 python3.12 python3.11 python3.10 python3; do
+  command -v "$c" >/dev/null && "$c" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null && { PY=$c; break; }
+done
+[ -n "$PY" ] || { echo "the Azure CLI needs Python 3.10 or newer (e.g. brew install python@3.12)" >&2; exit 1; }
 if [ "$("$VENV/bin/python" -m pip show azure-cli 2>/dev/null | awk '/^Version:/ {print $2}')" != "$AZURE_CLI_VERSION" ]; then
-  python3 -m venv "$VENV"
+  "$PY" -m venv "$VENV"
   "$VENV/bin/python" -m pip install --quiet --upgrade pip
   "$VENV/bin/python" -m pip install --quiet "azure-cli==$AZURE_CLI_VERSION"
 else
   echo "  already installed: azure-cli"
 fi
+# The shim keeps the CLI's login and token cache in .devenv even when env.sh
+# wasn't sourced (otherwise it would use ~/.azure).
 cat >"$BIN/az" <<'SHIM'
 #!/usr/bin/env bash
-exec "$(dirname "$0")/../azure-cli/bin/az" "$@"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+export AZURE_CONFIG_DIR="${AZURE_CONFIG_DIR:-$HERE/../../state/azure}"
+export AZURE_CORE_COLLECT_TELEMETRY="${AZURE_CORE_COLLECT_TELEMETRY:-false}"
+exec "$HERE/../azure-cli/bin/az" "$@"
 SHIM
 chmod +x "$BIN/az"
 
