@@ -14,7 +14,7 @@ idle for 30 minutes, or when its lifetime runs out.
 - **Helm chart** for any cluster with gVisor; scripts for a laptop.
 
 Design decisions and the reasons for them are logged in [DESIGN.md](DESIGN.md)
-(D1–D56); [WRITEUP.md](WRITEUP.md) covers the trade-offs and what comes next.
+(D1–D57); [WRITEUP.md](WRITEUP.md) covers the trade-offs and what comes next.
 
 ## Quickstart (macOS)
 
@@ -227,10 +227,38 @@ source ./env.sh aks && ./demo.sh             # the same demo and test scripts, a
 `cloud-up.sh` checks the login, the region's quota and that the node size
 is offered, creates the cluster and registry with Terraform (Kubernetes API
 open to your IP only), installs gVisor on the nodes
-(`code/deploy/cloud/gvisor-installer.yaml`), pushes the images, installs
-the chart with a public SSH gateway on port 22, and saves an admin key in
-`.devenv/state/aks/`. `source ./env.sh aks` / `source ./env.sh local`
-switch kubectl, `demo.sh` and the test scripts between the two clusters.
+(`code/deploy/cloud/gvisor-installer.yaml`), pushes the images, and installs
+the chart. That gives:
+
+- a public SSH gateway on port 22;
+- the API and dashboard on **`https://sandbox-<id>.<region>.cloudapp.azure.com`**,
+  with a Let's Encrypt certificate, served by Caddy in front of the API;
+- an admin key in `.devenv/state/aks/`.
+
+`source ./env.sh aks` / `source ./env.sh local` switch kubectl, `demo.sh`
+and the test scripts between the two clusters.
+
+### Letting testers in
+
+1. **Optionally limit who can connect:**
+   `ALLOWED_CIDRS="203.0.113.0/24,198.51.100.7/32" ./cloud-up.sh` (re-running
+   updates it). Only those ranges, plus your own IP, can then reach the HTTPS
+   API, the dashboard and the SSH gateway; others get 403 or no connection.
+   Without it, anyone can connect but still needs a key.
+2. **Give each tester their own key:**
+   `source ./env.sh aks && ./code/scripts/add-tester.sh alice`. That writes
+   the key to `.devenv/state/aks/testers/alice.key` (it isn't printed). Send
+   it through a password manager share, not chat or email, then delete the
+   file.
+3. **Send them [TESTING.md](TESTING.md)** with the HTTPS address and the SSH
+   gateway address (both printed by `cloud-up.sh`). For a checked first SSH
+   connection, also send the gateway's `known_hosts` line from
+   `kubectl -n sandbox-system exec deploy/sandbox-gateway -- /api public-key /keys/host/ssh_host_ed25519_key`.
+4. **Watch:** the admin dashboard (`/ui/admin`, with your key) shows every
+   user and sandbox.
+5. **End someone's access:** `./code/scripts/add-tester.sh --revoke alice`
+   (revokes their keys, quota 0). Then `./cloud-down.sh` when the session
+   is over: it all costs about $0.20/hour while it runs.
 
 ## Deploying to another cluster
 
@@ -264,7 +292,10 @@ changes; `test-network-policy.sh` checks it). A public API endpoint that
 isn't behind that Service (possibly EKS) goes in
 `networkPolicies.extraBlockedRanges`. Passwords and keys are generated on first install
 and kept across upgrades. Install only with `helm upgrade --install`, not
-`helm template`. Expose the API with your own Ingress and TLS.
+`helm template`. For a public HTTPS address, either use your own Ingress
+and TLS, or turn on the chart's Caddy front: `publicApi.enabled=true`,
+`publicApi.host=<a DNS name pointing at its load balancer>`, and optionally
+`publicApi.allowedSourceRanges`.
 
 ## Uninstall
 

@@ -59,9 +59,30 @@ gateway:
     port: 22
     nodePort: 30022
     annotations: {}
+    # With type LoadBalancer: only these source CIDRs may connect (e.g. a
+    # company's testers). Empty: anyone (they still need the sandbox's key).
+    loadBalancerSourceRanges: []
   resources:
     requests: {cpu: 50m, memory: 64Mi}
     limits: {cpu: "1", memory: 256Mi}
+
+# The API and dashboard on a public HTTPS address (step 7.6), for testers
+# and agents outside the cluster. Off by default (local use goes through a
+# port-forward). cloud-up.sh turns it on with an Azure DNS name.
+publicApi:
+  enabled: false
+  host: ""                 # the DNS name clients use; required when enabled
+  tls: acme                # acme: Let's Encrypt (needs host to resolve to the
+                           # load balancer); internal: Caddy's own CA (testing)
+  acmeEmail: ""            # optional: Let's Encrypt expiry notices
+  # Only these source CIDRs may use it (others get 403). Empty: anyone,
+  # who still needs an API key.
+  allowedSourceRanges: []
+  image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+  storageClassName: ""     # certificate volume; empty: the cluster's default
+  service:
+    type: LoadBalancer
+    annotations: {}        # e.g. service.beta.kubernetes.io/azure-dns-label-name
 
 # In-cluster Postgres (one replica with a persistent volume, D8, D11).
 postgres:

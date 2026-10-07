@@ -156,8 +156,10 @@ applies (D45).
 - **SSH keys:** one key per sandbox, given at create. SSH certificates
   (short-lived, issued by the platform after API-key auth) would allow
   several users, expiry and revocation without storing keys.
-- **API and Ingress:** the API is plain HTTP inside the cluster; TLS and
-  Ingress are left to the deployment.
+- **API and TLS:** the API is plain HTTP inside the cluster. On AKS a Caddy
+  proxy adds a public HTTPS address (Let's Encrypt; D57). Other deployments
+  bring their own Ingress and TLS, or turn on `publicApi`. One proxy
+  replica, so a restart is a brief outage.
 - **Dashboard sessions:** signing in stores the API key itself in the
   session cookie (HttpOnly, SameSite=Strict, 12 h; revoking the key ends the
   session). A server-side sessions table, so the browser holds only a
@@ -194,9 +196,11 @@ applies (D45).
      address automatically (as of each install or upgrade).
    - **Capacity:** AKS's own system pods request a third of two small
      nodes and the platform another 0.4 vCPU, so 7 sandboxes fit, not 10.
-   Still to do there: the API behind an Ingress with TLS (it's reached with
-   a port-forward today), more or larger nodes and the cluster autoscaler
-   for a real cold-node load test, and multi-arch images for amd64 nodes.
+   Since then (7.6) the API and dashboard have a public HTTPS address there
+   (Caddy with a Let's Encrypt certificate on an Azure DNS name, optional
+   IP allowlist), so testers need only a key. Still to do: more or larger
+   nodes and the cluster autoscaler for a real cold-node load test, and
+   multi-arch images for amd64 nodes.
 2. **Managed Postgres** (RDS/Azure Database) as a chart option, with the
    db-setup Job pointed at it.
 3. **Warm pool**, through agent-sandbox or our own pod layer.
