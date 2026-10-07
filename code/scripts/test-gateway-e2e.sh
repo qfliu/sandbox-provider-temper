@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end test of SSH access (D6, D35, D36) the way a user or agent on
-# this Mac uses it: real OpenSSH tools (ssh, scp, sftp) against the gateway's
-# NodePort on the minikube node, with the gateway's host key pinned. Covers:
+# this Mac uses it: real OpenSSH tools (ssh, scp, sftp) against the gateway
+# (minikube's NodePort, or a cloud LoadBalancer; see gateway-addr.sh), with
+# the gateway's host key pinned. Covers:
 # login with the sandbox's key; refusal of a wrong key, of another
 # sandbox's key, of an unknown and of a deleted sandbox; exit codes; an
 # interactive terminal; scp and sftp; port forwarding refused; and an SSH
@@ -17,8 +18,10 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PORT="${E2E_PORT:-18096}"
 API="http://127.0.0.1:$PORT/v1"
 KEY="$(cat "$ROOT/.devenv/state/admin-api-key")"
-GW_HOST="$(minikube ip)"
-GW_PORT=30022
+# shellcheck source=gateway-addr.sh
+source "$ROOT/code/scripts/gateway-addr.sh"
+read -r GW_HOST GW_PORT <<<"$(gateway_addr)"
+[ -n "${GW_PORT:-}" ] || { echo "setup failed: can't find the SSH gateway's address" >&2; exit 1; }
 TMP="$(mktemp -d "$ROOT/.devenv/state/tmp/e2e.XXXXXX")"
 PASSED=0 FAILED=0 SANDBOXES=()
 

@@ -41,7 +41,13 @@ export HELM_CONFIG_HOME="$_SB_STATE/helm/config"
 export HELM_CACHE_HOME="$_SB_STATE/helm/cache"
 export HELM_DATA_HOME="$_SB_STATE/helm/data"
 
-mkdir -p "$_SB_STATE"/{gopath,gocache,minikube,kube,helm,tmp}
+# Azure deployment (Phase 7): CLI config and login, Terraform's provider cache.
+export AZURE_CONFIG_DIR="$_SB_STATE/azure"
+export AZURE_CORE_COLLECT_TELEMETRY=false
+export TF_PLUGIN_CACHE_DIR="$_SB_STATE/terraform/plugin-cache"
+export CHECKPOINT_DISABLE=1   # terraform: no update check (it writes ~/.terraform.d)
+
+mkdir -p "$_SB_STATE"/{gopath,gocache,minikube,kube,helm,tmp,azure,terraform/plugin-cache}
 
 export PS1="(sandbox) $_SB_OLD_PS1"
 
@@ -51,6 +57,7 @@ deactivate_sandbox_env() {
   export TMPDIR="$_SB_OLD_TMPDIR"
   unset GOROOT GOPATH GOMODCACHE GOCACHE GOTOOLCHAIN GOENV \
         MINIKUBE_HOME MINIKUBE_PROFILE KUBECONFIG KUBECACHEDIR \
-        HELM_CONFIG_HOME HELM_CACHE_HOME HELM_DATA_HOME
+        HELM_CONFIG_HOME HELM_CACHE_HOME HELM_DATA_HOME \
+        AZURE_CONFIG_DIR AZURE_CORE_COLLECT_TELEMETRY TF_PLUGIN_CACHE_DIR CHECKPOINT_DISABLE
   unset -f deactivate_sandbox_env
 }
