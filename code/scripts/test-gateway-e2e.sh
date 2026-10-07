@@ -17,7 +17,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 : "${KUBECONFIG:?source ./env.sh first}"
 PORT="${E2E_PORT:-18096}"
 API="http://127.0.0.1:$PORT/v1"
-KEY="$(cat "$ROOT/.devenv/state/admin-api-key")"
+KEY="$(cat "${SANDBOX_KEYFILE:-$ROOT/.devenv/state/admin-api-key}")"
 # shellcheck source=gateway-addr.sh
 source "$ROOT/code/scripts/gateway-addr.sh"
 read -r GW_HOST GW_PORT <<<"$(gateway_addr)"

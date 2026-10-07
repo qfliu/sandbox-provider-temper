@@ -15,7 +15,7 @@ esac
 
 if [ -x .devenv/tools/bin/minikube ]; then
 	# shellcheck source=env.sh
-	source ./env.sh
+	source ./env.sh local   # down.sh only manages the local cluster
 	if [ -z "${1:-}" ]; then
 		./code/scripts/cluster-down.sh
 	else

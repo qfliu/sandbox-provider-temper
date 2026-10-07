@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# Deploys the sandbox provider to Azure (Phase 7, D54): an AKS cluster with
+# 2 arm64 nodes and a container registry (Terraform), gVisor on the nodes,
+# the platform images, the Helm chart with a public SSH gateway, and an
+# admin API key. Re-run to update; ./cloud-down.sh deletes everything.
+#
+# Costs money while it exists (about $0.20/hour: 2 small VMs, a disk, a
+# public IP; the AKS control plane is free). Needs: an Azure subscription
+# and `source ./env.sh && az login` once, and the local cluster (./up.sh),
+# which builds the arm64 images that are pushed to the registry.
+#
+# Usage: ./cloud-up.sh        then: source ./env.sh aks && ./demo.sh
+# Settings (environment): AZURE_LOCATION (westus2), AZURE_NAME
+# (sandbox-provider), AZURE_NODE_SIZE (Standard_D2ps_v5), AZURE_NODES (2).
+set -euo pipefail
+cd "$(dirname "$0")"
+START=$(date +%s)
+LOCATION=${AZURE_LOCATION:-westus2}
+NAME=${AZURE_NAME:-sandbox-provider}
+NODE_SIZE=${AZURE_NODE_SIZE:-Standard_D2ps_v5}
+NODES=${AZURE_NODES:-2}
+NS=sandbox-system
+
+[ -x .devenv/tools/bin/terraform ] && [ -x .devenv/tools/bin/az ] || ./code/scripts/bootstrap-cloud-tools.sh
+# shellcheck source=env.sh
+source ./env.sh aks
+mkdir -p "$(dirname "$KUBECONFIG")" "$(dirname "$SANDBOX_KEYFILE")" .devenv/state/terraform
+
+echo "==> checks"
+az account show >/dev/null 2>&1 ||
+	{ echo "not logged in to Azure: run  source ./env.sh && az login  in your Terminal" >&2; exit 1; }
+SUB=$(az account show --query id -o tsv)
+minikube status >/dev/null 2>&1 ||
+	{ echo "the local cluster isn't running (it builds the images): run ./up.sh first" >&2; exit 1; }
+MYIP=$(curl -fsS https://api.ipify.org)
+echo "    subscription $SUB, region $LOCATION, Kubernetes API open to $MYIP only"
+# The node size must be offered to this subscription in the region, and the
+# region's vCPU quota (overall and for the size's family) must fit the
+# nodes. Free-trial subscriptions often allow 4 vCPUs per region.
+az vm list-skus -l "$LOCATION" --size "$NODE_SIZE" --resource-type virtualMachines -o json >"$TMPDIR/sku.json"
+read -r FAMILY VCPUS RESTRICTED < <(python3 - "$NODE_SIZE" "$TMPDIR/sku.json" <<'PY'
+import json, sys
+size, path = sys.argv[1], sys.argv[2]
+skus = [s for s in json.load(open(path)) if s["name"] == size]
+if not skus:
+    print("- 0 missing"); sys.exit()
+s = skus[0]
+vcpus = next((c["value"] for c in s.get("capabilities", []) if c["name"] == "vCPUs"), "0")
+print(s["family"], vcpus, "restricted" if s.get("restrictions") else "ok")
+PY
+)
+case "$RESTRICTED" in
+missing) echo "$NODE_SIZE isn't offered in $LOCATION; set AZURE_LOCATION or AZURE_NODE_SIZE" >&2; exit 1 ;;
+restricted) echo "$NODE_SIZE is restricted for this subscription in $LOCATION; try another AZURE_LOCATION" >&2; exit 1 ;;
+esac
+NEED=$((VCPUS * NODES))
+if [ ! -s .devenv/state/terraform/aks.tfstate ] || ! grep -q '"azurerm_kubernetes_cluster"' .devenv/state/terraform/aks.tfstate; then
+	az vm list-usage -l "$LOCATION" -o json >"$TMPDIR/usage.json"
+	python3 - "$TMPDIR/usage.json" "$FAMILY" "$NEED" <<'PY' || exit 1
+import json, sys
+path, family, need = sys.argv[1], sys.argv[2], int(sys.argv[3])
+usage = {u["name"]["value"]: u for u in json.load(open(path))}
+bad = []
+for key, label in (("cores", "total regional vCPUs"), (family, family + " vCPUs")):
+    u = usage.get(key)
+    if u is None:
+        continue
+    free = int(u["limit"]) - int(u["currentValue"])
+    if free < need:
+        bad.append(f"{label}: {free} free, {need} needed")
+if bad:
+    print("quota too small: " + "; ".join(bad) + ". Request more in the Azure portal (Quotas) or set AZURE_NODES / AZURE_NODE_SIZE.", file=sys.stderr)
+    sys.exit(1)
+PY
+fi
+for ns in Microsoft.ContainerService Microsoft.ContainerRegistry Microsoft.Compute Microsoft.Network Microsoft.Storage; do
+	az provider register --namespace "$ns" --wait >/dev/null
+done
+
+echo "==> terraform apply (AKS + registry; the first run takes ~5-10 minutes)"
+TF=(terraform -chdir=code/deploy/cloud)
+"${TF[@]}" init -input=false -backend-config="path=$PWD/.devenv/state/terraform/aks.tfstate" >/dev/null
+"${TF[@]}" apply -input=false -auto-approve \
+	-var "subscription_id=$SUB" -var "location=$LOCATION" -var "name=$NAME" \
+	-var "node_size=$NODE_SIZE" -var "node_count=$NODES" -var "admin_cidrs=[\"$MYIP/32\"]" |
+	grep -E '^(Apply complete|Plan:|Error)' || true
+RG=$("${TF[@]}" output -raw resource_group)
+CLUSTER=$("${TF[@]}" output -raw cluster_name)
+ACR=$("${TF[@]}" output -raw acr_login_server)
+ACR_NAME=$("${TF[@]}" output -raw acr_name)
+az aks get-credentials -g "$RG" -n "$CLUSTER" --file "$KUBECONFIG" --overwrite-existing >/dev/null
+kubectl get nodes -o wide | cut -c1-100
+
+echo "==> gVisor on the nodes"
+kubectl apply -f code/deploy/cloud/gvisor-installer.yaml >/dev/null
+kubectl -n gvisor-system rollout status ds/gvisor-installer --timeout=10m >/dev/null
+
+echo "==> images: build on the local cluster (arm64), push to $ACR"
+DIRTY="$(git diff --quiet HEAD -- code || echo -dirty)"
+TAG="$(git rev-parse --short HEAD)${DIRTY}-$(date +%s)"
+minikube image build -t "$ACR/sandbox/api:$TAG" code >"$TMPDIR/cloud-build.log" 2>&1 ||
+	{ tail -30 "$TMPDIR/cloud-build.log"; echo "platform image build failed" >&2; exit 1; }
+# The registry token reaches ctr on the minikube node through stdin, never
+# on a command line on this Mac. (It is short-lived and only for this
+# registry.)
+TOKEN=$(az acr login -n "$ACR_NAME" --expose-token --query accessToken -o tsv 2>/dev/null)
+push() { # push <local ref> <registry ref>
+	printf '%s\n' "$TOKEN" | minikube ssh -- "read -r T; sudo ctr -n k8s.io images tag --force $1 $2 >/dev/null &&
+		sudo ctr -n k8s.io images push --user 00000000-0000-0000-0000-000000000000:\$T $2 >/dev/null && echo pushed-ok" 2>&1 |
+		tr -d '\r' | grep -q pushed-ok || {
+		echo "push of $2 failed (if it says 'content digest … not found', rebuild the local images: ./up.sh)" >&2
+		return 1
+	}
+	echo "    $2"
+}
+push "$ACR/sandbox/api:$TAG" "$ACR/sandbox/api:$TAG"
+for img in ubuntu-base ubuntu-dev; do
+	push "docker.io/sandbox/$img:0.1" "$ACR/sandbox/$img:0.1"
+done
+unset TOKEN
+
+echo "==> helm upgrade --install sandbox"
+HELM=(helm upgrade --install sandbox code/deploy/helm -n "$NS" --create-namespace -f code/deploy/cloud/values-aks.yaml
+	--set "image.repository=$ACR/sandbox/api" --set "image.tag=$TAG" --set "sandboxImages.repository=$ACR/sandbox/")
+GW=$(kubectl -n "$NS" get svc sandbox-gateway-nodeport -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+"${HELM[@]}" ${GW:+--set "api.sshGatewayAddr=$GW:22"} --timeout 15m >/dev/null
+if [ -z "$GW" ]; then
+	# The load balancer's IP exists only once its Service does; then the
+	# dashboard learns the address.
+	for _ in $(seq 1 60); do
+		GW=$(kubectl -n "$NS" get svc sandbox-gateway-nodeport -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+		[ -n "$GW" ] && break
+		sleep 5
+	done
+	[ -n "$GW" ] || { echo "the gateway's load balancer got no IP" >&2; exit 1; }
+	"${HELM[@]}" --set "api.sshGatewayAddr=$GW:22" --timeout 15m >/dev/null
+fi
+for r in statefulset/postgres deployment/sandbox-api deployment/sandbox-gateway daemonset/sandbox-image-prepull; do
+	kubectl -n "$NS" rollout status "$r" --timeout=10m >/dev/null
+done
+
+echo "==> admin API key"
+# shellcheck source=code/scripts/admin-key.sh
+source code/scripts/admin-key.sh
+ensure_admin_key "$SANDBOX_KEYFILE" cloud-up.sh
+
+cat <<MSG
+
+Sandbox provider is up on AKS ($(( $(date +%s) - START )) s): cluster $CLUSTER in $LOCATION.
+  Use it:      source ./env.sh aks    (kubectl, demo.sh and the test scripts then target AKS)
+  Walkthrough: ./demo.sh
+  SSH:         ssh <sandbox-id>@$GW
+  Dashboard:   kubectl -n $NS port-forward svc/sandbox-api 18080:80, then http://localhost:18080/ui
+               (key in $SANDBOX_KEYFILE)
+  Costs about \$0.20/hour while it exists. Remove it all: ./cloud-down.sh
+MSG

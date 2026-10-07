@@ -1,5 +1,8 @@
 # Project-local environment, like a Python venv for CLI tools.
-# Usage:  source ./env.sh      (undo with: deactivate_sandbox_env)
+# Usage:  source ./env.sh        the local minikube cluster (default)
+#         source ./env.sh aks    the Azure cluster made by cloud-up.sh
+# (undo with: deactivate_sandbox_env). Scripts that source this without
+# naming a cluster keep the one the shell already chose (SANDBOX_TARGET).
 #
 # All tools, caches, VM disks and configs live under ./.devenv,
 # so nothing touches ~/.kube, ~/.minikube or ~/go.
@@ -50,7 +53,20 @@ export CHECKPOINT_DISABLE=1   # terraform: no update check (it writes ~/.terrafo
 
 mkdir -p "$_SB_STATE"/{gopath,gocache,minikube,kube,helm,tmp,azure,terraform/plugin-cache}
 
-export PS1="(sandbox) $_SB_OLD_PS1"
+# Which cluster kubectl, the scripts and demo.sh talk to, and whose admin
+# API key they use: each cluster has its own (scripts read SANDBOX_KEYFILE).
+case "${1:-}" in
+  local | aks) export SANDBOX_TARGET="$1" ;;
+  *) export SANDBOX_TARGET="${SANDBOX_TARGET:-local}" ;;
+esac
+if [ "$SANDBOX_TARGET" = aks ]; then
+  export KUBECONFIG="$_SB_STATE/kube/aks-config"
+  export SANDBOX_KEYFILE="$_SB_STATE/aks/admin-api-key"
+  export PS1="(sandbox:aks) $_SB_OLD_PS1"
+else
+  export SANDBOX_KEYFILE="$_SB_STATE/admin-api-key"
+  export PS1="(sandbox) $_SB_OLD_PS1"
+fi
 
 deactivate_sandbox_env() {
   export PATH="$_SB_OLD_PATH"
@@ -59,6 +75,7 @@ deactivate_sandbox_env() {
   unset GOROOT GOPATH GOMODCACHE GOCACHE GOTOOLCHAIN GOENV \
         MINIKUBE_HOME MINIKUBE_PROFILE KUBECONFIG KUBECACHEDIR \
         HELM_CONFIG_HOME HELM_CACHE_HOME HELM_DATA_HOME \
-        AZURE_CONFIG_DIR AZURE_CORE_COLLECT_TELEMETRY TF_PLUGIN_CACHE_DIR TF_DATA_DIR CHECKPOINT_DISABLE
+        AZURE_CONFIG_DIR AZURE_CORE_COLLECT_TELEMETRY TF_PLUGIN_CACHE_DIR TF_DATA_DIR CHECKPOINT_DISABLE \
+        SANDBOX_TARGET SANDBOX_KEYFILE
   unset -f deactivate_sandbox_env
 }
