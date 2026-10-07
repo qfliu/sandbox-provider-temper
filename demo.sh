@@ -109,7 +109,9 @@ bold "5. SSH in through the gateway, with my own key (as a person or an agent wo
 source code/scripts/gateway-addr.sh
 read -r GW_HOST GW_PORT <<<"$(gateway_addr)" && [ -n "$GW_PORT" ] || { echo "can't find the SSH gateway's address" >&2; exit 1; }
 GW_PUB=$(kubectl -n sandbox-system exec deploy/sandbox-gateway -- /api public-key /keys/host/ssh_host_ed25519_key | cut -d' ' -f1,2)
-echo "[$GW_HOST]:$GW_PORT $GW_PUB" >"$TMP/known_hosts"
+# known_hosts names port 22 by the bare host; other ports as [host]:port.
+KH_HOST=$([ "$GW_PORT" = 22 ] && echo "$GW_HOST" || echo "[$GW_HOST]:$GW_PORT")
+echo "$KH_HOST $GW_PUB" >"$TMP/known_hosts"
 note "(the gateway's host key is pinned, so a man in the middle would be refused)"
 printf '  \033[2m$ ssh -p %s %s@%s '"'"'hostname; cat job.py | wc -l'"'"'\033[0m\n' "$GW_PORT" "$ID" "$GW_HOST"
 ssh -F /dev/null -i "$TMP/id" -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes \

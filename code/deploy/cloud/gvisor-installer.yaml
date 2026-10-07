@@ -68,20 +68,27 @@ data:
     ln -sf /opt/gvisor/$REL/containerd-shim-runsc-v1 /usr/local/bin/containerd-shim-runsc-v1
     printf '[runsc_config]\n  allow-suid = "true"\n' >/etc/containerd/runsc.toml
     CONF=/etc/containerd/config.toml
-    # Config version 2 (containerd 1.x) names the CRI plugin differently from
-    # versions 3 and 4 (containerd 2.x).
-    VER=$(sed -n 's/^version *= *\([0-9]*\).*/\1/p' "$CONF" | head -1)
-    if [ "${VER:-2}" -ge 3 ]; then
+    # What containerd actually loaded: the real test, not the file's text.
+    loaded() { containerd config dump 2>/dev/null | grep -Eq "runtimes\.[\"']?runsc[\"']?\]"; }
+    if loaded; then
+      echo "containerd already has the runsc runtime"
+      exit 0
+    fi
+    # Start from the node's own config if an earlier run saved it, so a
+    # section a previous attempt added is not carried along.
+    BASE=$CONF
+    [ -f "$CONF.before-gvisor" ] && BASE=$CONF.before-gvisor
+    # The CRI plugin's section name: containerd 2.x's if the file already
+    # uses it (AKS writes "version = 2" but 2.x names, which containerd
+    # 2.x reads as is), or if it declares version 3 or 4; otherwise 1.x's.
+    VER=$(sed -n 's/^version *= *\([0-9]*\).*/\1/p' "$BASE" | head -1)
+    if grep -q 'io.containerd.cri.v1.runtime' "$BASE" || [ "${VER:-2}" -ge 3 ]; then
       CRI='plugins."io.containerd.cri.v1.runtime"'
     else
       CRI='plugins."io.containerd.grpc.v1.cri"'
     fi
-    if grep -qF "[$CRI.containerd.runtimes.runsc.options]" "$CONF"; then
-      echo "containerd already has the runsc runtime (config version ${VER:-2})"
-      exit 0
-    fi
     # Edit a copy, let containerd check it, then swap it in.
-    cp "$CONF" "$CONF.gvisor-new"
+    cp "$BASE" "$CONF.gvisor-new"
     printf '\n[%s.containerd.runtimes.runsc]\n  runtime_type = "io.containerd.runsc.v1"\n[%s.containerd.runtimes.runsc.options]\n  TypeUrl = "io.containerd.runsc.v1.options"\n  ConfigPath = "/etc/containerd/runsc.toml"\n' \
       "$CRI" "$CRI" >>"$CONF.gvisor-new"
     if ! containerd --config "$CONF.gvisor-new" config dump >/dev/null 2>&1; then
@@ -90,12 +97,12 @@ data:
       rm -f "$CONF.gvisor-new"
       exit 1
     fi
-    cp "$CONF" "$CONF.before-gvisor"
+    [ -f "$CONF.before-gvisor" ] || cp "$CONF" "$CONF.before-gvisor"
     mv "$CONF.gvisor-new" "$CONF"
     systemctl restart containerd
     sleep 3
-    if ! systemctl is-active --quiet containerd; then
-      echo "containerd didn't come back with the new config; restoring the old one" >&2
+    if ! systemctl is-active --quiet containerd || ! loaded; then
+      echo "containerd isn't running with the runsc runtime after the change; restoring the old config" >&2
       cp "$CONF.before-gvisor" "$CONF"
       systemctl restart containerd
       exit 1
