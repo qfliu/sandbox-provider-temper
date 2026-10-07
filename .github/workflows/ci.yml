@@ -1,0 +1,105 @@
+# Checks on every pull request and push to main. Nothing here needs a cloud
+# account or secrets: the cluster end-to-end suites run on a real cluster
+# (code/scripts/test-*.sh, locally or on AKS); this covers what can run on a
+# plain runner.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go (vet, format, tests incl. Postgres)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_USER: sandbox
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: sandbox
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sandbox -d sandbox"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+    defaults:
+      run:
+        working-directory: code
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.1 # as in code/scripts/bootstrap-tools.sh
+          cache-dependency-path: code/go.sum
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          [ -z "$unformatted" ] || { echo "not gofmt'ed:"; echo "$unformatted"; exit 1; }
+      - name: go vet
+        run: go vet ./...
+      - name: go test (with the database tests, as code/scripts/test-db.sh)
+        env:
+          # A superuser, as the tests need: they create throwaway roles and schemas.
+          TEST_DATABASE_URL: postgres://sandbox:ci-only@localhost:5432/sandbox?sslmode=disable
+        run: go test -count=1 ./...
+
+  chart:
+    name: Helm chart (lint, render)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.0 # as in code/scripts/bootstrap-tools.sh
+      - name: helm lint
+        run: helm lint code/deploy/helm --set image.tag=ci
+      - name: render (defaults, as deploy.sh installs it)
+        run: helm template sandbox code/deploy/helm -n sandbox-system --set image.tag=ci --set api.sshGatewayAddr=192.0.2.1:30022 >/dev/null
+      - name: render (AKS values, as cloud-up.sh installs it)
+        run: >-
+          helm template sandbox code/deploy/helm -n sandbox-system -f code/deploy/cloud/values-aks.yaml
+          --set image.tag=ci --set image.repository=example.azurecr.io/sandbox/api
+          --set sandboxImages.repository=example.azurecr.io/sandbox/
+          --set publicApi.host=sandbox-ci.westus2.cloudapp.azure.com
+          --set 'publicApi.allowedSourceRanges={203.0.113.0/24}'
+          --set 'gateway.service.loadBalancerSourceRanges={203.0.113.0/24}' >/dev/null
+      - name: render must fail without an image tag
+        run: "! helm template sandbox code/deploy/helm >/dev/null 2>&1"
+
+  terraform:
+    name: Terraform (format, validate)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: code/deploy/cloud
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.16.5 # as in code/scripts/bootstrap-cloud-tools.sh
+          terraform_wrapper: false
+      - run: terraform fmt -check -diff
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+
+  shell:
+    name: Shell scripts (syntax)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: bash -n every script
+        run: |
+          status=0
+          for f in *.sh code/scripts/*.sh; do
+            bash -n "$f" || { echo "syntax error: $f"; status=1; }
+          done
+          exit $status
