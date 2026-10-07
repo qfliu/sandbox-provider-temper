@@ -64,8 +64,9 @@ that, this section was written from memory; R1–R8 match it.
   environment variables/secrets expected; should the dashboard's "interact"
   include commands and files, or a web terminal. Snapshot/restore is not in
   the video. (gVisor itself can checkpoint and restore a running sandbox,
-  `runsc checkpoint`/`restore`; plain Kubernetes can't restore that into a new
-  pod, which is the work it would take.) Comparison with hosted providers:
+  `runsc checkpoint`/`restore`; Kubernetes has no path to restore that into a
+  new pod, its own checkpoint API being for runc containers, so that is the
+  work it would take.) Comparison with hosted providers:
   WRITEUP.md, "Compared with hosted sandbox providers".
 
 ### Must have

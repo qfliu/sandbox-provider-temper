@@ -48,14 +48,14 @@ what this platform has.
 
 | Feature | Who offers it | Here |
 |---|---|---|
-| **Snapshot / restore / fork, pause / resume** | all three: files everywhere; memory and running processes as well in E2B and Modal | none: a sandbox's files last as long as its pod (D8) |
+| **Snapshot / restore / fork, pause / resume** | all three: files everywhere; memory and running processes in E2B's default pause/resume, experimental at Modal, VM sandboxes only at Daytona | not built; awaiting the brief author's answer. gVisor can checkpoint a running sandbox (`runsc checkpoint`); the missing part is restoring it into a new pod: Kubernetes has no restore path for gVisor checkpoints (its checkpoint API is for runc containers) |
 | **Streaming command output, background processes, stdin** | all three | commands run to completion and return their output; SSH streams |
 | **Custom images / templates** (your own Dockerfile, start and ready commands) | all three | three fixed images; build and run any image *inside* `ubuntu-docker` |
 | **Environment variables and secrets at create** | all three | none |
 | **Per-sandbox network controls** (internet off, allowlists) | all three | one policy for all |
-| **Per-sandbox CPU and memory** | Modal, Daytona | fixed per image (1 CPU / 1 GiB; Docker 2 / 4 GiB) |
+| **Per-sandbox CPU and memory** | Modal, Daytona | fixed per image: limits of 1 CPU / 1 GiB (requests 250m / 256 MiB); `ubuntu-docker` 2 CPU / 4 GiB |
 | **Richer file API** (list, stat, mkdir, delete, watch) | E2B, Daytona | single-file upload and download |
-| **Tags / metadata and filtered lists** | E2B, Modal | none |
+| **Tags / metadata / labels** | all three (filtered lists at E2B and Modal) | none |
 | **Volumes** shared or kept across sandboxes | all three | none (D8) |
 | **Terminal in the API or browser** (PTY, web terminal) | E2B, Daytona | SSH, and one-off commands in the dashboard |
 | **SDKs and a CLI** | all three | HTTP API only |
