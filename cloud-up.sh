@@ -44,6 +44,11 @@ mk status >/dev/null 2>&1 ||
 	{ echo "the local cluster isn't running (it builds the images): run ./up.sh first" >&2; exit 1; }
 MYIP=$(curl -fsS https://api.ipify.org)
 echo "    subscription $SUB, region $LOCATION, Kubernetes API open to $MYIP only"
+# A new subscription has none of these enabled, and until Compute is, the
+# size and quota lists below come back empty. Registering is free.
+for ns in Microsoft.ContainerService Microsoft.ContainerRegistry Microsoft.Compute Microsoft.Network Microsoft.Storage; do
+	az provider register --namespace "$ns" --wait >/dev/null
+done
 # The node size must be offered to this subscription in the region, and the
 # region's vCPU quota (overall and for the size's family) must fit the
 # nodes. Free-trial subscriptions often allow 4 vCPUs per region.
@@ -78,6 +83,7 @@ bad = []
 for key, label in (("cores", "total regional vCPUs"), (family, family + " vCPUs")):
     u = usage.get(key)
     if u is None:
+        bad.append(f"no quota data for {label}")
         continue
     free = int(u["limit"]) - int(u["currentValue"])
     if free < need:
@@ -87,9 +93,6 @@ if bad:
     sys.exit(1)
 PY
 fi
-for ns in Microsoft.ContainerService Microsoft.ContainerRegistry Microsoft.Compute Microsoft.Network Microsoft.Storage; do
-	az provider register --namespace "$ns" --wait >/dev/null
-done
 
 echo "==> terraform apply (AKS + registry; the first run takes ~5-10 minutes)"
 TF=(terraform -chdir=code/deploy/cloud)
