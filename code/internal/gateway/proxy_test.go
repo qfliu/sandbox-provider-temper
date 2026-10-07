@@ -223,6 +223,12 @@ func TestProxyInteractiveShellWithPTY(t *testing.T) {
 		t.Fatal(err)
 	}
 	sess.WindowChange(40, 120)
+	// Requests and data travel the proxy separately, so the data (and the end
+	// of the session) can reach the sandbox before the window-change does.
+	// Wait for it to be relayed before ending the session.
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline) && !strings.Contains(p.sshd.seen(), "window-change"); {
+		time.Sleep(5 * time.Millisecond)
+	}
 	io.WriteString(stdin, "hello\n")
 	stdin.Close()
 	if err := sess.Wait(); err != nil {

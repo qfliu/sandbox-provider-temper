@@ -182,6 +182,11 @@ func TestOnlyCompletedLoginsAreLoggedAsAccepted(t *testing.T) {
 	if !tryLogin(t, start(t, srv), "sb-00000000000a", host.PublicKey(), owner) {
 		t.Fatal("owner login failed")
 	}
+	// The server logs the login in its own goroutine once the handshake is
+	// done, which can be after the client's side has returned.
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline) && !strings.Contains(buf.String(), "login accepted"); {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if n := strings.Count(buf.String(), "login accepted"); n != 1 {
 		t.Fatalf("%d 'login accepted' lines after one real login, want 1:\n%s", n, buf.String())
 	}

@@ -118,6 +118,18 @@ func TestResolvePath(t *testing.T) {
 	}
 }
 
+// waitFor polls cond for up to 2 s. The test server counts a connection in
+// its own goroutine after the handshake, which can run after the client's
+// side has already returned (seen on a 2-CPU CI runner).
+func waitFor(cond func() bool) bool {
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if cond() {
+			return true
+		}
+	}
+	return cond()
+}
+
 func TestPoolReusesAndRedials(t *testing.T) {
 	signer := newClientSigner(t)
 	hostPEM, hostPub, _ := GenerateHostKey()
@@ -132,12 +144,12 @@ func TestPoolReusesAndRedials(t *testing.T) {
 	relA()
 	b, relB, _ := p.Get(ctx, "sb-1", srv.addr, hostPub)
 	relB()
-	if a != b || srv.dials.Load() != 1 {
+	if a != b || !waitFor(func() bool { return srv.dials.Load() == 1 }) {
 		t.Fatalf("second Get should reuse the connection (dials=%d)", srv.dials.Load())
 	}
 
 	p.Drop("sb-1")
-	if _, _, err := p.Get(ctx, "sb-1", srv.addr, hostPub); err != nil || srv.dials.Load() != 2 {
+	if _, _, err := p.Get(ctx, "sb-1", srv.addr, hostPub); err != nil || !waitFor(func() bool { return srv.dials.Load() == 2 }) {
 		t.Fatalf("after Drop, Get should redial (dials=%d, err=%v)", srv.dials.Load(), err)
 	}
 

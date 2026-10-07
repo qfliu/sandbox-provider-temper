@@ -14,7 +14,7 @@ idle for 30 minutes, or when its lifetime runs out.
 - **Helm chart** for any cluster with gVisor; scripts for a laptop.
 
 Design decisions and the reasons for them are logged in [DESIGN.md](DESIGN.md)
-(D1–D58); [WRITEUP.md](WRITEUP.md) covers the trade-offs and what comes next.
+(D1–D59); [WRITEUP.md](WRITEUP.md) covers the trade-offs and what comes next.
 
 ## Quickstart (macOS)
 
