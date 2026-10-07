@@ -1,5 +1,11 @@
 # Project-local toolchain and state (see code/scripts/bootstrap-tools.sh, env.sh)
 .devenv/
+# Terraform: state (holds secrets) and working files live in .devenv/state
+# (TF_DATA_DIR, -backend-config=path=...); these only catch mistakes.
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
 # Build output
 code/bin/
 
