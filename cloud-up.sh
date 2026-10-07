@@ -25,12 +25,22 @@ NS=sandbox-system
 # shellcheck source=env.sh
 source ./env.sh aks
 mkdir -p "$(dirname "$KUBECONFIG")" "$(dirname "$SANDBOX_KEYFILE")" .devenv/state/terraform
+# minikube (the local cluster that builds the images) with its own
+# kubeconfig: with KUBECONFIG on AKS, `minikube status` reports
+# "Misconfigured" and fails.
+mk() { KUBECONFIG="$_SB_STATE/kube/config" minikube "$@"; }
+# After Terraform has created resources, any failure leaves them billing:
+# say so, with the way out.
+CREATED=""
+trap 'rc=$?; if [ "$rc" != 0 ] && [ -n "$CREATED" ]; then
+	echo "cloud-up.sh failed after creating Azure resources; they cost money until removed: ./cloud-down.sh" >&2
+fi' EXIT
 
 echo "==> checks"
 az account show >/dev/null 2>&1 ||
 	{ echo "not logged in to Azure: run  source ./env.sh && az login  in your Terminal" >&2; exit 1; }
 SUB=$(az account show --query id -o tsv)
-minikube status >/dev/null 2>&1 ||
+mk status >/dev/null 2>&1 ||
 	{ echo "the local cluster isn't running (it builds the images): run ./up.sh first" >&2; exit 1; }
 MYIP=$(curl -fsS https://api.ipify.org)
 echo "    subscription $SUB, region $LOCATION, Kubernetes API open to $MYIP only"
@@ -38,7 +48,7 @@ echo "    subscription $SUB, region $LOCATION, Kubernetes API open to $MYIP only
 # region's vCPU quota (overall and for the size's family) must fit the
 # nodes. Free-trial subscriptions often allow 4 vCPUs per region.
 az vm list-skus -l "$LOCATION" --size "$NODE_SIZE" --resource-type virtualMachines -o json >"$TMPDIR/sku.json"
-read -r FAMILY VCPUS RESTRICTED < <(python3 - "$NODE_SIZE" "$TMPDIR/sku.json" <<'PY'
+SKU=$(python3 - "$NODE_SIZE" "$TMPDIR/sku.json" <<'PY'
 import json, sys
 size, path = sys.argv[1], sys.argv[2]
 skus = [s for s in json.load(open(path)) if s["name"] == size]
@@ -46,9 +56,13 @@ if not skus:
     print("- 0 missing"); sys.exit()
 s = skus[0]
 vcpus = next((c["value"] for c in s.get("capabilities", []) if c["name"] == "vCPUs"), "0")
-print(s["family"], vcpus, "restricted" if s.get("restrictions") else "ok")
+# Only a region-wide restriction stops us; zone-only ones (type "Zone")
+# don't matter to a cluster that doesn't pin zones.
+region = [r for r in s.get("restrictions") or [] if r.get("type") == "Location"]
+print(s["family"], vcpus, "restricted" if region else "ok")
 PY
-)
+) || { echo "couldn't read the size list for $LOCATION" >&2; exit 1; }
+read -r FAMILY VCPUS RESTRICTED <<<"$SKU"
 case "$RESTRICTED" in
 missing) echo "$NODE_SIZE isn't offered in $LOCATION; set AZURE_LOCATION or AZURE_NODE_SIZE" >&2; exit 1 ;;
 restricted) echo "$NODE_SIZE is restricted for this subscription in $LOCATION; try another AZURE_LOCATION" >&2; exit 1 ;;
@@ -80,10 +94,16 @@ done
 echo "==> terraform apply (AKS + registry; the first run takes ~5-10 minutes)"
 TF=(terraform -chdir=code/deploy/cloud)
 "${TF[@]}" init -input=false -backend-config="path=$PWD/.devenv/state/terraform/aks.tfstate" >/dev/null
-"${TF[@]}" apply -input=false -auto-approve \
+CREATED=yes # from here on, a failure may leave resources behind
+if ! "${TF[@]}" apply -input=false -auto-approve -no-color \
 	-var "subscription_id=$SUB" -var "location=$LOCATION" -var "name=$NAME" \
-	-var "node_size=$NODE_SIZE" -var "node_count=$NODES" -var "admin_cidrs=[\"$MYIP/32\"]" |
-	grep -E '^(Apply complete|Plan:|Error)' || true
+	-var "node_size=$NODE_SIZE" -var "node_count=$NODES" -var "admin_cidrs=[\"$MYIP/32\"]" \
+	>"$TMPDIR/tf-apply.log" 2>&1; then
+	tail -40 "$TMPDIR/tf-apply.log" >&2
+	echo "terraform apply failed (full log: $TMPDIR/tf-apply.log)" >&2
+	exit 1
+fi
+grep -E '^Apply complete' "$TMPDIR/tf-apply.log" | sed 's/^/    /' || true
 RG=$("${TF[@]}" output -raw resource_group)
 CLUSTER=$("${TF[@]}" output -raw cluster_name)
 ACR=$("${TF[@]}" output -raw acr_login_server)
@@ -98,19 +118,24 @@ kubectl -n gvisor-system rollout status ds/gvisor-installer --timeout=10m >/dev/
 echo "==> images: build on the local cluster (arm64), push to $ACR"
 DIRTY="$(git diff --quiet HEAD -- code || echo -dirty)"
 TAG="$(git rev-parse --short HEAD)${DIRTY}-$(date +%s)"
-minikube image build -t "$ACR/sandbox/api:$TAG" code >"$TMPDIR/cloud-build.log" 2>&1 ||
+mk image build -t "$ACR/sandbox/api:$TAG" code >"$TMPDIR/cloud-build.log" 2>&1 ||
 	{ tail -30 "$TMPDIR/cloud-build.log"; echo "platform image build failed" >&2; exit 1; }
 # The registry token reaches ctr on the minikube node through stdin, never
-# on a command line on this Mac. (It is short-lived and only for this
-# registry.)
-TOKEN=$(az acr login -n "$ACR_NAME" --expose-token --query accessToken -o tsv 2>/dev/null)
+# on a command line on this Mac. Inside the VM it is in ctr's arguments
+# while a push runs (a single-user local VM). It lasts about 3 hours and is
+# good only for this registry.
+TOKEN=$(az acr login -n "$ACR_NAME" --expose-token --query accessToken -o tsv) ||
+	{ echo "couldn't get a token for the registry $ACR_NAME" >&2; exit 1; }
 push() { # push <local ref> <registry ref>
-	printf '%s\n' "$TOKEN" | minikube ssh -- "read -r T; sudo ctr -n k8s.io images tag --force $1 $2 >/dev/null &&
+	local out
+	out=$(printf '%s\n' "$TOKEN" | mk ssh -- "read -r T; sudo ctr -n k8s.io images tag --force $1 $2 >/dev/null &&
 		sudo ctr -n k8s.io images push --user 00000000-0000-0000-0000-000000000000:\$T $2 >/dev/null && echo pushed-ok" 2>&1 |
-		tr -d '\r' | grep -q pushed-ok || {
-		echo "push of $2 failed (if it says 'content digest … not found', rebuild the local images: ./up.sh)" >&2
+		tr -d '\r') || true
+	if ! grep -q pushed-ok <<<"$out"; then
+		echo "push of $2 failed: $(tail -3 <<<"$out")" >&2
+		echo "(if it says 'content digest … not found', rebuild the local images: ./up.sh)" >&2
 		return 1
-	}
+	fi
 	echo "    $2"
 }
 push "$ACR/sandbox/api:$TAG" "$ACR/sandbox/api:$TAG"
