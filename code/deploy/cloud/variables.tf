@@ -36,4 +36,9 @@ variable "kubernetes_version" {
 variable "admin_cidrs" {
   description = "CIDRs allowed to reach the Kubernetes API (your IP as x.x.x.x/32)."
   type        = list(string)
+  validation {
+    # An empty list would leave the API open to everyone.
+    condition     = length(var.admin_cidrs) > 0 && alltrue([for c in var.admin_cidrs : can(cidrhost(c, 0))])
+    error_message = "admin_cidrs must list at least one valid CIDR, e.g. [\"203.0.113.7/32\"]."
+  }
 }

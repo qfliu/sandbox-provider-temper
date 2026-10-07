@@ -57,14 +57,19 @@ resource "azurerm_kubernetes_cluster" "main" {
   dns_prefix          = var.name
   sku_tier            = "Free" # no control-plane charge
   kubernetes_version  = var.kubernetes_version
+  # A short-lived test cluster: no automatic node-image reimages (they would
+  # interrupt sandboxes mid-measurement; the default is NodeImage).
+  node_os_upgrade_channel = "None"
 
   default_node_pool {
     name       = "system"
     vm_size    = var.node_size
     node_count = var.node_count
     os_sku     = "Ubuntu"
-    # The gVisor installer (step 7.3) edits containerd's config on the node,
-    # so nodes are replaced rather than upgraded in place underneath it.
+    # Needed to change vm_size or os_sku later without recreating the cluster.
+    temporary_name_for_rotation = "rotate"
+    # Extra nodes during an upgrade; a free-trial quota of 4 vCPUs leaves no
+    # room for one, so upgrades there need a quota increase first.
     upgrade_settings {
       max_surge = "1"
     }
