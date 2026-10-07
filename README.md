@@ -200,14 +200,15 @@ pre-pulled from the cluster's registry), D56:
 
 | What | Time |
 |---|---|
-| `./cloud-up.sh` from nothing (cluster, gVisor, images, install) / `./cloud-down.sh` | 581–633 s / 378–394 s |
+| `./cloud-up.sh` from nothing (cluster, gVisor, images, install) / `./cloud-down.sh` | 581 s (633 s on the run before the fixes) / 378–394 s |
 | Pre-pull from the registry onto a fresh node: `ubuntu-dev` (218 MB) / `ubuntu-base` (145 MB) | **7.6–9.3 s** / 4.6–8.1 s |
 | One sandbox, create → `running` | 3.1 s (first exec 3.4 s) |
 | 10 at once → 7 running: `ubuntu-base` / `ubuntu-dev` | p50 3.7 s, p95 5.2 s / p50 3.8 s, p95 4.8 s |
 
-Only 7 of 10 fit: AKS's own system pods request 1.26 of the 3.8 vCPUs, so
-two small nodes hold 7 sandboxes; the other 3 stay `pending` until room
-frees up. More or larger nodes (or the cluster autoscaler) raise that.
+Only 7 of 10 fit: of the 3.8 allocatable vCPUs, AKS's own system pods
+request 1.26 and the platform 0.42, leaving 0.97 and 1.13 on the two nodes,
+room for 3 + 4 sandboxes at 250m each; the other 3 stay `pending` until
+room frees up. More or larger nodes (or the cluster autoscaler) raise that.
 
 ## On Azure (AKS)
 
@@ -256,9 +257,12 @@ helm upgrade --install sandbox code/deploy/helm -n sandbox-system --create-names
 
 Values (`values.yaml`) also cover replicas, resources, sandbox TTL and idle
 limits, gateway connection limits, Postgres storage, and the egress ranges
-sandboxes may not reach. If the cluster's Kubernetes API has a public
-address (as on AKS and EKS), the chart blocks it for sandboxes
-automatically. Passwords and keys are generated on first install
+sandboxes may not reach. If the `kubernetes` Service forwards to a public
+address (as on AKS), the chart blocks it for sandboxes automatically, as of
+the install or last upgrade (re-run the upgrade if the control plane's IP
+changes; `test-network-policy.sh` checks it). A public API endpoint that
+isn't behind that Service (possibly EKS) goes in
+`networkPolicies.extraBlockedRanges`. Passwords and keys are generated on first install
 and kept across upgrades. Install only with `helm upgrade --install`, not
 `helm template`. Expose the API with your own Ingress and TLS.
 

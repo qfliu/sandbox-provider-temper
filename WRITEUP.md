@@ -190,10 +190,10 @@ applies (D45).
    - **The Kubernetes API has a public address on AKS.** The `kubernetes`
      Service forwards there, and the "public internet" egress rule let
      sandboxes open connections to it (no credentials, so requests were
-     refused, but it broke the isolation rule). The chart now blocks the
-     API server's public addresses automatically.
-   - **Capacity:** AKS's own pods take a third of two small nodes, so 7
-     sandboxes fit, not 10.
+     refused, but it broke the isolation rule). The chart now blocks that
+     address automatically (as of each install or upgrade).
+   - **Capacity:** AKS's own system pods request a third of two small
+     nodes and the platform another 0.4 vCPU, so 7 sandboxes fit, not 10.
    Still to do there: the API behind an Ingress with TLS (it's reached with
    a port-forward today), more or larger nodes and the cluster autoscaler
    for a real cold-node load test, and multi-arch images for amd64 nodes.

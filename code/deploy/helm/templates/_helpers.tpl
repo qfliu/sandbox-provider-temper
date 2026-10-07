@@ -26,10 +26,15 @@ Args: dict "ns" "name" "key" "new"
 
 {{/*
 The Kubernetes API server's addresses that aren't in a private range, as a
-YAML list of /32s: on managed clusters (AKS, EKS) the `kubernetes` Service
-forwards to a public endpoint, which the "public internet" egress rule would
-otherwise let sandboxes reach. Read at install/upgrade time (`lookup`, so
-empty under `helm template`); re-run the upgrade if the endpoint changes.
+YAML list of /32s: on AKS the `kubernetes` Service forwards to the control
+plane's public IP, which the "public internet" egress rule would otherwise
+let sandboxes reach. (Clusters whose `kubernetes` endpoints are private,
+like minikube, get nothing added. Others with a public API endpoint that
+isn't in these endpoints, which may include EKS, need it in
+networkPolicies.extraBlockedRanges.) Read at install/upgrade time
+(`lookup`, so empty under `helm template`): if the control plane's IP
+changes, run the upgrade again; test-network-policy.sh's Kubernetes API
+check notices.
 */}}
 {{- define "sp.publicAPIServer" -}}
 {{- $out := list -}}

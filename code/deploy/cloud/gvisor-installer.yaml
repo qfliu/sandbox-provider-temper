@@ -68,8 +68,12 @@ data:
     ln -sf /opt/gvisor/$REL/containerd-shim-runsc-v1 /usr/local/bin/containerd-shim-runsc-v1
     printf '[runsc_config]\n  allow-suid = "true"\n' >/etc/containerd/runsc.toml
     CONF=/etc/containerd/config.toml
-    # What containerd actually loaded: the real test, not the file's text.
-    loaded() { containerd config dump 2>/dev/null | grep -Eq "runtimes\.[\"']?runsc[\"']?\]"; }
+    # Whether containerd's own parse of a config file (default: the live one)
+    # yields the runsc runtime. Not the file's text: AKS's hybrid config
+    # kept an appended old-style runsc section that this parse dropped, which
+    # is exactly the failure to catch. (It parses the file; it doesn't ask
+    # the running daemon, hence the restart before the final check.)
+    loaded() { containerd ${1:+--config "$1"} config dump 2>/dev/null | grep -Eq "runtimes\.[\"']?runsc[\"']?\]"; }
     if loaded; then
       echo "containerd already has the runsc runtime"
       exit 0
@@ -94,6 +98,11 @@ data:
     if ! containerd --config "$CONF.gvisor-new" config dump >/dev/null 2>&1; then
       echo "containerd rejects the edited config; node left unchanged:" >&2
       containerd --config "$CONF.gvisor-new" config dump 2>&1 >/dev/null | tail -3 >&2
+      rm -f "$CONF.gvisor-new"
+      exit 1
+    fi
+    if ! loaded "$CONF.gvisor-new"; then
+      echo "containerd would ignore the runsc section ($CRI); node left unchanged" >&2
       rm -f "$CONF.gvisor-new"
       exit 1
     fi

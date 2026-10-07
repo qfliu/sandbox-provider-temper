@@ -22,7 +22,7 @@ mkdir -p "$(dirname "$KEYFILE")"
 kexec() { kubectl -n sandbox-system exec deploy/sandbox-api -- /api "$@"; }
 save_key() { # save_key <output of create-user/create-key>
 	local key
-	key=$(grep -o 'sk_[A-Za-z0-9_-]*' <<<"$1" | head -1)
+	key=$(grep -o 'sk_[A-Za-z0-9_-]*' <<<"$1" | head -1) || true # set -e would exit silently
 	[ -n "$key" ] || { echo "no key in: $1" >&2; exit 1; }
 	(umask 077 && printf '%s\n' "$key" >"$KEYFILE")
 }
@@ -34,7 +34,7 @@ elif ! grep -q "already exists" <<<"$out"; then
 	echo "$out" >&2
 	exit 1
 elif [ ! -s "$KEYFILE" ]; then
-	save_key "$(kexec create-key --user load-test --name load 2>&1)"
+	save_key "$(kexec create-key --user load-test --name load 2>&1 || true)"
 fi
 # Quota = N so the test measures the cluster, not the per-user limit; put
 # back afterwards (Phase 5 batch review).
@@ -55,7 +55,7 @@ for _ in $(seq 1 40); do curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/healt
 # The key goes to curl in a header file, never on its command line.
 (umask 077 && { printf 'Authorization: Bearer '; tr -d '\n' <"$KEYFILE"; echo; } >"$TMP/auth")
 if [ "$(curl -s -o /dev/null -w '%{http_code}' -H @"$TMP/auth" "http://127.0.0.1:$PORT/v1/me")" != 200 ]; then
-	save_key "$(kexec create-key --user load-test --name load 2>&1)"
+	save_key "$(kexec create-key --user load-test --name load 2>&1 || true)"
 fi
 
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/code/scripts/loadtest.py" --api "http://127.0.0.1:$PORT/v1" --key-file "$KEYFILE" --pubkey-file "$TMP/k.pub" \

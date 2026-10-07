@@ -89,6 +89,8 @@ networkPolicies:
     - 100.64.0.0/10     # carrier-grade NAT (some cloud VPCs)
     - 169.254.0.0/16    # link-local, incl. cloud metadata 169.254.169.254
     - 127.0.0.0/8       # loopback
-  # More addresses sandboxes may not reach. The Kubernetes API server's
-  # public address, if it has one, is added automatically.
+  # More addresses sandboxes may not reach. If the `kubernetes` Service
+  # forwards to a public address (AKS), it's added automatically at install
+  # or upgrade; other public API endpoints (e.g. a managed cluster's API
+  # FQDN that resolves elsewhere) belong here.
   extraBlockedRanges: []

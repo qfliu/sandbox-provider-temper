@@ -39,9 +39,9 @@ spec:
 # Egress: DNS (cluster DNS only) and the public internet. Private and
 # link-local ranges are excluded, which covers the pod and service networks,
 # the nodes, a cloud VPC, and the metadata endpoint, without knowing each
-# cluster's exact CIDRs. A managed cluster's Kubernetes API often has a
-# PUBLIC address (AKS, EKS): the `kubernetes` Service forwards there, so
-# that address is excluded too (found on AKS, step 7.5).
+# cluster's exact CIDRs. On AKS the Kubernetes API has a PUBLIC address the
+# `kubernetes` Service forwards to, so that address is excluded too (found
+# on AKS, step 7.5; see sp.publicAPIServer).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
