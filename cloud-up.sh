@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Deploys the sandbox provider to Azure (Phase 7, D54): an AKS cluster with
 # 2 arm64 nodes and a container registry (Terraform), gVisor on the nodes,
-# the platform images, the Helm chart with a public SSH gateway, and an
-# admin API key. Re-run to update; ./cloud-down.sh deletes everything.
+# the platform images, the Helm chart with a public SSH gateway and a public
+# HTTPS address for the API and dashboard (Let's Encrypt certificate on an
+# Azure DNS name), and an admin API key. Re-run to update (e.g. to change
+# the allowlist); ./cloud-down.sh deletes everything. TESTING.md is the
+# guide for the people who then test it.
 #
 # Costs money while it exists (about $0.20/hour: 2 small VMs, a disk, a
 # public IP; the AKS control plane is free). Needs: an Azure subscription
@@ -11,7 +14,14 @@
 #
 # Usage: ./cloud-up.sh        then: source ./env.sh aks && ./demo.sh
 # Settings (environment): AZURE_LOCATION (westus2), AZURE_NAME
-# (sandbox-provider), AZURE_NODE_SIZE (Standard_D2ps_v5), AZURE_NODES (2).
+# (sandbox-provider), AZURE_NODE_SIZE (Standard_D2ps_v5), AZURE_NODES (2);
+# ALLOWED_CIDRS: comma-separated CIDRs (e.g. testers' office ranges) that
+# alone may use the HTTPS API and the SSH gateway, your own IP always added;
+# unset or empty: open to anyone, who still needs an API key / sandbox key.
+# ACME_EMAIL: optional, for Let's Encrypt notices. AZURE_DNS_LABEL: the
+# name's first part (default sandbox-<8 hex of the subscription>, stable);
+# Let's Encrypt issues at most 5 certificates a week for one name and every
+# cloud-up after a cloud-down needs a new one, so past that use another.
 set -euo pipefail
 cd "$(dirname "$0")"
 START=$(date +%s)
@@ -148,8 +158,19 @@ done
 unset TOKEN
 
 echo "==> helm upgrade --install sandbox"
+# The public HTTPS address: an Azure DNS name on the API's load balancer,
+# <label>.<region>.cloudapp.azure.com, stable for this subscription.
+LABEL=${AZURE_DNS_LABEL:-sandbox-$(printf %s "$SUB" | shasum | cut -c1-8)}
+HOST="$LABEL.$LOCATION.cloudapp.azure.com"
 HELM=(helm upgrade --install sandbox code/deploy/helm -n "$NS" --create-namespace -f code/deploy/cloud/values-aks.yaml
-	--set "image.repository=$ACR/sandbox/api" --set "image.tag=$TAG" --set "sandboxImages.repository=$ACR/sandbox/")
+	--set "image.repository=$ACR/sandbox/api" --set "image.tag=$TAG" --set "sandboxImages.repository=$ACR/sandbox/"
+	--set "publicApi.host=$HOST" --set-string "publicApi.service.annotations.service\.beta\.kubernetes\.io/azure-dns-label-name=$LABEL")
+[ -z "${ACME_EMAIL:-}" ] || HELM+=(--set "publicApi.acmeEmail=$ACME_EMAIL")
+ALLOWED=""
+if [ -n "${ALLOWED_CIDRS:-}" ]; then
+	ALLOWED="$MYIP/32,${ALLOWED_CIDRS// /}"
+	HELM+=(--set "publicApi.allowedSourceRanges={$ALLOWED}" --set "gateway.service.loadBalancerSourceRanges={$ALLOWED}")
+fi
 GW=$(kubectl -n "$NS" get svc sandbox-gateway-nodeport -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
 "${HELM[@]}" ${GW:+--set "api.sshGatewayAddr=$GW:22"} --timeout 15m >/dev/null
 if [ -z "$GW" ]; then
@@ -163,7 +184,7 @@ if [ -z "$GW" ]; then
 	[ -n "$GW" ] || { echo "the gateway's load balancer got no IP" >&2; exit 1; }
 	"${HELM[@]}" --set "api.sshGatewayAddr=$GW:22" --timeout 15m >/dev/null
 fi
-for r in statefulset/postgres deployment/sandbox-api deployment/sandbox-gateway daemonset/sandbox-image-prepull; do
+for r in statefulset/postgres deployment/sandbox-api deployment/sandbox-gateway daemonset/sandbox-image-prepull deployment/public-api; do
 	kubectl -n "$NS" rollout status "$r" --timeout=10m >/dev/null
 done
 
@@ -172,13 +193,46 @@ echo "==> admin API key"
 source code/scripts/admin-key.sh
 ensure_admin_key "$SANDBOX_KEYFILE" cloud-up.sh
 
+echo "==> https://$HOST (waiting for DNS and the Let's Encrypt certificate)"
+# Caddy asks for the certificate as soon as it starts, which can be before
+# Azure publishes the DNS name; its retries then back off for minutes. So:
+# wait for the name to resolve, restart Caddy once if the certificate isn't
+# there yet (an immediate retry; the certificate volume keeps any it has),
+# then wait. curl checks the certificate, so success means a trusted one.
+https_code() { curl -s -m 5 -o /dev/null -w '%{http_code}' "https://$HOST/healthz" 2>/dev/null || true; }
+for _ in $(seq 1 60); do
+	dig +short "$HOST" 2>/dev/null | grep -q '^[0-9]' && break
+	sleep 5
+done
+if [ "$(https_code)" != 200 ] && [ "$(https_code)" != 403 ]; then
+	kubectl -n "$NS" rollout restart deploy/public-api >/dev/null
+	kubectl -n "$NS" rollout status deploy/public-api --timeout=5m >/dev/null
+fi
+CODE=""
+for _ in $(seq 1 120); do
+	CODE=$(https_code)
+	case "$CODE" in 200 | 403) break ;; esac
+	sleep 5
+done
+case "$CODE" in
+200) ;;
+403) echo "    the certificate is valid; this Mac's IP as Azure sees it isn't on the allowlist (add it to ALLOWED_CIDRS)" ;;
+*)
+	echo "https://$HOST has no valid certificate after 10 minutes. Re-running ./cloud-up.sh continues from here." >&2
+	echo "Caddy's log: kubectl -n $NS logs deploy/public-api. If Let's Encrypt says too many certificates for this" >&2
+	echo "name this week, set AZURE_DNS_LABEL=sandbox-<something new> and re-run." >&2
+	exit 1
+	;;
+esac
+
 cat <<MSG
 
 Sandbox provider is up on AKS ($(( $(date +%s) - START )) s): cluster $CLUSTER in $LOCATION.
-  Use it:      source ./env.sh aks    (kubectl, demo.sh and the test scripts then target AKS)
-  Walkthrough: ./demo.sh
+  API:         https://$HOST/v1     Dashboard: https://$HOST/ui
   SSH:         ssh <sandbox-id>@$GW
-  Dashboard:   kubectl -n $NS port-forward svc/sandbox-api 18080:80, then http://localhost:18080/ui
-               (key in $SANDBOX_KEYFILE)
+  Allowed:     ${ALLOWED:-anyone with a key (set ALLOWED_CIDRS and re-run to restrict)}
+  Your key:    $SANDBOX_KEYFILE
+  Testers:     ./code/scripts/add-tester.sh <name>, then send them TESTING.md, the URL and their key
+  Use it here: source ./env.sh aks    (kubectl, demo.sh and the test scripts then target AKS)
   Costs about \$0.20/hour while it exists. Remove it all: ./cloud-down.sh
 MSG

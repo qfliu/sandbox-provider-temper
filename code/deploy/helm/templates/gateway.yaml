@@ -108,6 +108,9 @@ spec:
   {{- end }}
   type: {{ .Values.gateway.service.type }}
   externalTrafficPolicy: Local
+  {{- with .Values.gateway.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges: {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector: {app: sandbox-gateway}
   ports:
   - name: ssh

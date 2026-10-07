@@ -9,3 +9,9 @@ gateway:
     port: 22
 postgres:
   storageClassName: managed-csi   # Azure Disk; AKS's default class
+# The API and dashboard on https://<label>.<region>.cloudapp.azure.com
+# (cloud-up.sh sets the host and the Azure DNS label annotation).
+publicApi:
+  enabled: true
+  tls: acme
+  storageClassName: managed-csi
