@@ -13,6 +13,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 : "${KUBECONFIG:?source ./env.sh first}"
 NS=sandbox-system
+# The local cluster only: in a shell switched to AKS (source ./env.sh aks),
+# this install would replace the cloud release with local settings. The
+# cloud is updated with ./cloud-up.sh.
+CTX=$(kubectl config current-context 2>/dev/null || true)
+if [ "${SANDBOX_TARGET:-local}" != local ] || [ "$CTX" != "${MINIKUBE_PROFILE:-minikube}" ]; then
+	echo "deploy.sh deploys to the local minikube cluster, but kubectl points at '$CTX'." >&2
+	echo "Run: source ./env.sh local   (for the Azure cluster use ./cloud-up.sh)" >&2
+	exit 1
+fi
 mkdir -p "$ROOT/.devenv/state/tmp"
 # <commit>[-dirty]-<time>: "-dirty" flags builds with uncommitted changes, so
 # the commit in the tag never misdescribes what's running.

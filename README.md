@@ -14,7 +14,7 @@ idle for 30 minutes, or when its lifetime runs out.
 - **Helm chart** for any cluster with gVisor; scripts for a laptop.
 
 Design decisions and the reasons for them are logged in [DESIGN.md](DESIGN.md)
-(D1–D57); [WRITEUP.md](WRITEUP.md) covers the trade-offs and what comes next.
+(D1–D58); [WRITEUP.md](WRITEUP.md) covers the trade-offs and what comes next.
 
 ## Quickstart (macOS)
 
@@ -241,10 +241,16 @@ and the test scripts between the two clusters.
 ### Letting testers in
 
 1. **Optionally limit who can connect:**
-   `ALLOWED_CIDRS="203.0.113.0/24,198.51.100.7/32" ./cloud-up.sh` (re-running
-   updates it). Only those ranges, plus your own IP, can then reach the HTTPS
-   API, the dashboard and the SSH gateway; others get 403 or no connection.
-   Without it, anyone can connect but still needs a key.
+   `ALLOWED_CIDRS="203.0.113.0/24,198.51.100.7/32" ./cloud-up.sh`. Only those
+   ranges, plus your own IP, can then reach the HTTPS API, the dashboard and
+   the SSH gateway; others get 403 (HTTPS) or no connection (SSH). Without
+   it, anyone can connect but still needs a key.
+   - **To change it during a session:**
+     `ALLOWED_CIDRS="..." ./cloud-up.sh --allowlist-only` (`none` opens it
+     up). Nothing is rebuilt and testers' sessions keep running.
+   - **Settings are remembered:** a plain re-run of `./cloud-up.sh` (which
+     redeploys the code and ends SSH sessions) keeps the last allowlist,
+     region and size, and refuses changing region, name or node size/count on a running cluster.
 2. **Give each tester their own key:**
    `source ./env.sh aks && ./code/scripts/add-tester.sh alice`. That writes
    the key to `.devenv/state/aks/testers/alice.key` (it isn't printed). Send
@@ -252,12 +258,15 @@ and the test scripts between the two clusters.
    file.
 3. **Send them [TESTING.md](TESTING.md)** with the HTTPS address and the SSH
    gateway address (both printed by `cloud-up.sh`). For a checked first SSH
-   connection, also send the gateway's `known_hosts` line from
-   `kubectl -n sandbox-system exec deploy/sandbox-gateway -- /api public-key /keys/host/ssh_host_ed25519_key`.
+   connection, also send the gateway's `known_hosts` line (in an `aks` shell;
+   GATEWAY_IP is the SSH address):
+   `echo "GATEWAY_IP $(kubectl -n sandbox-system exec deploy/sandbox-gateway -- /api public-key /keys/host/ssh_host_ed25519_key | cut -d' ' -f1,2)"`.
 4. **Watch:** the admin dashboard (`/ui/admin`, with your key) shows every
    user and sandbox.
-5. **End someone's access:** `./code/scripts/add-tester.sh --revoke alice`
-   (revokes their keys, quota 0). Adding the same name again gives them a
+5. **End someone's access:**
+   `source ./env.sh aks && ./code/scripts/add-tester.sh --revoke alice`
+   (revokes their keys, quota 0; the script prints which cluster it acted
+   on). Adding the same name again gives them a
    new key and their quota back. Then `./cloud-down.sh` when the session is
    over: it all costs about $0.20/hour while it runs.
 
@@ -306,7 +315,8 @@ and TLS, or turn on the chart's Caddy front: `publicApi.enabled=true`,
 
 - **Laptop**: `./down.sh --delete` deletes the VM and all data;
   `./down.sh --purge` also removes `./.devenv`, which leaves the clone as
-  cloned.
+  cloned. It refuses while an Azure cluster from `cloud-up.sh` still
+  exists, since its login and state live there: run `./cloud-down.sh` first.
 - **Azure**: `./cloud-down.sh` deletes the resource group, cluster and
   registry, and fails if anything billable is left.
 - **Any cluster**: `helm uninstall sandbox -n sandbox-system` deletes every

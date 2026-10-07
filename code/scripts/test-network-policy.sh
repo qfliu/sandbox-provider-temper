@@ -15,6 +15,8 @@ PORT="${NETPOL_PORT:-18095}"
 API="http://127.0.0.1:$PORT/v1"
 KEY="$(cat "${SANDBOX_KEYFILE:-$ROOT/.devenv/state/admin-api-key}")"
 TMP="$(mktemp -d "$ROOT/.devenv/state/tmp/netpol.XXXXXX")"
+# The key goes to curl in a header file, never on its command line (ps).
+(umask 077 && printf 'Authorization: Bearer %s\n' "$KEY" >"$TMP/auth")
 PASSED=0 FAILED=0 SANDBOXES=()
 
 pass() { PASSED=$((PASSED + 1)); printf "  \033[32mPASS\033[0m  %s\n" "$1"; }
@@ -22,7 +24,7 @@ fail() { FAILED=$((FAILED + 1)); printf "  \033[31mFAIL\033[0m  %s  (%s)\n" "$1"
 
 cleanup() {
 	for id in ${SANDBOXES[@]+"${SANDBOXES[@]}"}; do
-		curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $KEY" "$API/sandboxes/$id" || true
+		curl -s -o /dev/null -X DELETE -H @"$TMP/auth" "$API/sandboxes/$id" || true
 	done
 	kubectl -n default delete pod netpol-outsider --ignore-not-found --wait=false >/dev/null 2>&1
 	[ -n "${PF:-}" ] && { kill "$PF"; wait "$PF"; } 2>/dev/null
@@ -36,7 +38,7 @@ for _ in $(seq 1 40); do curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/healt
 
 new_sandbox() {
 	ssh-keygen -q -t ed25519 -N "" -f "$TMP/k$1" 2>/dev/null
-	curl -s -H "Authorization: Bearer $KEY" -X POST "$API/sandboxes" \
+	curl -s -H @"$TMP/auth" -X POST "$API/sandboxes" \
 		-d "{\"image\":\"ubuntu-base\",\"ssh_public_key\":\"$(cat "$TMP/k$1.pub")\"}" |
 		python3 -c "import json,sys; print(json.load(sys.stdin)['id'])"
 }
@@ -47,7 +49,7 @@ SANDBOXES=("$A" "$B")
 kubectl -n sandboxes wait --for=condition=Ready pod/"$A" pod/"$B" --timeout=90s >/dev/null || { echo "sandboxes not ready"; exit 1; }
 s=""
 for _ in $(seq 1 30); do # the API also needs to see them running
-	s=$(curl -s -H "Authorization: Bearer $KEY" "$API/sandboxes/$A" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
+	s=$(curl -s -H @"$TMP/auth" "$API/sandboxes/$A" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
 	[ "$s" = running ] && break; sleep 1
 done
 [ "$s" = running ] || { echo "sandbox $A not running in the API (status: $s)"; exit 1; }
@@ -58,7 +60,7 @@ printf "sandboxes %s (tests run inside it) and %s (%s); node %s\n" "$A" "$B" "$B
 # in_a <command>: run in sandbox A via the API; prints "<exit_code>|<stdout>"
 # (just "|" if the exec call itself failed)
 in_a() {
-	curl -s -H "Authorization: Bearer $KEY" -X POST "$API/sandboxes/$A/exec" \
+	curl -s -H @"$TMP/auth" -X POST "$API/sandboxes/$A/exec" \
 		-d "$(python3 -c 'import json,sys; print(json.dumps({"command": sys.argv[1], "timeout_seconds": 20}))' "$1")" |
 		python3 -c "import json,sys
 try: d=json.load(sys.stdin); print(str(d['exit_code'])+'|'+d['stdout'].strip())
@@ -88,7 +90,21 @@ blocked "Kubernetes API"        kubernetes.default 443
 blocked "another sandbox's sshd" "$B_IP" 22
 blocked "node (kubelet)"        "$NODE_IP" 10250
 blocked "node (API server)"     "$NODE_IP" 8443
-blocked "gateway NodePort"      "$NODE_IP" 30022 # step 3.6; a sandbox must not loop back in
+# The gateway's external Service, on whichever NodePort it has (30022 on
+# minikube; a random one behind a cloud load balancer). A sandbox must not
+# loop back in (step 3.6).
+GW_NODEPORT=$(kubectl -n sandbox-system get svc sandbox-gateway-nodeport -o jsonpath='{.spec.ports[0].nodePort}')
+blocked "gateway NodePort"      "$NODE_IP" "${GW_NODEPORT:-30022}"
+# Cloud installs (step 7): the public load balancers and the HTTPS proxy pod.
+# kube-proxy rewrites a load balancer's IP to the pod behind it, which the
+# private-range rule blocks, so these must not connect either.
+for svc in sandbox-gateway-nodeport public-api; do
+	lb=$(kubectl -n sandbox-system get svc "$svc" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+	port=$(kubectl -n sandbox-system get svc "$svc" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
+	[ -n "$lb" ] && blocked "$svc load balancer" "$lb" "$port"
+done
+PROXY_IP=$(kubectl -n sandbox-system get pod -l app=public-api -o jsonpath='{.items[0].status.podIP}' 2>/dev/null || true)
+[ -n "$PROXY_IP" ] && blocked "public HTTPS proxy pod" "$PROXY_IP" 8443
 blocked "cloud metadata"        169.254.169.254 80
 
 printf "\ninto a sandbox\n"

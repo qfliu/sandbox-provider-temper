@@ -3,21 +3,29 @@
 # 2 arm64 nodes and a container registry (Terraform), gVisor on the nodes,
 # the platform images, the Helm chart with a public SSH gateway and a public
 # HTTPS address for the API and dashboard (Let's Encrypt certificate on an
-# Azure DNS name), and an admin API key. Re-run to update (e.g. to change
-# the allowlist); ./cloud-down.sh deletes everything. TESTING.md is the
-# guide for the people who then test it.
+# Azure DNS name), and an admin API key. Re-run to deploy new code (this
+# restarts the API and gateway, ending SSH sessions); change only who may
+# connect with --allowlist-only. ./cloud-down.sh deletes everything.
+# TESTING.md is the guide for the people who then test it.
 #
 # Costs money while it exists (about $0.20/hour: 2 small VMs, a disk, a
 # public IP; the AKS control plane is free). Needs: an Azure subscription
 # and `source ./env.sh && az login` once, and the local cluster (./up.sh),
 # which builds the arm64 images that are pushed to the registry.
 #
-# Usage: ./cloud-up.sh        then: source ./env.sh aks && ./demo.sh
+# Usage: ./cloud-up.sh                    then: source ./env.sh aks && ./demo.sh
+#        ALLOWED_CIDRS=... ./cloud-up.sh --allowlist-only
+#                                        only changes who may connect: no
+#                                        image build or rollout, so testers'
+#                                        sessions keep running
 # Settings (environment): AZURE_LOCATION (westus2), AZURE_NAME
 # (sandbox-provider), AZURE_NODE_SIZE (Standard_D2ps_v5), AZURE_NODES (2);
 # ALLOWED_CIDRS: comma-separated CIDRs (e.g. testers' office ranges) that
 # alone may use the HTTPS API and the SSH gateway, your own IP always added;
-# unset or empty: open to anyone, who still needs an API key / sandbox key.
+# empty or "none": open to anyone, who still needs an API key / sandbox key.
+# Settings are remembered (.devenv/state/aks/settings): a re-run without
+# them keeps the last values, and changing one that would replace an
+# existing cluster (region, name, node size or count) is refused.
 # ACME_EMAIL: optional, for Let's Encrypt notices. AZURE_DNS_LABEL: the
 # name's first part (default sandbox-<8 hex of the subscription>, stable);
 # Let's Encrypt issues at most 5 certificates a week for one name and every
@@ -25,16 +33,53 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 START=$(date +%s)
-LOCATION=${AZURE_LOCATION:-westus2}
-NAME=${AZURE_NAME:-sandbox-provider}
-NODE_SIZE=${AZURE_NODE_SIZE:-Standard_D2ps_v5}
-NODES=${AZURE_NODES:-2}
 NS=sandbox-system
+MODE=full
+case "${1:-}" in
+"") ;;
+--allowlist-only) MODE=allowlist ;;
+*) echo "usage: ./cloud-up.sh [--allowlist-only]" >&2; exit 2 ;;
+esac
 
 [ -x .devenv/tools/bin/terraform ] && [ -x .devenv/tools/bin/az ] || ./code/scripts/bootstrap-cloud-tools.sh
 # shellcheck source=env.sh
 source ./env.sh aks
 mkdir -p "$(dirname "$KUBECONFIG")" "$(dirname "$SANDBOX_KEYFILE")" .devenv/state/terraform
+# Terraform's state holds the cluster's admin credentials; keys live here.
+chmod 700 .devenv/state/terraform "$(dirname "$SANDBOX_KEYFILE")"
+
+# Remembered settings. EXISTS: a cluster from an earlier run is still up.
+SETTINGS=.devenv/state/aks/settings
+saved() { [ -f "$SETTINGS" ] && sed -n "s/^$1=//p" "$SETTINGS" | tail -1 || true; }
+EXISTS=""
+grep -q '"azurerm_kubernetes_cluster"' .devenv/state/terraform/aks.tfstate 2>/dev/null && EXISTS=yes
+# setting <key> <env var> <default> <why>: the variable if set, else the
+# remembered value, else the default. With a cluster up, a different value is
+# refused, for <why>.
+setting() {
+	local key=$1 var=$2 def=$3 why=$4 env=${!2:-} old
+	old=$(saved "$key")
+	if [ -n "$EXISTS" ] && [ -n "$env" ] && [ -n "$old" ] && [ "$env" != "$old" ]; then
+		echo "$var=$env, but the running cluster has $old: $why." >&2
+		echo "Run ./cloud-down.sh first, or leave $var unset." >&2
+		return 1
+	fi
+	printf '%s' "${env:-${old:-$def}}"
+}
+REPLACE="changing it would make Terraform replace the cluster and delete its data"
+RESIZE="cloud-up.sh doesn't resize a running cluster (its quota check only runs before the first apply)"
+LOCATION=$(setting LOCATION AZURE_LOCATION westus2 "$REPLACE")
+NAME=$(setting NAME AZURE_NAME sandbox-provider "$REPLACE")
+NODE_SIZE=$(setting NODE_SIZE AZURE_NODE_SIZE Standard_D2ps_v5 "$RESIZE")
+NODES=$(setting NODES AZURE_NODES 2 "$RESIZE")
+# Who may connect: as given (empty or "none": anyone), else as last time.
+if [ "${ALLOWED_CIDRS+set}" = set ]; then CIDRS=$ALLOWED_CIDRS; else CIDRS=$(saved ALLOWED_CIDRS); fi
+[ "$CIDRS" != none ] || CIDRS=""
+ACME_EMAIL=${ACME_EMAIL:-$(saved ACME_EMAIL)}
+save_settings() {
+	(umask 077 && printf 'LOCATION=%s\nNAME=%s\nNODE_SIZE=%s\nNODES=%s\nALLOWED_CIDRS=%s\nLABEL=%s\nACME_EMAIL=%s\n' \
+		"$LOCATION" "$NAME" "$NODE_SIZE" "$NODES" "$CIDRS" "$LABEL" "$ACME_EMAIL" >"$SETTINGS")
+}
 # minikube (the local cluster that builds the images) with its own
 # kubeconfig: with KUBECONFIG on AKS, `minikube status` reports
 # "Misconfigured" and fails.
@@ -50,9 +95,26 @@ echo "==> checks"
 az account show >/dev/null 2>&1 ||
 	{ echo "not logged in to Azure: run  source ./env.sh && az login  in your Terminal" >&2; exit 1; }
 SUB=$(az account show --query id -o tsv)
+MYIP=$(curl -fsS https://api.ipify.org)
+LABEL=${AZURE_DNS_LABEL:-$(saved LABEL)}
+LABEL=${LABEL:-sandbox-$(printf %s "$SUB" | shasum | cut -c1-8)}
+ALLOWED=""
+[ -z "$CIDRS" ] || ALLOWED="$MYIP/32,${CIDRS// /}"
+
+if [ "$MODE" = allowlist ]; then
+	# Only the allowlists change: the proxy reloads its config and Azure
+	# updates the gateway load balancer's rules; nothing else restarts.
+	[ -n "$EXISTS" ] || { echo "no cluster from ./cloud-up.sh is running; run ./cloud-up.sh first" >&2; exit 1; }
+	echo "==> allowlist: ${ALLOWED:-anyone}"
+	helm upgrade sandbox code/deploy/helm -n "$NS" --reset-then-reuse-values --timeout 10m \
+		--set "publicApi.allowedSourceRanges={$ALLOWED}" --set "gateway.service.loadBalancerSourceRanges={$ALLOWED}" >/dev/null
+	kubectl -n "$NS" rollout status deploy/public-api --timeout=5m >/dev/null
+	save_settings
+	echo "    done (API and SSH gateway sessions were not restarted)"
+	exit 0
+fi
 mk status >/dev/null 2>&1 ||
 	{ echo "the local cluster isn't running (it builds the images): run ./up.sh first" >&2; exit 1; }
-MYIP=$(curl -fsS https://api.ipify.org)
 echo "    subscription $SUB, region $LOCATION, Kubernetes API open to $MYIP only"
 # A new subscription has none of these enabled, and until Compute is, the
 # size and quota lists below come back empty. Registering is free.
@@ -160,17 +222,12 @@ unset TOKEN
 echo "==> helm upgrade --install sandbox"
 # The public HTTPS address: an Azure DNS name on the API's load balancer,
 # <label>.<region>.cloudapp.azure.com, stable for this subscription.
-LABEL=${AZURE_DNS_LABEL:-sandbox-$(printf %s "$SUB" | shasum | cut -c1-8)}
 HOST="$LABEL.$LOCATION.cloudapp.azure.com"
 HELM=(helm upgrade --install sandbox code/deploy/helm -n "$NS" --create-namespace -f code/deploy/cloud/values-aks.yaml
 	--set "image.repository=$ACR/sandbox/api" --set "image.tag=$TAG" --set "sandboxImages.repository=$ACR/sandbox/"
 	--set "publicApi.host=$HOST" --set-string "publicApi.service.annotations.service\.beta\.kubernetes\.io/azure-dns-label-name=$LABEL")
 [ -z "${ACME_EMAIL:-}" ] || HELM+=(--set "publicApi.acmeEmail=$ACME_EMAIL")
-ALLOWED=""
-if [ -n "${ALLOWED_CIDRS:-}" ]; then
-	ALLOWED="$MYIP/32,${ALLOWED_CIDRS// /}"
-	HELM+=(--set "publicApi.allowedSourceRanges={$ALLOWED}" --set "gateway.service.loadBalancerSourceRanges={$ALLOWED}")
-fi
+HELM+=(--set "publicApi.allowedSourceRanges={$ALLOWED}" --set "gateway.service.loadBalancerSourceRanges={$ALLOWED}")
 GW=$(kubectl -n "$NS" get svc sandbox-gateway-nodeport -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
 "${HELM[@]}" ${GW:+--set "api.sshGatewayAddr=$GW:22"} --timeout 15m >/dev/null
 if [ -z "$GW" ]; then
@@ -188,6 +245,7 @@ for r in statefulset/postgres deployment/sandbox-api deployment/sandbox-gateway 
 	kubectl -n "$NS" rollout status "$r" --timeout=10m >/dev/null
 done
 
+save_settings
 echo "==> admin API key"
 # shellcheck source=code/scripts/admin-key.sh
 source code/scripts/admin-key.sh
@@ -230,7 +288,7 @@ cat <<MSG
 Sandbox provider is up on AKS ($(( $(date +%s) - START )) s): cluster $CLUSTER in $LOCATION.
   API:         https://$HOST/v1     Dashboard: https://$HOST/ui
   SSH:         ssh <sandbox-id>@$GW
-  Allowed:     ${ALLOWED:-anyone with a key (set ALLOWED_CIDRS and re-run to restrict)}
+  Allowed:     ${ALLOWED:-anyone with a key (restrict: ALLOWED_CIDRS=... ./cloud-up.sh --allowlist-only)}
   Your key:    $SANDBOX_KEYFILE
   Testers:     ./code/scripts/add-tester.sh <name>, then send them TESTING.md, the URL and their key
   Use it here: source ./env.sh aks    (kubectl, demo.sh and the test scripts then target AKS)

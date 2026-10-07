@@ -13,6 +13,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 : "${KUBECONFIG:?source ./env.sh (or ./env.sh aks) first}"
 psql_su() { kubectl -n sandbox-system exec -i postgres-0 -- psql -tA -q -v ON_ERROR_STOP=1 -U sandbox -d sandbox; }
+echo "cluster: ${SANDBOX_TARGET:-local} (kubectl context $(kubectl config current-context 2>/dev/null))"
 
 if [ "${1:-}" = --revoke ]; then
 	NAME=${2:?usage: add-tester.sh --revoke <name>}

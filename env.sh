@@ -11,11 +11,17 @@ _SB_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
 _SB_TOOLS="$_SB_ROOT/.devenv/tools"
 _SB_STATE="$_SB_ROOT/.devenv/state"
 
-_SB_OLD_PATH="$PATH"
-_SB_OLD_PS1="${PS1:-}"
-_SB_OLD_TMPDIR="${TMPDIR:-}"
+# The shell's own PATH/prompt/TMPDIR, saved the first time only, so that
+# switching clusters (source ./env.sh aks, then local) doesn't stack prompts
+# and deactivate_sandbox_env still restores the original.
+if [ -z "${_SB_ACTIVE:-}" ]; then
+  _SB_OLD_PATH="$PATH"
+  _SB_OLD_PS1="${PS1:-}"
+  _SB_OLD_TMPDIR="${TMPDIR:-}"
+  _SB_ACTIVE=1
+fi
 
-export PATH="$_SB_TOOLS/bin:$_SB_TOOLS/go/bin:$_SB_STATE/gopath/bin:$PATH"
+export PATH="$_SB_TOOLS/bin:$_SB_TOOLS/go/bin:$_SB_STATE/gopath/bin:$_SB_OLD_PATH"
 
 # Go
 export GOROOT="$_SB_TOOLS/go"
@@ -77,5 +83,6 @@ deactivate_sandbox_env() {
         HELM_CONFIG_HOME HELM_CACHE_HOME HELM_DATA_HOME \
         AZURE_CONFIG_DIR AZURE_CORE_COLLECT_TELEMETRY TF_PLUGIN_CACHE_DIR TF_DATA_DIR CHECKPOINT_DISABLE \
         SANDBOX_TARGET SANDBOX_KEYFILE
+  unset _SB_ACTIVE _SB_OLD_PATH _SB_OLD_PS1 _SB_OLD_TMPDIR
   unset -f deactivate_sandbox_env
 }
