@@ -2,7 +2,8 @@
 # Concurrent sandbox startup load test (step 5.5, D48): creates N sandboxes
 # at once and reports p50/p95 time to "running" and to a first exec, then
 # deletes them. Uses a dedicated user "load-test" whose quota is raised to N
-# (its key is cached in .devenv/state/load-test-key). Results go to
+# (its key is cached per cluster, next to that cluster's admin key: e.g.
+# .devenv/state/load-test-key, or .devenv/state/aks/). Results go to
 # .devenv/state/tmp/load-<N>-<time>.csv.
 #
 # Usage (from the project root, with the API deployed):
@@ -14,15 +15,26 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 N="${1:-10}"
 IMAGE="${2:-ubuntu-base}"
 PORT="${LOAD_PORT:-18094}"
-KEYFILE="$ROOT/.devenv/state/load-test-key"
+# One key per cluster: the local and the AKS databases have different users.
+KEYFILE="$(dirname "${SANDBOX_KEYFILE:-$ROOT/.devenv/state/admin-api-key}")/load-test-key"
+mkdir -p "$(dirname "$KEYFILE")"
 
 kexec() { kubectl -n sandbox-system exec deploy/sandbox-api -- /api "$@"; }
-# (Re-)issue the load-test user's key if missing; a stale one is caught
-# below once the API is reachable.
-if [ ! -s "$KEYFILE" ]; then
-	out=$(kexec create-user --name load-test 2>&1) ||
-		out=$(kexec create-key --user load-test --name load 2>&1) || { echo "$out" >&2; exit 1; }
-	(umask 077 && printf '%s\n' "$out" | tail -1 >"$KEYFILE")
+save_key() { # save_key <output of create-user/create-key>
+	local key
+	key=$(grep -o 'sk_[A-Za-z0-9_-]*' <<<"$1" | head -1) || true # set -e would exit silently
+	[ -n "$key" ] || { echo "no key in: $1" >&2; exit 1; }
+	(umask 077 && printf '%s\n' "$key" >"$KEYFILE")
+}
+# The user exists from here on (create-user fails harmlessly if it does);
+# a saved key that no longer works is replaced below once the API is up.
+if out=$(kexec create-user --name load-test 2>&1); then
+	save_key "$out"
+elif ! grep -q "already exists" <<<"$out"; then
+	echo "$out" >&2
+	exit 1
+elif [ ! -s "$KEYFILE" ]; then
+	save_key "$(kexec create-key --user load-test --name load 2>&1 || true)"
 fi
 # Quota = N so the test measures the cluster, not the per-user limit; put
 # back afterwards (Phase 5 batch review).
@@ -40,9 +52,10 @@ trap 'restore_quota; kill $PF 2>/dev/null; wait $PF 2>/dev/null || true; rm -rf 
 UP=""
 for _ in $(seq 1 40); do curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/healthz" && { UP=1; break; }; sleep 0.25; done
 [ -n "$UP" ] || { echo "API not reachable on 127.0.0.1:$PORT" >&2; exit 1; }
-if [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $(cat "$KEYFILE")" "http://127.0.0.1:$PORT/v1/me")" != 200 ]; then
-	out=$(kexec create-key --user load-test --name load 2>&1) || { echo "$out" >&2; exit 1; }
-	(umask 077 && printf '%s\n' "$out" | tail -1 >"$KEYFILE")
+# The key goes to curl in a header file, never on its command line.
+(umask 077 && { printf 'Authorization: Bearer '; tr -d '\n' <"$KEYFILE"; echo; } >"$TMP/auth")
+if [ "$(curl -s -o /dev/null -w '%{http_code}' -H @"$TMP/auth" "http://127.0.0.1:$PORT/v1/me")" != 200 ]; then
+	save_key "$(kexec create-key --user load-test --name load 2>&1 || true)"
 fi
 
 PYTHONDONTWRITEBYTECODE=1 python3 "$ROOT/code/scripts/loadtest.py" --api "http://127.0.0.1:$PORT/v1" --key-file "$KEYFILE" --pubkey-file "$TMP/k.pub" \

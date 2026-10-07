@@ -127,7 +127,7 @@ mk image build -t "$ACR/sandbox/api:$TAG" code >"$TMPDIR/cloud-build.log" 2>&1 |
 # on a command line on this Mac. Inside the VM it is in ctr's arguments
 # while a push runs (a single-user local VM). It lasts about 3 hours and is
 # good only for this registry.
-TOKEN=$(az acr login -n "$ACR_NAME" --expose-token --query accessToken -o tsv) ||
+TOKEN=$(az acr login -n "$ACR_NAME" --expose-token --query accessToken -o tsv --only-show-errors) ||
 	{ echo "couldn't get a token for the registry $ACR_NAME" >&2; exit 1; }
 push() { # push <local ref> <registry ref>
 	local out

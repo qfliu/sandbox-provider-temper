@@ -136,9 +136,10 @@ applies (D45).
   - each sandbox requests 1 GiB of ephemeral storage, not the full 5 GiB
     limit, which had capped the node at 6 sandboxes;
   - the images are pre-pulled on every node (a DaemonSet).
-- **What pre-pull is worth:** proven and measured (D51). Without it, the
-  first `ubuntu-dev` sandbox (218 MB) on a node waits about 5 s even for a
-  registry on the same machine, and longer from a real one. That matters most on new autoscaled
+- **What pre-pull is worth:** proven and measured (D51, D56). Without it,
+  the first `ubuntu-dev` sandbox (218 MB) on a node waits for the image:
+  about 5 s from a registry on the same machine, **7.6–9.3 s from Azure's
+  registry onto a fresh AKS node**. That matters most on new autoscaled
   nodes.
 - **Next steps:**
   - **Warm pool:** pods already running, assigned at create. That brings
@@ -177,17 +178,25 @@ applies (D45).
 
 ## Next steps
 
-1. **Run it in a cloud (D10, step 2).** Managed EKS or AKS, or k3s on VMs via
-   Terraform (still open in D10), with an arm64 (Graviton or Ampere) or
-   amd64 node pool:
-   - **gVisor:** install it through the node image or a privileged installer
-     DaemonSet.
-   - **Images:** push the platform and sandbox images to ECR/ACR (buildx for
-     multi-arch).
-   - **Install:** the same chart, with `gateway.service.type=LoadBalancer`
-     (NLB to keep client IPs) and the API behind an Ingress with TLS.
-   - **Then:** a real load test with the cluster autoscaler adding nodes, to
-     measure cold-node starts with and without pre-pull.
+1. **Cloud: done on Azure AKS (Phase 7, D54–D56).** `./cloud-up.sh` builds
+   it from nothing in about 10 minutes and `./cloud-down.sh` removes it; the
+   demo and every test suite pass there. Running it found three things the
+   laptop couldn't:
+   - **AKS's containerd config is a hybrid:** it declares `version = 2` but
+     uses containerd 2.x's section names, so gVisor's runtime, added under
+     the old names, was silently ignored ("no runtime for runsc"). The
+     installer now picks names by what the file uses and checks what
+     containerd actually loaded, rolling back otherwise.
+   - **The Kubernetes API has a public address on AKS.** The `kubernetes`
+     Service forwards there, and the "public internet" egress rule let
+     sandboxes open connections to it (no credentials, so requests were
+     refused, but it broke the isolation rule). The chart now blocks that
+     address automatically (as of each install or upgrade).
+   - **Capacity:** AKS's own system pods request a third of two small
+     nodes and the platform another 0.4 vCPU, so 7 sandboxes fit, not 10.
+   Still to do there: the API behind an Ingress with TLS (it's reached with
+   a port-forward today), more or larger nodes and the cluster autoscaler
+   for a real cold-node load test, and multi-arch images for amd64 nodes.
 2. **Managed Postgres** (RDS/Azure Database) as a chart option, with the
    db-setup Job pointed at it.
 3. **Warm pool**, through agent-sandbox or our own pod layer.

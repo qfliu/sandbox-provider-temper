@@ -14,7 +14,7 @@ idle for 30 minutes, or when its lifetime runs out.
 - **Helm chart** for any cluster with gVisor; scripts for a laptop.
 
 Design decisions and the reasons for them are logged in [DESIGN.md](DESIGN.md)
-(D1–D53); [WRITEUP.md](WRITEUP.md) covers the trade-offs and what comes next.
+(D1–D56); [WRITEUP.md](WRITEUP.md) covers the trade-offs and what comes next.
 
 ## Quickstart (macOS)
 
@@ -195,14 +195,53 @@ download time is a lower bound: from a real registry it is
 bandwidth-bound, which is why the images are pre-pulled on every node
 (D46, D51).
 
+On **Azure AKS** (2 × `Standard_D2ps_v5`, arm64, 2 vCPU / 8 GiB; images
+pre-pulled from the cluster's registry), D56:
+
+| What | Time |
+|---|---|
+| `./cloud-up.sh` from nothing (cluster, gVisor, images, install) / `./cloud-down.sh` | 581 s (633 s on the run before the fixes) / 378–394 s |
+| Pre-pull from the registry onto a fresh node: `ubuntu-dev` (218 MB) / `ubuntu-base` (145 MB) | **7.6–9.3 s** / 4.6–8.1 s |
+| One sandbox, create → `running` | 3.1 s (first exec 3.4 s) |
+| 10 at once → 7 running: `ubuntu-base` / `ubuntu-dev` | p50 3.7 s, p95 5.2 s / p50 3.8 s, p95 4.8 s |
+
+Only 7 of 10 fit: of the 3.8 allocatable vCPUs, AKS's own system pods
+request 1.26 and the platform 0.42, leaving 0.97 and 1.13 on the two nodes,
+room for 3 + 4 sandboxes at 250m each; the other 3 stay `pending` until
+room frees up. More or larger nodes (or the cluster autoscaler) raise that.
+
+## On Azure (AKS)
+
+Needs an Azure subscription (a free account works: its default quota of 4
+vCPUs per region fits exactly) and the local cluster from `./up.sh`, which
+builds the arm64 images.
+
+```bash
+./code/scripts/bootstrap-cloud-tools.sh      # Terraform + Azure CLI into ./.devenv (once)
+source ./env.sh && az login                  # once, in your own terminal
+./cloud-up.sh                                # ~10 minutes; costs about $0.20/hour while it exists
+source ./env.sh aks && ./demo.sh             # the same demo and test scripts, against AKS
+./cloud-down.sh                              # deletes everything and checks nothing is left
+```
+
+`cloud-up.sh` checks the login, the region's quota and that the node size
+is offered, creates the cluster and registry with Terraform (Kubernetes API
+open to your IP only), installs gVisor on the nodes
+(`code/deploy/cloud/gvisor-installer.yaml`), pushes the images, installs
+the chart with a public SSH gateway on port 22, and saves an admin key in
+`.devenv/state/aks/`. `source ./env.sh aks` / `source ./env.sh local`
+switch kubectl, `demo.sh` and the test scripts between the two clusters.
+
 ## Deploying to another cluster
 
 The chart in `code/deploy/helm` needs:
 
 - **gVisor and a `gvisor` RuntimeClass on every node.** The chart can't
   install node software. Add `runsc` and its containerd shim to the node
-  image (or a privileged installer DaemonSet), as
-  `code/scripts/install-gvisor.sh` does on minikube.
+  image, or use the installer DaemonSet in
+  `code/deploy/cloud/gvisor-installer.yaml` (used on AKS; it handles
+  containerd 1.x and 2.x config formats and rolls back a config containerd
+  won't load).
 - **A CNI that enforces NetworkPolicies.**
 - **The images in a registry the nodes can pull from.** That's the platform
   image (`code/Dockerfile`) and the two sandbox images
@@ -218,7 +257,12 @@ helm upgrade --install sandbox code/deploy/helm -n sandbox-system --create-names
 
 Values (`values.yaml`) also cover replicas, resources, sandbox TTL and idle
 limits, gateway connection limits, Postgres storage, and the egress ranges
-sandboxes may not reach. Passwords and keys are generated on first install
+sandboxes may not reach. If the `kubernetes` Service forwards to a public
+address (as on AKS), the chart blocks it for sandboxes automatically, as of
+the install or last upgrade (re-run the upgrade if the control plane's IP
+changes; `test-network-policy.sh` checks it). A public API endpoint that
+isn't behind that Service (possibly EKS) goes in
+`networkPolicies.extraBlockedRanges`. Passwords and keys are generated on first install
 and kept across upgrades. Install only with `helm upgrade --install`, not
 `helm template`. Expose the API with your own Ingress and TLS.
 
@@ -227,6 +271,8 @@ and kept across upgrades. Install only with `helm upgrade --install`, not
 - **Laptop**: `./down.sh --delete` deletes the VM and all data;
   `./down.sh --purge` also removes `./.devenv`, which leaves the clone as
   cloned.
+- **Azure**: `./cloud-down.sh` deletes the resource group, cluster and
+  registry, and fails if anything billable is left.
 - **Any cluster**: `helm uninstall sandbox -n sandbox-system` deletes every
   sandbox and the platform. It keeps the Postgres volume and the generated
   Secrets, so a reinstall keeps users and keys. `kubectl delete namespace

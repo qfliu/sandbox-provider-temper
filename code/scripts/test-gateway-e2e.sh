@@ -49,7 +49,9 @@ curl -s -m 2 -o /dev/null "http://127.0.0.1:$PORT/healthz" || die "API not reach
 # macOS ssh-keygen can't read its PKCS#8 format.)
 GW_PUB=$(kubectl -n sandbox-system exec deploy/sandbox-gateway -- /api public-key /keys/host/ssh_host_ed25519_key | cut -d' ' -f1,2)
 [ -n "$GW_PUB" ] || die "can't read the gateway's host key"
-echo "[$GW_HOST]:$GW_PORT $GW_PUB" >"$TMP/known_hosts"
+# known_hosts names port 22 by the bare host; other ports as [host]:port.
+KH_HOST=$([ "$GW_PORT" = 22 ] && echo "$GW_HOST" || echo "[$GW_HOST]:$GW_PORT")
+echo "$KH_HOST $GW_PUB" >"$TMP/known_hosts"
 
 # Only the options given here count: no ~/.ssh/config, no ssh-agent keys.
 # (ssh uses the first value given for an option, so a test that needs a
@@ -105,7 +107,7 @@ out=$(gw_ssh a "$A" -n uname -r 2>&1)
 denied "unregistered key" stranger "$A"
 denied "another sandbox's key" b "$A"
 denied "unknown sandbox" a "sb-000000000000"
-echo "[$GW_HOST]:$GW_PORT $(cut -d' ' -f1,2 "$TMP/a.pub")" >"$TMP/wrong_known_hosts"
+echo "$KH_HOST $(cut -d' ' -f1,2 "$TMP/a.pub")" >"$TMP/wrong_known_hosts"
 out=$(ssh -o UserKnownHostsFile="$TMP/wrong_known_hosts" "${SSH_OPTS[@]}" -i "$TMP/a" -p "$GW_PORT" -n "$A@$GW_HOST" true 2>&1)
 grep -q "HOST IDENTIFICATION HAS CHANGED\|Host key verification failed" <<<"$out" &&
 	pass "client pinning a different gateway host key → refused" || fail "host key pinning" "$out"
