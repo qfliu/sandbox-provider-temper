@@ -257,8 +257,13 @@ and the test scripts between the two clusters.
 4. **Watch:** the admin dashboard (`/ui/admin`, with your key) shows every
    user and sandbox.
 5. **End someone's access:** `./code/scripts/add-tester.sh --revoke alice`
-   (revokes their keys, quota 0). Then `./cloud-down.sh` when the session
-   is over: it all costs about $0.20/hour while it runs.
+   (revokes their keys, quota 0). Adding the same name again gives them a
+   new key and their quota back. Then `./cloud-down.sh` when the session is
+   over: it all costs about $0.20/hour while it runs.
+
+Let's Encrypt issues at most 5 certificates a week for one name, and each
+`cloud-up.sh` after a `cloud-down.sh` needs a new one. Past that,
+`AZURE_DNS_LABEL=sandbox-<new> ./cloud-up.sh` uses another address.
 
 ## Deploying to another cluster
 

@@ -18,7 +18,10 @@
 # ALLOWED_CIDRS: comma-separated CIDRs (e.g. testers' office ranges) that
 # alone may use the HTTPS API and the SSH gateway, your own IP always added;
 # unset or empty: open to anyone, who still needs an API key / sandbox key.
-# ACME_EMAIL: optional, for Let's Encrypt notices.
+# ACME_EMAIL: optional, for Let's Encrypt notices. AZURE_DNS_LABEL: the
+# name's first part (default sandbox-<8 hex of the subscription>, stable);
+# Let's Encrypt issues at most 5 certificates a week for one name and every
+# cloud-up after a cloud-down needs a new one, so past that use another.
 set -euo pipefail
 cd "$(dirname "$0")"
 START=$(date +%s)
@@ -157,7 +160,7 @@ unset TOKEN
 echo "==> helm upgrade --install sandbox"
 # The public HTTPS address: an Azure DNS name on the API's load balancer,
 # <label>.<region>.cloudapp.azure.com, stable for this subscription.
-LABEL="sandbox-$(printf %s "$SUB" | shasum | cut -c1-8)"
+LABEL=${AZURE_DNS_LABEL:-sandbox-$(printf %s "$SUB" | shasum | cut -c1-8)}
 HOST="$LABEL.$LOCATION.cloudapp.azure.com"
 HELM=(helm upgrade --install sandbox code/deploy/helm -n "$NS" --create-namespace -f code/deploy/cloud/values-aks.yaml
 	--set "image.repository=$ACR/sandbox/api" --set "image.tag=$TAG" --set "sandboxImages.repository=$ACR/sandbox/"
@@ -184,19 +187,43 @@ fi
 for r in statefulset/postgres deployment/sandbox-api deployment/sandbox-gateway daemonset/sandbox-image-prepull deployment/public-api; do
 	kubectl -n "$NS" rollout status "$r" --timeout=10m >/dev/null
 done
-echo "==> https://$HOST (waiting for DNS and the Let's Encrypt certificate)"
-# curl checks the certificate: success means a real, trusted certificate.
-for _ in $(seq 1 60); do
-	curl -fsS -m 5 -o /dev/null "https://$HOST/healthz" 2>/dev/null && break
-	sleep 5
-done
-curl -fsS -m 5 -o /dev/null "https://$HOST/healthz" ||
-	{ echo "https://$HOST isn't answering with a valid certificate yet (kubectl -n $NS logs deploy/public-api)" >&2; exit 1; }
 
 echo "==> admin API key"
 # shellcheck source=code/scripts/admin-key.sh
 source code/scripts/admin-key.sh
 ensure_admin_key "$SANDBOX_KEYFILE" cloud-up.sh
+
+echo "==> https://$HOST (waiting for DNS and the Let's Encrypt certificate)"
+# Caddy asks for the certificate as soon as it starts, which can be before
+# Azure publishes the DNS name; its retries then back off for minutes. So:
+# wait for the name to resolve, restart Caddy once if the certificate isn't
+# there yet (an immediate retry; the certificate volume keeps any it has),
+# then wait. curl checks the certificate, so success means a trusted one.
+https_code() { curl -s -m 5 -o /dev/null -w '%{http_code}' "https://$HOST/healthz" 2>/dev/null || true; }
+for _ in $(seq 1 60); do
+	dig +short "$HOST" 2>/dev/null | grep -q '^[0-9]' && break
+	sleep 5
+done
+if [ "$(https_code)" != 200 ] && [ "$(https_code)" != 403 ]; then
+	kubectl -n "$NS" rollout restart deploy/public-api >/dev/null
+	kubectl -n "$NS" rollout status deploy/public-api --timeout=5m >/dev/null
+fi
+CODE=""
+for _ in $(seq 1 120); do
+	CODE=$(https_code)
+	case "$CODE" in 200 | 403) break ;; esac
+	sleep 5
+done
+case "$CODE" in
+200) ;;
+403) echo "    the certificate is valid; this Mac's IP as Azure sees it isn't on the allowlist (add it to ALLOWED_CIDRS)" ;;
+*)
+	echo "https://$HOST has no valid certificate after 10 minutes. Re-running ./cloud-up.sh continues from here." >&2
+	echo "Caddy's log: kubectl -n $NS logs deploy/public-api. If Let's Encrypt says too many certificates for this" >&2
+	echo "name this week, set AZURE_DNS_LABEL=sandbox-<something new> and re-run." >&2
+	exit 1
+	;;
+esac
 
 cat <<MSG
 

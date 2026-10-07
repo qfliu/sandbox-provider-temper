@@ -7,7 +7,8 @@ person running it:
 - **Your API key** (`sk_…`). It's personal: don't share it, and don't paste
   it into chats or tickets.
 - **Whether your IP must be allowlisted.** If it is and yours isn't, every
-  request returns `403 forbidden: this address isn't on the allowlist`.
+  HTTPS request returns `403 forbidden: this address isn't on the
+  allowlist`, and SSH connections just time out.
 
 The deployment is temporary: it runs for a test session and is then deleted,
 with everything in it.
