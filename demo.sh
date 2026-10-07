@@ -11,7 +11,7 @@ cd "$(dirname "$0")"
 IMAGE="${1:-ubuntu-dev}"
 # shellcheck source=env.sh
 source ./env.sh
-KEYFILE=.devenv/state/admin-api-key
+KEYFILE=$SANDBOX_KEYFILE   # this cluster's admin key (env.sh)
 [ -s "$KEYFILE" ] || { echo "no API key in $KEYFILE: run ./up.sh first" >&2; exit 1; }
 PORT="${DEMO_PORT:-18090}"
 API="http://127.0.0.1:$PORT/v1"
@@ -122,7 +122,7 @@ run 'curl -s -m 3 -k https://kubernetes.default.svc >/dev/null && echo "reached 
 note "NetworkPolicies allow DNS and the public internet only; other sandboxes, the platform, the nodes and private ranges are unreachable."
 
 bold "7. The dashboard shows the same sandboxes (and, for admins, everyone's)."
-note "source ./env.sh && kubectl -n sandbox-system port-forward svc/sandbox-api 18080:80"
+note "source ./env.sh $SANDBOX_TARGET && kubectl -n sandbox-system port-forward svc/sandbox-api 18080:80"
 note "then open http://localhost:18080/ui and sign in with the key in $KEYFILE"
 
 bold "8. Delete it."

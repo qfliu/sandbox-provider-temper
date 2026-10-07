@@ -1,0 +1,11 @@
+# Helm values for the Azure AKS install (Phase 7, D54), on top of the chart's
+# defaults. cloud-up.sh adds the registry, image tag and gateway address.
+gateway:
+  service:
+    # A public Azure load balancer on port 22: `ssh <sandbox-id>@<its IP>`.
+    # externalTrafficPolicy: Local (the chart's default) keeps clients' real
+    # IPs for the gateway's per-client limits.
+    type: LoadBalancer
+    port: 22
+postgres:
+  storageClassName: managed-csi   # Azure Disk; AKS's default class

@@ -13,7 +13,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 : "${KUBECONFIG:?source ./env.sh first}"
 PORT="${NETPOL_PORT:-18095}"
 API="http://127.0.0.1:$PORT/v1"
-KEY="$(cat "$ROOT/.devenv/state/admin-api-key")"
+KEY="$(cat "${SANDBOX_KEYFILE:-$ROOT/.devenv/state/admin-api-key}")"
 TMP="$(mktemp -d "$ROOT/.devenv/state/tmp/netpol.XXXXXX")"
 PASSED=0 FAILED=0 SANDBOXES=()
 
