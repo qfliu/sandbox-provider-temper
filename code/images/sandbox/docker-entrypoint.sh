@@ -75,8 +75,11 @@ prepare_vm() { # sets DOCKERD_ARGS
   # Retried: a process may exit while being moved.
   for _ in 1 2 3 4 5; do
     xargs -rn1 </sys/fs/cgroup/cgroup.procs >/sys/fs/cgroup/init/cgroup.procs 2>/dev/null || :
-    [ -s /sys/fs/cgroup/cgroup.procs ] || break
+    # (cgroupfs files report size 0, so `-s` can't tell; read it.)
+    [ -n "$(cat /sys/fs/cgroup/cgroup.procs)" ] || break
   done
+  [ -s /sys/fs/cgroup/cgroup.controllers ] || [ -n "$(cat /sys/fs/cgroup/cgroup.controllers)" ] ||
+    { log "no cgroup controllers to delegate"; return 1; }
   sed -e 's/ / +/g' -e 's/^/+/' </sys/fs/cgroup/cgroup.controllers >/sys/fs/cgroup/cgroup.subtree_control ||
     { log "can't enable cgroup controllers"; return 1; }
   DOCKERD_ARGS="--mtu=$mtu"

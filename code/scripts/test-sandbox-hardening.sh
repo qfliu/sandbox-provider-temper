@@ -169,12 +169,20 @@ if kubectl get runtimeclass runc >/dev/null 2>&1; then
 	out=$(probe x 's/runtimeClassName: gvisor$/runtimeClassName: runc/')
 	[[ "$out" == *"must run under gVisor or Kata"* ]] && pass "pod that runs under runc (no sandbox) is denied" || fail "pod under runc" "$out"
 fi
+# The policy trusts RuntimeClass names: each must point at the handler it
+# claims (review of #75), or e.g. "kata" on runc would give Docker's
+# capabilities on the node's kernel.
+for rc in gvisor:runsc gvisor-docker:runsc-docker kata:kata-clh; do
+	h=$(kubectl get runtimeclass "${rc%%:*}" -o jsonpath='{.handler}' 2>/dev/null) || continue
+	[ "$h" = "${rc#*:}" ] && pass "RuntimeClass ${rc%%:*} uses handler $h" || fail "RuntimeClass ${rc%%:*}" "handler $h, want ${rc#*:}"
+done
 if kubectl get runtimeclass kata >/dev/null 2>&1; then
 	KATA='s/runtimeClassName: gvisor$/runtimeClassName: kata/;'
 	admitted "a kata pod with Docker's capabilities and SYS_RESOURCE" \
 		"${KATA}"'s/add: \[CHOWN\]/add: [CHOWN, MKNOD, NET_RAW, SETFCAP, SETPCAP, SYS_ADMIN, NET_ADMIN, SYS_RESOURCE]/'
 	for c in "adds SYS_PTRACE under kata|${KATA}s/add: \[CHOWN\]/add: [CHOWN, SYS_PTRACE]/|may only add back" \
 		"is privileged under kata|${KATA}$(CSC 'privileged: true')|must not be privileged" \
+		"carries a Kata annotation|${KATA}s/^(  labels: .*)\$/\$1\n  annotations: {io.katacontainers.config.hypervisor.kernel_params: \"x=1\"}/|must not carry Kata annotations" \
 		"mounts a hostPath volume under kata|${KATA}s/^(  automountServiceAccountToken: .*)\$/\$1\n  volumes: [{name: h, hostPath: {path: \/}}]/|must not mount hostPath volumes"; do
 		IFS='|' read -r name expr want <<<"$c"
 		out=$(probe "$name" "$expr")

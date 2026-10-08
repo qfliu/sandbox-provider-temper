@@ -37,7 +37,10 @@ spec:
   - name: runtime
     expression: "has(object.spec.runtimeClassName) ? object.spec.runtimeClassName : ''"
   # Kata (D64): each pod is its own VM with its own kernel, so what a
-  # capability allows reaches only that VM.
+  # capability allows reaches only that VM. Under Kata the VM is the only
+  # boundary: Kata turns off seccomp inside the guest and the guest has no
+  # AppArmor, so the seccomp rule below protects nothing there, and a Docker
+  # sandbox (SYS_ADMIN) is root in its guest.
   - name: kata
     expression: "variables.runtime == 'kata'"
   # Runtimes under which Docker's capabilities are allowed.
@@ -134,6 +137,14 @@ spec:
         !k.startsWith('container.apparmor.security.beta.kubernetes.io/') ||
         object.metadata.annotations[k] != 'unconfined'))
     message: "sandbox pods must not run AppArmor-unconfined"
+  # Kata reads pod annotations (containerd passes io.katacontainers.* to it):
+  # hypervisor and kernel settings, and runtime and agent ones that Kata's
+  # own allowlist doesn't cover. None may come from a pod spec (review of
+  # #75).
+  - expression: >-
+      !has(object.metadata.annotations) ||
+      object.metadata.annotations.all(k, !k.contains('katacontainers'))
+    message: "sandbox pods must not carry Kata annotations"
   - expression: >-
       !(has(object.spec.securityContext) && has(object.spec.securityContext.windowsOptions) &&
         has(object.spec.securityContext.windowsOptions.hostProcess) &&

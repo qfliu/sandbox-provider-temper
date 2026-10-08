@@ -214,7 +214,10 @@ if [ "$ARCH" = amd64 ]; then
 	echo "==> Kata Containers $KATA_VERSION on the nodes"
 	helm upgrade --install kata-deploy "$KATA_CHART" --version "$KATA_VERSION" -n kube-system \
 		-f code/deploy/cloud/kata-values.yaml --wait --timeout 10m >/dev/null
-	kubectl get runtimeclass kata >/dev/null
+	# kata-deploy labels a node once Kata works there (the RuntimeClass
+	# alone exists either way).
+	MISSING=$(kubectl get nodes -l 'katacontainers.io/kata-runtime!=true' -o name)
+	[ -z "$MISSING" ] || { echo "Kata isn't ready on: $MISSING" >&2; exit 1; }
 fi
 
 echo "==> images: build on the local cluster for $ARCH, push to $ACR"
