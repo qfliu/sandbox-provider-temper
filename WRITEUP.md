@@ -16,8 +16,9 @@ would add. The full decision log, with every alternative considered, is
   A sandbox's files survive process crashes but not the loss of its pod or
   node (D8). Persistent disks are the next step below, not v1.
 - **Startup time matters**, so the target is about a second for one sandbox
-  on a warm node (met on the laptop; on AKS ~3 s with gVisor and 4-6 s
-  with Kata), and no image download on the critical path.
+  on a warm node (met on the laptop; on AKS one sandbox takes ~3 s with
+  gVisor and ~4 s with Kata, and 10 at once p50 3.0–3.3 s and 5.5–5.7 s),
+  and no image download on the critical path.
 - **"Proper Linux desktops"** (in the baseline) means full Linux machines an
   agent can do real work on; a graphical desktop is "seeing the remote
   desktop", which the brief lists as a stretch goal (D1).
@@ -77,7 +78,7 @@ instead of it.
 | | **gVisor** (`gvisor`) | **Kata + Cloud Hypervisor** (`kata`) | **Firecracker directly** (not built) |
 |---|---|---|---|
 | Boundary | a user-space kernel (gVisor's Sentry) between the sandbox and the host kernel | a hardware-virtualized VM with its own Linux kernel | a microVM, as Kata |
-| Runs on | any node, including arm64 and a laptop | x86 nodes with nested virtualization (Azure Dv5/Dsv5; Azure's Arm sizes have none) | the same as Kata |
+| Runs on | any node, including arm64 and a laptop | x86 nodes with nested virtualization (Azure Dv5/Dsv5/Dsv6; Azure's Arm sizes have none) | the same as Kata |
 | Start: 10 at once, create → `running` on AKS, p50 / p95 (end to end, D70) | 3.0–3.3 s / 3.7–4.3 s (with Docker: 3.6–4.0 / 4.0–5.9 s) | 5.5–5.7 s / 6.1–6.8 s (with Docker: 16.6 / 17.7–19.6 s) | not measured (its VM boot alone is ~125 ms, published) |
 | Cost per sandbox | no declared overhead; ~90 MiB of host memory idle (gVisor's own processes, counted against the sandbox's limits) | +250m CPU, +130 Mi declared; ~250 MiB of host memory idle (measured) | lower than Kata (expected) |
 | Docker inside | works, with gVisor's raw-socket flags, a separate runtime class and 6 extra capabilities (D61, D62); no ICMP NAT | works with a real kernel (Docker's own networking); the capabilities stay inside the VM (D64) | expected (not tested) |

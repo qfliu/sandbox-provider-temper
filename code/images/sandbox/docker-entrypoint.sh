@@ -13,10 +13,11 @@
 #     nftables.)
 #   - Docker's MTU matched to the pod's (fragmented forwarding in gVisor is
 #     unreliable, gVisor issue 14011).
-# Under Kata (a VM with a real Linux kernel), Docker's normal networking
-# (its own iptables rules), after three changes that, like the capabilities
+# Under Kata (a VM with a real Linux kernel), Docker's own networking (its
+# nftables backend, D70), after three changes that, like the capabilities
 # they use, reach only this sandbox's own VM (docker-in-docker's usual setup):
-#   - /proc/sys writable (Docker turns on IP forwarding);
+#   - /proc/sys writable (this script turns on IP forwarding; Docker's
+#     nftables backend doesn't);
 #   - a cgroup2 filesystem mounted from inside the container's cgroup
 #     namespace (the runtime's is read-only, and its root can lie above the
 #     namespace, so runc wrote nested containers' cgroups to the wrong

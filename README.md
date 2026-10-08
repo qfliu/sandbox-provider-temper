@@ -251,18 +251,20 @@ running every time:
 | gVisor, `ubuntu-base` | 3.0–3.3 s | 3.7–4.3 s |
 | gVisor, `ubuntu-docker` (Docker answering) | 3.6–4.0 s | 4.0–5.9 s |
 | Kata, `ubuntu-base` | 5.5–5.7 s | 6.1–6.8 s |
-| Kata, `ubuntu-docker` (Docker answering) | 16.6 s | 17.7–19.6 s |
+| Kata, `ubuntu-docker` (Docker answering) | 16.6 s (each run) | 17.7–19.6 s |
 
 | Other | |
 |---|---|
 | One sandbox alone: gVisor / Kata, `ubuntu-docker` | ~3 s / ~4 s |
 | The create request itself (all of the above) | p50 0.3–0.5 s |
-| Host memory per idle `ubuntu-base` sandbox: gVisor / Kata | ~90 MiB / ~250 MiB |
+| Host memory per idle `ubuntu-base` sandbox (RSS of its processes on the node): gVisor / Kata | ~90 MiB / ~250 MiB |
 | `./cloud-up.sh` from nothing (2 nodes, gVisor and Kata, amd64 images cached) | 975 s |
 
 Kata with Docker at 10 at once is the outlier: starting Docker in 10 VMs at
-once on 8 vCPUs of nested virtualization is CPU-bound (Docker's start took
-8–12 s per VM, ~2 s alone). Bigger nodes or a warm pool are the fix.
+once on 8 vCPUs of nested virtualization is CPU-bound (dockerd took 8–12 s
+to answer in each VM; ~1.75 s in an otherwise idle VM). It was 26–27 s
+before Docker's nftables backend replaced its few hundred `iptables` calls
+(D70). Bigger nodes or a warm pool are the fix.
 
 ## On Azure (AKS)
 

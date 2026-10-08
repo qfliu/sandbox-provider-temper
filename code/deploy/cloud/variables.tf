@@ -16,7 +16,7 @@ variable "location" {
 }
 
 variable "node_size" {
-  description = "Node VM size. Standard_D4s_v6: 4 vCPU, 16 GiB, x86 (Intel), with nested virtualization for Kata (D63). arm64 sizes (e.g. Standard_D2ps_v5) still work for gVisor only."
+  description = "Node VM size. Standard_D4s_v6: 4 vCPU, 16 GiB, x86 (Intel), with nested virtualization for Kata (D63, D70). arm64 sizes (e.g. Standard_D2ps_v5) still work for gVisor only."
   type        = string
   default     = "Standard_D4s_v6"
 }
