@@ -152,6 +152,7 @@ for c in "runs without gVisor|\$_='' if /runtimeClassName/|must run under gVisor
 	"uses a host port|s/^(    resources: )/    ports: [{containerPort: 22, hostPort: 2222}]\n\$1/|must not use host ports" \
 	"sets a sysctl|s/^  securityContext: \{seccompProfile: \{type: RuntimeDefault\}\}/  securityContext: {seccompProfile: {type: RuntimeDefault}, sysctls: [{name: net.ipv4.ping_group_range, value: \"0 0\"}]}/|must not set sysctls" \
 	"runs AppArmor-unconfined|$(CSC 'appArmorProfile: {type: Unconfined}')|must not run AppArmor-unconfined" \
+	"unmasks /proc (with hostUsers false, which the API requires)|s/^(  runtimeClassName: .*)\$/\$1\n  hostUsers: false/;$(CSC 'procMount: Unmasked')|must not unmask /proc" \
 	"sets SELinux options|$(CSC 'seLinuxOptions: {type: spc_t}')|must not set SELinux options" \
 	"sets pod-level SELinux options|s/^  securityContext: \{seccompProfile: \{type: RuntimeDefault\}\}/  securityContext: {seccompProfile: {type: RuntimeDefault}, seLinuxOptions: {type: spc_t}}/|must not set SELinux options" \
 	"has an AppArmor-unconfined annotation|s/^(  labels: .*)\$/\$1\n  annotations: {container.apparmor.security.beta.kubernetes.io\/c: unconfined}/|must not run AppArmor-unconfined"; do
