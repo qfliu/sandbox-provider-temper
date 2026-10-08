@@ -31,13 +31,15 @@ curl -s -H @$HOME/.sandbox-auth $SANDBOX/v1/me                        # your use
 ## 2. The dashboard
 
 Open `$SANDBOX/ui` in a browser and sign in with your key. You'll see your
-sandboxes (create and delete them there too) and your API keys. Lists don't
+sandboxes (create them, run a command in a running one from its page, delete
+them) and your API keys. When the cluster offers both, the create form has
+a Runtime choice (gVisor or Kata). Lists don't
 refresh on their own; use the Refresh link.
 
 ## 3. A sandbox through the API (what an AI agent does)
 
 ```bash
-ssh-keygen -t ed25519 -N "" -f ~/.ssh/sandbox-test      # a key pair for SSH (step 5)
+ssh-keygen -t ed25519 -N "" -f ~/.ssh/sandbox-test      # a key pair for SSH (section 4)
 
 # Create one: image ubuntu-base, ubuntu-dev (Python, Node.js) or ubuntu-docker
 # (plus Docker and Compose), 10-minute lifetime. Add "runtime":"kata" for a
@@ -58,7 +60,9 @@ curl -s -H @$HOME/.sandbox-auth -X PUT --data-binary @job.py "$SANDBOX/v1/sandbo
 curl -s -H @$HOME/.sandbox-auth -X POST $SANDBOX/v1/sandboxes/$ID/exec -d '{"command":"python3 job.py > out.txt"}'
 curl -s -H @$HOME/.sandbox-auth "$SANDBOX/v1/sandboxes/$ID/files?path=out.txt"
 
-# A server inside, reached from outside through the API (any port):
+# A server inside, reached from outside through the API (any port). Port
+# URLs need your key in the Authorization header like every call, so use
+# curl (or a tool that sets headers), not a browser; WebSockets work too.
 curl -s -H @$HOME/.sandbox-auth -X POST $SANDBOX/v1/sandboxes/$ID/exec \
   -d '{"command":"(setsid python3 -m http.server 8000 >/dev/null 2>&1 &); sleep 1"}'
 curl -s -H @$HOME/.sandbox-auth "$SANDBOX/v1/sandboxes/$ID/ports/8000/"
@@ -74,12 +78,17 @@ You'll also be given the SSH gateway's address. The sandbox's page in the
 dashboard shows the exact command:
 
 ```bash
-ssh -i ~/.ssh/sandbox-test $ID@<gateway address>
+ssh -i ~/.ssh/sandbox-test -o IdentitiesOnly=yes $ID@<gateway address>
 ```
 
-The first connection asks you to accept the gateway's host key. To check it
-instead, ask the person running the deployment for the line to put in
-`~/.ssh/known_hosts`. `scp` and `sftp` work the same way.
+The username is the sandbox's id; once in, you're `user`. Name the key with
+`-i` unless it's one ssh offers on its own (such as `~/.ssh/id_ed25519`).
+`IdentitiesOnly=yes` stops ssh offering other keys first: with many keys in
+ssh-agent the gateway would otherwise give up ("Too many authentication
+failures"). The first connection asks you to accept the gateway's host key.
+To check it instead, ask the person running the deployment for the line to
+put in `~/.ssh/known_hosts`. `scp` and `sftp` work the same way (same `-i`
+and `-o` options).
 
 ## 5. Things worth trying
 
@@ -94,8 +103,9 @@ instead, ask the person running the deployment for the line to put in
 - **Docker** (`ubuntu-docker`): `docker run`, `docker build`, `docker run -p
   8080:80 nginx` then `curl localhost:8080`, and `docker compose up` with
   `ports:` all work as `user`. Docker's storage is in the sandbox's memory
-  (2 GB of its 4 GB), so very large images or builds can run out. `ping`
-  from a nested container works only with `--network=host` (gVisor can't NAT
+  (2 GB of its 4 GB), so very large images or builds can run out ("No space
+  left on device"; `docker system prune` frees it). `ping` to the internet
+  doesn't work on this cluster (Azure's outbound load balancer carries no
   ICMP). A nested `--privileged` container starts but gets no more than the
   sandbox's own capabilities.
 - **Other people's sandboxes:** another tester's sandbox id returns `404`,
@@ -107,9 +117,10 @@ instead, ask the person running the deployment for the line to put in
     minutes is deleted. Status polling doesn't count as activity.
   - **Exec timeout:** a command past its timeout returns
     `"timed_out": true`.
-- **Capacity.** This test cluster is small (2 nodes), so only about 7
-  sandboxes run at once across all testers. Past that, new ones stay
-  `pending` until others end. That's expected, not a bug.
+- **Capacity.** This test cluster is small (2 nodes): about 20 sandboxes at
+  once across all testers under gVisor, about half that under Kata (each Kata
+  VM reserves more). Past that, new ones stay `pending` until others end.
+  That's expected, not a bug.
 
 ## 6. Reporting a problem
 
@@ -130,6 +141,6 @@ Status codes:
 | 404 | not found or not yours |
 | 409 | not running yet or anymore |
 | 413 | upload too large |
-| 429 | quota |
-| 502 | the sandbox didn't answer |
+| 429 | quota, or too many port-URL requests to one sandbox at once (64) |
+| 502 | the sandbox didn't answer, or nothing listens on that port (port URLs) |
 | 503 | the cluster is busy |

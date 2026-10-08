@@ -7,20 +7,23 @@ SSH in, like a person would. Each sandbox is an Ubuntu pod running under
 kernel directly, or, when the caller asks for it, under **Kata
 Containers**: a lightweight VM with its own Linux kernel (on clusters with
 x86 nodes that support nested virtualization). It is cut off from the
-cluster and other sandboxes by NetworkPolicies, and it is deleted when its owner says so, when it has been
-idle for 30 minutes, or when its lifetime runs out.
+cluster and other sandboxes by NetworkPolicies, and it is deleted when its
+owner says so, when it has been idle for 30 minutes, or when its lifetime
+runs out. One image, `ubuntu-docker`, runs Docker inside the sandbox (build,
+run, compose with published ports).
 
-- **HTTP API** (`/v1`) for agents: create, list, exec, upload, download, delete.
+- **HTTP API** (`/v1`) for agents: create, list, exec, upload, download, delete, and URLs to ports in the sandbox.
 - **SSH gateway**: `ssh <sandbox-id>@<gateway>` with the key given at create.
 - **Dashboard** (`/ui`): your sandboxes (create, run a command, delete) and API keys; for admins, every user and sandbox.
 - **Helm chart** for any cluster with gVisor (and Kata, where installed); scripts for a laptop and for Azure AKS.
 
 Design decisions and the reasons for them are logged in [DESIGN.md](DESIGN.md)
-(D1–D59); [WRITEUP.md](WRITEUP.md) covers the trade-offs and what comes next.
+(D1–D72); [WRITEUP.md](WRITEUP.md) covers the trade-offs, scaling and what
+comes next; [TESTING.md](TESTING.md) is the guide for testers.
 
 ## Quickstart (macOS)
 
-Needs a Mac (Apple Silicon or Intel) with about 10 GB of free memory and 40 GB
+Needs a Mac (Apple Silicon, tested; Intel should work, untested) with about 10 GB of free memory and 40 GB
 of disk, plus `git`, `curl`, `openssl`, `ssh-keygen` and `python3` (all part
 of macOS with the Xcode command line tools). Clone to a short path (about 40
 characters at most, e.g. `~/sandbox-provider`): minikube's VM driver uses a
@@ -34,9 +37,14 @@ the VM all live in `./.devenv`.
 ./down.sh    # stop the VM (./up.sh resumes); --delete removes it, --purge also ./.devenv
 ```
 
-`up.sh` takes about 6 minutes from a fresh clone (downloads included) and
-about 1.5 minutes when run again. It is safe to re-run after a code change. The
-admin API key is saved to `.devenv/state/admin-api-key` and never printed.
+For Docker, compose and port URLs end to end (what an agent does), run
+`source ./env.sh && ./code/scripts/test-agent-workflow.sh`.
+
+`up.sh` took about 6 minutes from a fresh clone (downloads included) and
+about 1.5 minutes when run again, measured before the `ubuntu-docker` image
+was added; expect a couple of minutes more now. It is safe to re-run after a
+code change. The admin API key is saved to `.devenv/state/admin-api-key` and
+never printed; copy it with `pbcopy < .devenv/state/admin-api-key`.
 
 Dashboard:
 
@@ -44,7 +52,8 @@ Dashboard:
 source ./env.sh && kubectl -n sandbox-system port-forward svc/sandbox-api 18080:80
 ```
 
-Then open <http://localhost:18080/ui> and sign in with that key.
+Then open <http://localhost:18080/ui> and sign in with that key (paste it
+after the `pbcopy` above).
 
 To work on the code, run `source ./env.sh` (like a Python venv; `deactivate_sandbox_env` undoes it). After that:
 
@@ -53,21 +62,24 @@ To work on the code, run `source ./env.sh` (like a Python venv; `deactivate_sand
 | `code/scripts/cluster-up.sh` | minikube (vfkit, containerd, Calico) + gVisor + sandbox images |
 | `code/scripts/deploy.sh` | builds the platform image, `helm upgrade --install` |
 | `code/scripts/test-db.sh` | all Go tests, including the ones against Postgres |
-| `code/scripts/smoke-api.sh` | API end to end (28 checks) |
+| `code/scripts/smoke-api.sh` | API end to end (31 checks) |
 | `code/scripts/test-gateway-e2e.sh` | SSH gateway end to end, incl. attacks (16 checks) |
-| `code/scripts/test-sandbox-hardening.sh` | what code inside a sandbox can and can't do, and the admission policy (35 checks) |
+| `code/scripts/test-sandbox-hardening.sh` | what code inside a sandbox can and can't do, and the admission policy (39 checks on minikube; 46 on AKS, with the Kata and runc probes) |
 | `code/scripts/test-agent-workflow.sh` | agent workflows end to end: an app with Redis, Postgres, a multi-stage Go build, WebSockets through a port URL, Docker storage full (17 checks) |
 | `code/scripts/test-ports.sh` | port URLs: proxying, credential stripping, refusals (13 checks) |
-| `code/scripts/test-docker.sh` | Docker in an `ubuntu-docker` sandbox: build, run, `-p`, compose with ports; isolation of nested containers; forged packets stay on the node |
-| `code/scripts/test-network-policy.sh` | sandbox network isolation (15 checks) |
+| `code/scripts/test-docker.sh` | Docker in an `ubuntu-docker` sandbox: build, run, `-p`, compose with ports, `docker exec`; isolation of nested containers; forged packets stay on the node (23 checks) |
+| `code/scripts/test-network-policy.sh` | sandbox network isolation (15 checks on minikube; 18 on AKS, with the load balancer and proxy checks) |
 | `code/scripts/load-test.sh N [image]` | N sandboxes at once, startup percentiles |
 | `code/scripts/test-prepull.sh`, `measure-prepull.sh` | image pre-pull proof and timing |
+
+Every script that creates sandboxes takes `SANDBOX_RUNTIME=kata` to run them
+under Kata (on a cluster with Kata, i.e. AKS); `load-test.sh` too.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  agent["Agent / user<br/>(API key)"] -- "HTTPS /v1, /ui" --> api
+  agent["Agent / user<br/>(API key)"] -- "/v1 (incl. port URLs), /ui<br/>(HTTPS via Caddy on AKS)" --> api
   agent -- "ssh sb-…@gateway<br/>(user's key)" --> gw
   subgraph sys["namespace sandbox-system"]
     api["API + dashboard<br/>(2 replicas)"]
@@ -80,7 +92,7 @@ flowchart LR
     s2["sandbox pod"]
   end
   api -- "create/delete pods<br/>(namespaced RBAC)" --> k8s["Kubernetes API"]
-  api -- "exec, files: SSH/SFTP<br/>(internal key, pinned host key)" --> s1
+  api -- "exec, files, port URLs:<br/>SSH/SFTP/forward<br/>(internal key, pinned host key)" --> s1
   gw -- "SSH proxy<br/>(internal key)" --> s1
   api --> pg
   gw -- "read sandboxes,<br/>record activity" --> pg
@@ -197,8 +209,8 @@ Notes:
 SSH:
 
 ```bash
-ssh -p 30022 sb-1a2b3c4d5e6f@$(minikube ip)                     # minikube NodePort
-ssh sb-1a2b3c4d5e6f@gateway.example.com                          # behind a LoadBalancer
+source ./env.sh && ssh -i ~/.ssh/KEY -p 30022 sb-1a2b3c4d5e6f@$(minikube ip)   # minikube NodePort
+ssh -i ~/.ssh/KEY sb-1a2b3c4d5e6f@gateway.example.com                           # behind a LoadBalancer
 ```
 
 To pin the gateway's host key instead of trusting the first connection:
@@ -220,27 +232,13 @@ already on the node:
 | … **with** the pre-pull DaemonSet | 0.6 s |
 | `up.sh` from a fresh clone / again (VM stopped) | 305–367 s / 84 s |
 | `deploy.sh` (platform image build + `helm upgrade --install`) on a cluster with gVisor and images | ~20 s |
+| 10 at once after the client rate-limit fix (D68), `ubuntu-base` | p50 2.5–2.8 s, p95 3.6–4.7 s; the create request 0.1 s |
 
 Capacity on this VM is about 10 sandboxes (250m CPU requested each); past
 that, creates succeed but stay `pending` until room frees up (D48). The
 download time is a lower bound: from a real registry it is
 bandwidth-bound, which is why the images are pre-pulled on every node
 (D46, D51).
-
-On **Azure AKS** (2 × `Standard_D2ps_v5`, arm64, 2 vCPU / 8 GiB; images
-pre-pulled from the cluster's registry), D56:
-
-| What | Time |
-|---|---|
-| `./cloud-up.sh` from nothing (cluster, gVisor, images, install) / `./cloud-down.sh` | 581 s (633 s on the run before the fixes) / 378–394 s |
-| Pre-pull from the registry onto a fresh node: `ubuntu-dev` (218 MB) / `ubuntu-base` (145 MB) | **7.6–9.3 s** / 4.6–8.1 s |
-| One sandbox, create → `running` | 3.1 s (first exec 3.4 s) |
-| 10 at once → 7 running: `ubuntu-base` / `ubuntu-dev` | p50 3.7 s, p95 5.2 s / p50 3.8 s, p95 4.8 s |
-
-Only 7 of 10 fit: of the 3.8 allocatable vCPUs, AKS's own system pods
-request 1.26 and the platform 0.42, leaving 0.97 and 1.13 on the two nodes,
-room for 3 + 4 sandboxes at 250m each; the other 3 stay `pending` until
-room frees up. More or larger nodes (or the cluster autoscaler) raise that.
 
 On **Azure AKS with both runtimes** (2 × `Standard_D4s_v6`, x86, 4 vCPU /
 16 GiB, gVisor and Kata; images pre-pulled; 3 runs of each), D70. Time from
@@ -259,7 +257,7 @@ running every time:
 | One sandbox alone: gVisor / Kata, `ubuntu-docker` | ~3 s / ~4 s |
 | The create request itself (all of the above) | p50 0.3–0.5 s |
 | Host memory per idle `ubuntu-base` sandbox (RSS of its processes on the node): gVisor / Kata | ~90 MiB / ~250 MiB |
-| `./cloud-up.sh` from nothing (2 nodes, gVisor and Kata, amd64 images cached) | 975 s |
+| `./cloud-up.sh` from nothing (2 nodes, gVisor and Kata, amd64 images cached) | 884–975 s |
 
 Kata with Docker at 10 at once is the outlier: starting Docker in 10 VMs at
 once on 8 vCPUs of nested virtualization is CPU-bound (dockerd took 8–12 s
@@ -267,28 +265,55 @@ to answer in each VM; ~1.75 s in an otherwise idle VM). It was 26–27 s
 before Docker's nftables backend replaced its few hundred `iptables` calls
 (D70). Bigger nodes or a warm pool are the fix.
 
+A later fresh deployment (the final check before submission) measured, 10 at
+once: gVisor p50 3.2 s / p95 3.6 s, with Docker 3.2 / 3.8 s; Kata 5.1 / 5.9 s,
+with Docker 13.8 / 14.4 s. `cloud-up.sh` took 884 s.
+
+
+An **earlier deployment**, gVisor only (2 × `Standard_D2ps_v5`, arm64, 2 vCPU /
+8 GiB; images pre-pulled from the cluster's registry), D56. Kept for the
+cold-node pre-pull numbers:
+
+| What | Time |
+|---|---|
+| `./cloud-up.sh` from nothing (cluster, gVisor, images, install) / `./cloud-down.sh` | 581 s (633 s on the run before the fixes) / 378–394 s |
+| Pre-pull from the registry onto a fresh node: `ubuntu-dev` (218 MB) / `ubuntu-base` (145 MB) | **7.6–9.3 s** / 4.6–8.1 s |
+| One sandbox, create → `running` | 3.1 s (first exec 3.4 s) |
+| 10 at once → 7 running: `ubuntu-base` / `ubuntu-dev` | p50 3.7 s, p95 5.2 s / p50 3.8 s, p95 4.8 s |
+
+On those small nodes only 7 of 10 fit: of the 3.8 allocatable vCPUs, AKS's own system pods
+request 1.26 and the platform 0.42, leaving 0.97 and 1.13 on the two nodes,
+room for 3 + 4 sandboxes at 250m each; the other 3 stay `pending` until
+room frees up. More or larger nodes (or the cluster autoscaler) raise that.
+
 ## On Azure (AKS)
 
-Needs an Azure subscription with 8 vCPUs of quota in the region for the
-node size's family (2 x86 `Standard_D4s_v6` nodes, which have nested
-virtualization for Kata). A free account starts at 4 and can't raise it:
-upgrade to pay-as-you-go (the credit still applies), then check
-Quotas → Compute. If one family's increase is refused (DSv5 was, here),
-pick a size whose family already has quota with `AZURE_NODE_SIZE`; the
-quota check says which before anything is created. `AZURE_NODE_SIZE=
-Standard_D2ps_v5` gives 2 small arm64 nodes, gVisor only. It also needs the
-local cluster from `./up.sh`. For x86 nodes `cloud-up.sh` builds amd64
-images on the local (arm64) cluster under QEMU emulation, about 5 minutes
-the first time (D63). Node size and count are remembered only while the
-cluster exists.
+Needs:
+
+- **An Azure subscription with 8 vCPUs of quota** in the region for the node
+  size's family (2 x86 `Standard_D4s_v6` nodes, which have nested
+  virtualization for Kata). A free account starts at 4 and can't raise it:
+  upgrade to pay-as-you-go (the credit still applies), then check
+  Quotas → Compute. If one family's increase is refused (DSv5 was, here),
+  pick a size whose family already has quota with `AZURE_NODE_SIZE`; the
+  quota check says which before anything is created.
+  `AZURE_NODE_SIZE=Standard_D2ps_v5` gives 2 small arm64 nodes, gVisor only.
+- **The local cluster from `./up.sh`**, which builds the images. For x86
+  nodes `cloud-up.sh` builds amd64 images on it under QEMU emulation, about
+  5 minutes the first time (D63).
+
+Node size and count are remembered only while the cluster exists.
 
 ```bash
 ./code/scripts/bootstrap-cloud-tools.sh      # Terraform + Azure CLI into ./.devenv (once)
 source ./env.sh && az login                  # once, in your own terminal
-./cloud-up.sh                                # ~10-15 minutes; costs about $0.45/hour while it exists
+./cloud-up.sh                                # ~15 minutes (plus ~5 the first time); about $0.45/hour while it exists*
 source ./env.sh aks && ./demo.sh             # the same demo and test scripts, against AKS
 ./cloud-down.sh                              # deletes everything and checks nothing is left
 ```
+
+\* An estimate for 2 × `Standard_D4s_v6` pay-as-you-go in West US 2, plus
+disks and public IPs; the AKS control plane (Free tier) costs nothing.
 
 `cloud-up.sh` checks the login, the region's quota and that the node size
 is offered, creates the cluster and registry with Terraform (Kubernetes API
@@ -300,7 +325,8 @@ images, and installs the chart. That gives:
 - a public SSH gateway on port 22;
 - the API and dashboard on **`https://sandbox-<id>.<region>.cloudapp.azure.com`**,
   with a Let's Encrypt certificate, served by Caddy in front of the API;
-- an admin key in `.devenv/state/aks/`.
+- an admin key in `.devenv/state/aks/admin-api-key` (copy it with `pbcopy <`
+  that path to sign in to the dashboard).
 
 `source ./env.sh aks` / `source ./env.sh local` switch kubectl, `demo.sh`
 and the test scripts between the two clusters.
@@ -345,16 +371,21 @@ Let's Encrypt issues at most 5 certificates a week for one name, and each
 
 The chart in `code/deploy/helm` needs:
 
-- **gVisor and a `gvisor` RuntimeClass on every node.** The chart can't
-  install node software. Add `runsc` and its containerd shim to the node
-  image, or use the installer DaemonSet in
-  `code/deploy/cloud/gvisor-installer.yaml` (used on AKS; it handles
-  containerd 1.x and 2.x config formats and rolls back a config containerd
-  won't load).
+- **gVisor with two handlers on every node:** `runsc` (RuntimeClass
+  `gvisor`) and `runsc-docker` with `net-raw` and `allow-packet-socket-write`
+  (RuntimeClass `gvisor-docker`, for `ubuntu-docker`). The chart can't install
+  node software. Use `code/scripts/install-gvisor.sh` (minikube) or the
+  installer DaemonSet in `code/deploy/cloud/gvisor-installer.yaml` (used on
+  AKS; it handles containerd 1.x and 2.x config formats and rolls back a
+  config containerd won't load), which set up both.
+- **Kata (optional):** `kata-deploy` with `code/deploy/cloud/kata-values.yaml`
+  on x86 nodes with nested virtualization, then
+  `--set 'sandboxRuntimes={gvisor,kata}'`.
 - **A CNI that enforces NetworkPolicies.**
 - **The images in a registry the nodes can pull from.** That's the platform
-  image (`code/Dockerfile`) and the two sandbox images
-  (`code/images/sandbox`, targets `base` and `dev`).
+  image (`code/Dockerfile`) and the three sandbox images
+  (`code/images/sandbox`, targets `base`, `dev` and `docker`, tagged
+  `sandboxImages.tag`, now `0.3`).
 
 ```bash
 helm upgrade --install sandbox code/deploy/helm -n sandbox-system --create-namespace \
