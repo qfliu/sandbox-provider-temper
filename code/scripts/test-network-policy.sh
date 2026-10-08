@@ -118,7 +118,7 @@ r=$(in_a "echo ok")
 # a cloud cluster: in its registry), from the API's own settings.
 env_of() { kubectl -n sandbox-system get deploy sandbox-api -o jsonpath="{.spec.template.spec.containers[0].env[?(@.name=='$1')].value}"; }
 IMG="$(env_of SANDBOX_IMAGE_REPO)ubuntu-base:$(env_of SANDBOX_IMAGE_TAG)"
-[ "$IMG" != "ubuntu-base:" ] || IMG=sandbox/ubuntu-base:0.2
+[ "$IMG" != "ubuntu-base:" ] || IMG=sandbox/ubuntu-base:0.3
 kubectl -n default run netpol-outsider --image="$IMG" --image-pull-policy=IfNotPresent \
 	--restart=Never --command -- sleep 120 >/dev/null 2>&1
 kubectl -n default wait --for=condition=Ready pod/netpol-outsider --timeout=60s >/dev/null ||

@@ -30,7 +30,7 @@ metadata: {name: ssh-client}
 spec:
   containers:
   - name: c
-    image: sandbox/ubuntu-base:0.2
+    image: sandbox/ubuntu-base:0.3
     imagePullPolicy: Never
     command: ["sleep", "infinity"]
     volumeMounts: [{name: k, mountPath: /keys, readOnly: true}]

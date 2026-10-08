@@ -44,7 +44,7 @@ drop_names() {
 # ctr pull, not crictl (see the timing step below).
 put_back() {
 	for img in $IMAGES; do
-		node "sudo crictl inspecti docker.io/sandbox/$img:0.2 >/dev/null 2>&1 || { sudo ctr -n k8s.io images pull --plain-http $REG/sandbox/$img:0.2 >/dev/null && sudo ctr -n k8s.io images tag --force $REG/sandbox/$img:0.2 docker.io/sandbox/$img:0.2 >/dev/null; }"
+		node "sudo crictl inspecti docker.io/sandbox/$img:0.3 >/dev/null 2>&1 || { sudo ctr -n k8s.io images pull --plain-http $REG/sandbox/$img:0.3 >/dev/null && sudo ctr -n k8s.io images tag --force $REG/sandbox/$img:0.3 docker.io/sandbox/$img:0.3 >/dev/null; }"
 	done
 	drop_names "^$REG/sandbox/"
 }
@@ -53,10 +53,10 @@ restore() {
 	kubectl -n "$NS" delete pod prepull-timing --ignore-not-found --wait=true >/dev/null 2>&1
 	put_back
 	for img in $IMAGES; do
-		if node "sudo crictl inspecti docker.io/sandbox/$img:0.2 >/dev/null 2>&1"; then
-			echo "   docker.io/sandbox/$img:0.2 present"
+		if node "sudo crictl inspecti docker.io/sandbox/$img:0.3 >/dev/null 2>&1"; then
+			echo "   docker.io/sandbox/$img:0.3 present"
 		else
-			echo "   docker.io/sandbox/$img:0.2 MISSING: rebuild with cluster-up.sh" >&2
+			echo "   docker.io/sandbox/$img:0.3 MISSING: rebuild with cluster-up.sh" >&2
 		fi
 	done
 	# The DaemonSet as it was (Helm's labels and annotations included), so
@@ -85,7 +85,7 @@ minikube addons enable registry >/dev/null 2>&1
 for _ in $(seq 1 30); do node "curl -s -m 2 http://localhost:5000/v2/" | grep '{}' >/dev/null && break; sleep 2; done
 for img in $IMAGES; do # retried: a just re-enabled registry can refuse pushes for a few seconds
 	for try in 1 2 3 4 5 6; do
-		out=$(minikube ssh -- "sudo ctr -n k8s.io images tag --force docker.io/sandbox/$img:0.2 $REG/sandbox/$img:0.2 >/dev/null && sudo ctr -n k8s.io images push --plain-http $REG/sandbox/$img:0.2 >/dev/null && echo pushed-ok" </dev/null 2>&1 | tr -d '\r')
+		out=$(minikube ssh -- "sudo ctr -n k8s.io images tag --force docker.io/sandbox/$img:0.3 $REG/sandbox/$img:0.3 >/dev/null && sudo ctr -n k8s.io images push --plain-http $REG/sandbox/$img:0.3 >/dev/null && echo pushed-ok" </dev/null 2>&1 | tr -d '\r')
 		grep -q pushed-ok <<<"$out" && break
 		if [ "$try" = 6 ]; then
 			echo "push of $img failed: $out" >&2
@@ -112,7 +112,7 @@ node "sudo ctr -n k8s.io containers ls" | awk '/sandbox\/ubuntu-/ {print $1}' |
 [ "$(node "sudo ctr -n k8s.io containers ls" | grep -c 'sandbox/ubuntu-')" = 0 ] ||
 	{ echo "containers using the sandbox images are still on the node" >&2; exit 1; }
 # ubuntu-dev's layer blobs, to check they're really gone afterwards.
-MANIFEST=$(node "sudo ctr -n k8s.io images ls" | awk '$1=="docker.io/sandbox/ubuntu-dev:0.2"{print $3}')
+MANIFEST=$(node "sudo ctr -n k8s.io images ls" | awk '$1=="docker.io/sandbox/ubuntu-dev:0.3"{print $3}')
 LAYERS=$(node "sudo ctr -n k8s.io content get $MANIFEST" |
 	python3 -c "import json,sys; print(' '.join(l['digest'] for l in json.load(sys.stdin)['layers']))")
 [ -n "$LAYERS" ] || { echo "can't read ubuntu-dev's manifest" >&2; exit 1; }
@@ -141,7 +141,7 @@ echo "== timing (ubuntu-dev, ~218 MB)"
 # and the restore's pull of ubuntu-base would then skip the shared ones
 # (their snapshots exist), leaving images the next run can't push.
 # Timed on the node, so ssh round trips don't count.
-out=$(minikube ssh -- "s=\$(date +%s.%N); sudo ctr -n k8s.io images pull --plain-http $REG/sandbox/ubuntu-dev:0.2 >/tmp/pull.log 2>&1 && echo took \$s \$(date +%s.%N) || cat /tmp/pull.log" </dev/null 2>&1 | tr -d '\r')
+out=$(minikube ssh -- "s=\$(date +%s.%N); sudo ctr -n k8s.io images pull --plain-http $REG/sandbox/ubuntu-dev:0.3 >/tmp/pull.log 2>&1 && echo took \$s \$(date +%s.%N) || cat /tmp/pull.log" </dev/null 2>&1 | tr -d '\r')
 read -r took s e <<<"$(grep '^took ' <<<"$out")"
 [ "${took:-}" = took ] || { echo "pull failed: $out" >&2; exit 1; }
 PULL=$(python3 -c "print(round($e-$s, 1))")
@@ -150,7 +150,7 @@ put_back # usual names back before any pod uses them
 
 kubectl -n "$NS" delete pod prepull-timing --ignore-not-found --wait=true >/dev/null 2>&1
 T0=$(python3 -c 'import time; print(time.time())')
-kubectl -n "$NS" run prepull-timing --image=sandbox/ubuntu-dev:0.2 --image-pull-policy=IfNotPresent \
+kubectl -n "$NS" run prepull-timing --image=sandbox/ubuntu-dev:0.3 --image-pull-policy=IfNotPresent \
 	--restart=Never --command -- sleep 600 >/dev/null
 kubectl -n "$NS" wait --for=jsonpath='{.status.phase}'=Running pod/prepull-timing --timeout=120s >/dev/null ||
 	{ echo "pod didn't start" >&2; exit 1; }

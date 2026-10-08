@@ -241,17 +241,43 @@ request 1.26 and the platform 0.42, leaving 0.97 and 1.13 on the two nodes,
 room for 3 + 4 sandboxes at 250m each; the other 3 stay `pending` until
 room frees up. More or larger nodes (or the cluster autoscaler) raise that.
 
+On **Azure AKS with both runtimes** (2 × `Standard_D4s_v6`, x86, 4 vCPU /
+16 GiB, gVisor and Kata; images pre-pulled; 3 runs of each), D70. Time from
+the create request to `running`, 10 sandboxes created at once, all 10
+running every time:
+
+| 10 at once | p50 | p95 |
+|---|---|---|
+| gVisor, `ubuntu-base` | 3.0–3.3 s | 3.7–4.3 s |
+| gVisor, `ubuntu-docker` (Docker answering) | 3.6–4.0 s | 4.0–5.9 s |
+| Kata, `ubuntu-base` | 5.5–5.7 s | 6.1–6.8 s |
+| Kata, `ubuntu-docker` (Docker answering) | 16.6 s | 17.7–19.6 s |
+
+| Other | |
+|---|---|
+| One sandbox alone: gVisor / Kata, `ubuntu-docker` | ~3 s / ~4 s |
+| The create request itself (all of the above) | p50 0.3–0.5 s |
+| Host memory per idle `ubuntu-base` sandbox: gVisor / Kata | ~90 MiB / ~250 MiB |
+| `./cloud-up.sh` from nothing (2 nodes, gVisor and Kata, amd64 images cached) | 975 s |
+
+Kata with Docker at 10 at once is the outlier: starting Docker in 10 VMs at
+once on 8 vCPUs of nested virtualization is CPU-bound (Docker's start took
+8–12 s per VM, ~2 s alone). Bigger nodes or a warm pool are the fix.
+
 ## On Azure (AKS)
 
-Needs an Azure subscription with 8 vCPUs of quota in the region (2 x86
-`Standard_D4s_v5` nodes, which support nested virtualization for Kata; a
-free account starts at 4, so request more under Quotas, or set
-`AZURE_NODE_SIZE=Standard_D2ps_v5` for 2 small arm64 nodes, gVisor only),
-and the local cluster from `./up.sh`. For x86 nodes `cloud-up.sh` builds
-amd64 images on the local (arm64) cluster under QEMU emulation, about 5
-minutes the first time (D63). Node size and count are remembered only while
-the cluster exists, so a new cluster gets the x86 default even after an
-earlier arm64 run.
+Needs an Azure subscription with 8 vCPUs of quota in the region for the
+node size's family (2 x86 `Standard_D4s_v6` nodes, which have nested
+virtualization for Kata). A free account starts at 4 and can't raise it:
+upgrade to pay-as-you-go (the credit still applies), then check
+Quotas → Compute. If one family's increase is refused (DSv5 was, here),
+pick a size whose family already has quota with `AZURE_NODE_SIZE`; the
+quota check says which before anything is created. `AZURE_NODE_SIZE=
+Standard_D2ps_v5` gives 2 small arm64 nodes, gVisor only. It also needs the
+local cluster from `./up.sh`. For x86 nodes `cloud-up.sh` builds amd64
+images on the local (arm64) cluster under QEMU emulation, about 5 minutes
+the first time (D63). Node size and count are remembered only while the
+cluster exists.
 
 ```bash
 ./code/scripts/bootstrap-cloud-tools.sh      # Terraform + Azure CLI into ./.devenv (once)

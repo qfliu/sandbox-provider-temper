@@ -1,8 +1,8 @@
 # Sandbox images (D2, D62). One Dockerfile, three targets, so `dev` builds on
 # `base` and `docker` on `dev` without needing a registry:
-#   minikube image build -t sandbox/ubuntu-base:0.2   --build-opt=opt=target=base   code/images/sandbox
-#   minikube image build -t sandbox/ubuntu-dev:0.2    --build-opt=opt=target=dev    code/images/sandbox
-#   minikube image build -t sandbox/ubuntu-docker:0.2 --build-opt=opt=target=docker code/images/sandbox
+#   minikube image build -t sandbox/ubuntu-base:0.3   --build-opt=opt=target=base   code/images/sandbox
+#   minikube image build -t sandbox/ubuntu-dev:0.3    --build-opt=opt=target=dev    code/images/sandbox
+#   minikube image build -t sandbox/ubuntu-docker:0.3 --build-opt=opt=target=docker code/images/sandbox
 #
 # sshd runs as root (it needs to switch users); people and the platform log
 # in as the unprivileged `user`. Pods only trust the platform-internal key

@@ -19,7 +19,7 @@
 #                                        image build or rollout, so testers'
 #                                        sessions keep running
 # Settings (environment): AZURE_LOCATION (westus2), AZURE_NAME
-# (sandbox-provider), AZURE_NODE_SIZE (Standard_D4s_v5; x86 with nested
+# (sandbox-provider), AZURE_NODE_SIZE (Standard_D4s_v6; x86 with nested
 # virtualization; an arm64 size such as Standard_D2ps_v5 also works, gVisor
 # only), AZURE_NODES (2). 2 x 4 vCPUs needs a vCPU quota of 8 in the region:
 # free accounts start at 4 (the check below says so before creating anything);
@@ -82,7 +82,7 @@ REPLACE="changing it would make Terraform replace the cluster and delete its dat
 RESIZE="cloud-up.sh doesn't resize a running cluster (its quota check only runs before the first apply)"
 LOCATION=$(setting LOCATION AZURE_LOCATION westus2 "$REPLACE")
 NAME=$(setting NAME AZURE_NAME sandbox-provider "$REPLACE")
-NODE_SIZE=$(setting NODE_SIZE AZURE_NODE_SIZE Standard_D4s_v5 "$RESIZE" while-up)
+NODE_SIZE=$(setting NODE_SIZE AZURE_NODE_SIZE Standard_D4s_v6 "$RESIZE" while-up)
 NODES=$(setting NODES AZURE_NODES 2 "$RESIZE" while-up)
 # Who may connect: as given (empty or "none": anyone), else as last time.
 if [ "${ALLOWED_CIDRS+set}" = set ]; then CIDRS=$ALLOWED_CIDRS; else CIDRS=$(saved ALLOWED_CIDRS); fi

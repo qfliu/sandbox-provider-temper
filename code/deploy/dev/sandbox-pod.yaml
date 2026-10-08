@@ -15,7 +15,7 @@ spec:
   enableServiceLinks: false                # don't leak cluster service env vars
   containers:
   - name: sandbox
-    image: sandbox/ubuntu-dev:0.2
+    image: sandbox/ubuntu-dev:0.3
     imagePullPolicy: Never                 # built locally with `minikube image build`
     ports:
     - {name: ssh, containerPort: 22}
