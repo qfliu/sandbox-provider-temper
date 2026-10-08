@@ -70,3 +70,4 @@ header nav a:hover { color: var(--accent); }
 tr:target td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .pager { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 12px; font-size: 14px; }
 .actions-inline { display: flex; gap: 16px; }
+pre.output { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; max-height: 420px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
