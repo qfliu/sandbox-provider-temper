@@ -30,6 +30,9 @@ cleanup() {
 	[ -n "${PF:-}" ] && { kill "$PF"; wait "$PF"; } 2>/dev/null
 	rm -rf "$TMP"
 }
+# SANDBOX_RUNTIME=kata runs the sandbox(es) under Kata (D65); default: the
+# cluster's default runtime (gVisor).
+RT=${SANDBOX_RUNTIME:+,\"runtime\":\"$SANDBOX_RUNTIME\"}
 trap cleanup EXIT
 
 kubectl -n sandbox-system port-forward svc/sandbox-api "$PORT:80" >/dev/null 2>&1 &
@@ -39,7 +42,7 @@ for _ in $(seq 1 40); do curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/healt
 new_sandbox() {
 	ssh-keygen -q -t ed25519 -N "" -f "$TMP/k$1" 2>/dev/null
 	curl -s -H @"$TMP/auth" -X POST "$API/sandboxes" \
-		-d "{\"image\":\"ubuntu-base\",\"ssh_public_key\":\"$(cat "$TMP/k$1.pub")\"}" |
+		-d "{\"image\":\"ubuntu-base\",\"ssh_public_key\":\"$(cat "$TMP/k$1.pub")\"$RT}" |
 		python3 -c "import json,sys; print(json.load(sys.stdin)['id'])"
 }
 A=$(new_sandbox a) || { echo "could not create sandbox A"; exit 1; }

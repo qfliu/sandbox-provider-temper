@@ -1,13 +1,14 @@
 {{define "admin_rows"}}
 {{if .AllSandboxes}}
 <table>
-  <thead><tr><th>Sandbox</th><th>Owner · key</th><th>Image</th><th>Status</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
+  <thead><tr><th>Sandbox</th><th>Owner · key</th><th>Image</th><th>Runtime</th><th>Status</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
   <tbody>
   {{range .AllSandboxes}}
   <tr>
     <td><a href="/ui/sandboxes/{{.ID}}"><code>{{.ID}}</code></a></td>
     <td>{{.Owner}} <span class="muted">· {{key .CreatedByKey}}</span></td>
     <td>{{.Image}}</td>
+    <td>{{.Runtime}}</td>
     <td><span class="status s-{{.Status}}">{{.Status}}</span></td>
     <td>{{if live .Status}}{{until .ExpiresAt}}{{else}}–{{end}}</td>
     <td>{{ago .LastActivityAt}}</td>

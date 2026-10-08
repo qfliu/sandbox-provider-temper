@@ -126,7 +126,7 @@ Every call needs `Authorization: Bearer <api key>`. Errors are
 | Call | Does |
 |---|---|
 | `GET /v1/me` | the key's user: `id`, `name`, `is_admin`, `max_sandboxes` |
-| `POST /v1/sandboxes` | create: `{"image": "ubuntu-dev", "ssh_public_key": "ssh-ed25519 …", "ttl_seconds": 3600}` → **201** with the sandbox, `status: "pending"` |
+| `POST /v1/sandboxes` | create: `{"image": "ubuntu-dev", "ssh_public_key": "ssh-ed25519 …", "ttl_seconds": 3600, "runtime": "gvisor"}` → **201** with the sandbox, `status: "pending"` |
 | `GET /v1/sandboxes[?include_ended=true]` | your sandboxes (`{"sandboxes": [...]}`); live ones unless `include_ended` |
 | `GET /v1/sandboxes/{id}` | one sandbox; poll until `status` is `running` |
 | `POST /v1/sandboxes/{id}/exec` | run a command: `{"command": "pytest -q", "timeout_seconds": 60, "workdir": "proj"}` → `stdout`, `stderr`, `exit_code`, `timed_out`, `truncated`, `duration_ms` |
@@ -138,6 +138,11 @@ Notes:
 
 - **Create**
   - `image` is `ubuntu-base`, `ubuntu-dev` or `ubuntu-docker`.
+  - `runtime` (optional) is `gvisor` (the default: a user-space kernel,
+    fastest start) or `kata` (a lightweight VM with its own Linux kernel,
+    the stronger boundary). `kata` exists only where Kata is installed (AKS
+    on x86 nodes); elsewhere it's refused with "isn't available on this
+    cluster". Every image works under both; responses include `runtime`.
   - `ttl_seconds` runs from 60 to 86400; the default is 3600.
   - `ssh_public_key` is the only key the gateway accepts for this sandbox.
 - **Exec**

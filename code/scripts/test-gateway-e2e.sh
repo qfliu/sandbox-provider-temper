@@ -38,6 +38,9 @@ cleanup() {
 	[ -n "${PF:-}" ] && { kill "$PF"; wait "$PF"; } 2>/dev/null
 	rm -rf "$TMP"
 }
+# SANDBOX_RUNTIME=kata runs the sandbox(es) under Kata (D65); default: the
+# cluster's default runtime (gVisor).
+RT=${SANDBOX_RUNTIME:+,\"runtime\":\"$SANDBOX_RUNTIME\"}
 trap cleanup EXIT
 
 kubectl -n sandbox-system port-forward svc/sandbox-api "$PORT:80" >/dev/null 2>&1 &
@@ -74,7 +77,7 @@ except Exception: print('')"
 new_sandbox() { # new_sandbox <key name>: creates key + sandbox, prints its id
 	ssh-keygen -q -t ed25519 -N "" -C "e2e-$1" -f "$TMP/$1"
 	curl -s -H @"$TMP/auth" -X POST "$API/sandboxes" \
-		-d "{\"image\":\"ubuntu-base\",\"ssh_public_key\":\"$(cat "$TMP/$1.pub")\"}" |
+		-d "{\"image\":\"ubuntu-base\",\"ssh_public_key\":\"$(cat "$TMP/$1.pub")\"$RT}" |
 		python3 -c "import json,sys; print(json.load(sys.stdin)['id'])"
 }
 wait_running() {
@@ -105,7 +108,14 @@ denied() {
 
 printf "\nlogin\n"
 out=$(gw_ssh a "$A" -n uname -r 2>&1)
-[[ "$out" == *gvisor* ]] && pass "sandbox's own key → shell in the sandbox ($out)" || fail "own key" "$out"
+# The sandbox's kernel: gVisor's, or under Kata (D65) its own VM's, not the node's.
+if [ "${SANDBOX_RUNTIME:-gvisor}" = kata ]; then
+	NODE_KERNEL=$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kernelVersion}')
+	[[ -n "$out" && "$out" != *gvisor* && "$out" != *"$NODE_KERNEL"* && "$out" != *denied* ]] &&
+		pass "sandbox's own key → shell in the sandbox's VM ($out)" || fail "own key" "$out"
+else
+	[[ "$out" == *gvisor* ]] && pass "sandbox's own key → shell in the sandbox ($out)" || fail "own key" "$out"
+fi
 denied "unregistered key" stranger "$A"
 denied "another sandbox's key" b "$A"
 denied "unknown sandbox" a "sb-000000000000"

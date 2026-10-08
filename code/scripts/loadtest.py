@@ -18,6 +18,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import signal
 import statistics
 import sys
@@ -63,7 +64,10 @@ def one(api, key, pubkey, image, deadline_s, start, created, out, i):
     try:
         start.wait()
         t0 = time.monotonic()
-        code, body = call(api, key, "POST", "/sandboxes", {"image": image, "ssh_public_key": pubkey})
+        req = {"image": image, "ssh_public_key": pubkey}
+        if os.environ.get("SANDBOX_RUNTIME"):  # e.g. kata (D65)
+            req["runtime"] = os.environ["SANDBOX_RUNTIME"]
+        code, body = call(api, key, "POST", "/sandboxes", req)
         row["create_s"] = time.monotonic() - t0
         if code != 201:
             row["error"] = f"create {code}: {body.get('error', body)}"

@@ -73,6 +73,7 @@ spec:
         - {name: SANDBOX_NAMESPACE, value: {{ .Values.sandboxNamespace | quote }}}
         - {name: SANDBOX_IMAGE_REPO, value: {{ .Values.sandboxImages.repository | quote }}}
         - {name: SANDBOX_IMAGE_TAG, value: {{ .Values.sandboxImages.tag | quote }}}
+        - {name: SANDBOX_RUNTIMES, value: {{ join "," .Values.sandboxRuntimes | quote }}}
         - {name: SSH_GATEWAY_ADDR, value: {{ .Values.api.sshGatewayAddr | quote }}}
         {{- with .Values.api.defaultTTL }}
         - {name: SANDBOX_DEFAULT_TTL, value: {{ . | quote }}}

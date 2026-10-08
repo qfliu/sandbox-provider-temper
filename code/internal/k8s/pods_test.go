@@ -141,6 +141,45 @@ func TestBuildPodDocker(t *testing.T) {
 	}
 }
 
+// Under Kata (D65) every sandbox's RuntimeClass is kata; a Docker sandbox
+// keeps Docker's capabilities and gains SYS_RESOURCE, a plain one keeps
+// exactly the plain set.
+func TestBuildPodKata(t *testing.T) {
+	plain := testSandbox
+	plain.Runtime = "kata"
+	pod := BuildPod(plain, testCfg)
+	if rc := pod.Spec.RuntimeClassName; rc == nil || *rc != "kata" {
+		t.Fatalf("runtime = %v, want kata", rc)
+	}
+	if got := pod.Spec.Containers[0].SecurityContext.Capabilities.Add; len(got) != len(SandboxCapabilities) {
+		t.Fatalf("plain kata sandbox capabilities = %v, want the plain set", got)
+	}
+
+	docker := testSandbox
+	docker.Image, docker.Runtime = DockerImage, "kata"
+	pod = BuildPod(docker, testCfg)
+	if rc := pod.Spec.RuntimeClassName; rc == nil || *rc != "kata" {
+		t.Fatalf("docker runtime = %v, want kata", rc)
+	}
+	got := pod.Spec.Containers[0].SecurityContext.Capabilities.Add
+	if want := len(SandboxCapabilities) + len(DockerCapabilities) + len(KataDockerCapabilities); len(got) != want {
+		t.Fatalf("docker kata capabilities = %v, want %d", got, want)
+	}
+	if got[len(got)-1] != "SYS_RESOURCE" {
+		t.Fatalf("docker kata capabilities = %v, want SYS_RESOURCE", got)
+	}
+
+	// gVisor (and an unset runtime, as for rows from before D65) never gets
+	// SYS_RESOURCE.
+	gv := testSandbox
+	gv.Image = DockerImage
+	for _, c := range BuildPod(gv, testCfg).Spec.Containers[0].SecurityContext.Capabilities.Add {
+		if c == "SYS_RESOURCE" {
+			t.Fatal("gvisor-docker sandbox got SYS_RESOURCE")
+		}
+	}
+}
+
 func TestPodsCreateAndDelete(t *testing.T) {
 	client := fake.NewClientset()
 	pods := NewPods(client, testCfg)

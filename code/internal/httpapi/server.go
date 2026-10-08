@@ -34,6 +34,9 @@ type Deps struct {
 	// dashboard offers only allowed lifetimes and states the idle timeout.
 	// Zero means the defaults (24 h, 30 min).
 	MaxTTL, IdleTimeout time.Duration
+	// Runtimes are the sandbox runtimes the create form offers, the default
+	// first (D65); empty means gVisor only.
+	Runtimes []string
 }
 
 // AdminService reads platform-wide data for admins (implemented by
@@ -75,6 +78,7 @@ func NewHandler(d Deps) http.Handler {
 	mux.Handle("/v1/", requireAuth(d.Log, d.Auth, v1))
 	ui := newUI(d.Log, d.Auth, d.Sandboxes, d.Keys, d.Admin, d.SSHGateway)
 	ui.setLimits(d.MaxTTL, d.IdleTimeout)
+	ui.setRuntimes(d.Runtimes)
 	uiRoutes := ui.routes()
 	mux.Handle("/ui", uiRoutes)
 	mux.Handle("/ui/", uiRoutes)

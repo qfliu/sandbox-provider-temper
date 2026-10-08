@@ -29,6 +29,12 @@ sandboxImages:
   tag: "0.1"
   names: [ubuntu-base, ubuntu-dev, ubuntu-docker]
 
+# Runtimes sandboxes may ask for, the first being the default (D65): gvisor,
+# plus kata where Kata Containers is installed (x86 nodes with nested
+# virtualization; cloud-up.sh adds it there). The RuntimeClasses themselves
+# come from the node installers, not this chart.
+sandboxRuntimes: [gvisor]
+
 # Namespace for sandbox pods (untrusted code); created by the chart.
 sandboxNamespace: sandboxes
 

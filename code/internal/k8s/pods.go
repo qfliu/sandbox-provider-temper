@@ -208,13 +208,27 @@ const DockerImage = "ubuntu-docker"
 type podProfile struct {
 	runtimeClass  string
 	docker        bool
+	kata          bool
 	cpuLimit      string
 	memoryRequest string
 	memoryLimit   string
 	env           []corev1.EnvVar
 }
 
-func profileFor(image string) podProfile {
+// profileFor gives the pod settings for an image under a runtime (D65).
+// Under Kata the RuntimeClass is always `kata` (each pod is a VM), and a
+// Docker sandbox also gets SYS_RESOURCE (runc sets nested containers' OOM
+// scores; gVisor ignores them, D64).
+func profileFor(image, runtime string) podProfile {
+	p := profileForImage(image)
+	if runtime == "kata" {
+		p.runtimeClass = "kata"
+		p.kata = true
+	}
+	return p
+}
+
+func profileForImage(image string) podProfile {
 	if image == DockerImage {
 		return podProfile{
 			runtimeClass: "gvisor-docker", docker: true,
@@ -235,7 +249,7 @@ func profileFor(image string) podProfile {
 // BuildPod returns the pod spec for a sandbox. It mirrors the hand-tested
 // code/deploy/dev/sandbox-pod.yaml from Phase 1.
 func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
-	prof := profileFor(sb.Image)
+	prof := profileFor(sb.Image, sb.Runtime)
 	no := false
 	grace := int64(5)
 	keyMode := int32(0o444)
@@ -249,7 +263,7 @@ func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 			Labels:    labelsFor(sb, "sandbox"),
 		},
 		Spec: corev1.PodSpec{
-			RuntimeClassName:              ptr(prof.runtimeClass), // D4, D61: gVisor isolation
+			RuntimeClassName:              ptr(prof.runtimeClass), // D4, D61, D65: gVisor or Kata
 			AutomountServiceAccountToken:  &no,                    // sandbox code gets no cluster credentials
 			EnableServiceLinks:            &no,                    // don't leak cluster service env vars
 			TerminationGracePeriodSeconds: &grace,
@@ -277,7 +291,7 @@ func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 						corev1.ResourceEphemeralStorage: resource.MustParse("5Gi"),
 					},
 				},
-				SecurityContext: SandboxSecurityContext(prof.docker),
+				SecurityContext: SandboxSecurityContext(prof.docker, prof.kata),
 				ReadinessProbe: &corev1.Probe{
 					ProbeHandler:  corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(22)}},
 					PeriodSeconds: 1, // "running" as soon as sshd answers (load test, D48)
@@ -336,6 +350,11 @@ var DockerCapabilities = []corev1.Capability{
 	"MKNOD", "NET_RAW", "SETFCAP", "SETPCAP", "SYS_ADMIN", "NET_ADMIN",
 }
 
+// KataDockerCapabilities are added for Docker sandboxes under Kata only
+// (D64): runc lowers each nested container's OOM score below the pod's, which
+// needs SYS_RESOURCE; inside a Kata VM it reaches only that VM.
+var KataDockerCapabilities = []corev1.Capability{"SYS_RESOURCE"}
+
 // SandboxSecurityContext is the sandbox container's security context: drop
 // all capabilities but SandboxCapabilities (plus DockerCapabilities for a
 // Docker sandbox), and the RuntimeDefault seccomp
@@ -344,10 +363,13 @@ var DockerCapabilities = []corev1.Capability{
 // Privilege escalation stays allowed
 // because sudo (setuid) is part of the sandbox (D2): the user is meant to
 // be root inside their own gVisor sandbox.
-func SandboxSecurityContext(docker bool) *corev1.SecurityContext {
+func SandboxSecurityContext(docker, kata bool) *corev1.SecurityContext {
 	add := append([]corev1.Capability{}, SandboxCapabilities...)
 	if docker {
 		add = append(add, DockerCapabilities...)
+	}
+	if docker && kata {
+		add = append(add, KataDockerCapabilities...)
 	}
 	return &corev1.SecurityContext{
 		Capabilities: &corev1.Capabilities{

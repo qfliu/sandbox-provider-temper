@@ -210,7 +210,9 @@ kubectl -n gvisor-system rollout status ds/gvisor-installer --timeout=10m >/dev/
 # Kata Containers (D64): x86 sizes only (Azure's nested virtualization; its
 # Arm sizes have none). The official kata-deploy chart, pinned; it restarts
 # containerd on each node once, so it goes before the platform.
+RUNTIMES=gvisor
 if [ "$ARCH" = amd64 ]; then
+	RUNTIMES=gvisor,kata
 	echo "==> Kata Containers $KATA_VERSION on the nodes"
 	helm upgrade --install kata-deploy "$KATA_CHART" --version "$KATA_VERSION" -n kube-system \
 		-f code/deploy/cloud/kata-values.yaml --wait --timeout 10m >/dev/null
@@ -283,6 +285,7 @@ echo "==> helm upgrade --install sandbox"
 HOST="$LABEL.$LOCATION.cloudapp.azure.com"
 HELM=(helm upgrade --install sandbox code/deploy/helm -n "$NS" --create-namespace -f code/deploy/cloud/values-aks.yaml
 	--set "image.repository=$ACR/sandbox/api" --set "image.tag=$TAG" --set "sandboxImages.repository=$ACR/sandbox/"
+	--set "sandboxRuntimes={$RUNTIMES}"
 	--set "publicApi.host=$HOST" --set-string "publicApi.service.annotations.service\.beta\.kubernetes\.io/azure-dns-label-name=$LABEL")
 [ -z "${ACME_EMAIL:-}" ] || HELM+=(--set "publicApi.acmeEmail=$ACME_EMAIL")
 HELM+=(--set "publicApi.allowedSourceRanges={$ALLOWED}" --set "gateway.service.loadBalancerSourceRanges={$ALLOWED}")

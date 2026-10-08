@@ -92,6 +92,23 @@ func TestSandboxRowDefaults(t *testing.T) {
 	if got := sb.ExpiresAt.Sub(sb.CreatedAt).Seconds(); got < 3599 || got > 3601 {
 		t.Fatalf("expires_at - created_at = %vs, want 3600", got)
 	}
+	// Runtime (D65): gvisor unless given; the database refuses others.
+	if sb.Runtime != "gvisor" {
+		t.Fatalf("runtime = %q, want gvisor by default", sb.Runtime)
+	}
+	n := newSandbox(alice.ID, 1)
+	n.Runtime = "kata"
+	if k, err := s.CreateSandbox(ctx, n); err != nil || k.Runtime != "kata" {
+		t.Fatalf("kata sandbox: %+v, %v", k, err)
+	}
+	if got, _ := s.GetSandbox(ctx, n.ID); got.Runtime != "kata" {
+		t.Fatalf("read back runtime = %q, want kata", got.Runtime)
+	}
+	n = newSandbox(alice.ID, 2)
+	n.Runtime = "runc"
+	if _, err := s.CreateSandbox(ctx, n); err == nil {
+		t.Fatal("runtime runc accepted by the database")
+	}
 }
 
 func TestListAndMarkEnded(t *testing.T) {

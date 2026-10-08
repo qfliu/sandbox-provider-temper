@@ -109,6 +109,10 @@ check "unknown API key → 401" test "$CODE" = 401
 req "$KEY" GET /me
 check "valid key → 200, user smoke-test" test "$CODE $(json "$TMP/out" "d['name']")" = "200 smoke-test"
 
+# SANDBOX_RUNTIME=kata runs the sandbox(es) under Kata (D65); default: the
+# cluster's default runtime (gVisor).
+RT=${SANDBOX_RUNTIME:+,\"runtime\":\"$SANDBOX_RUNTIME\"}
+
 # --- validation --------------------------------------------------------------
 section "validation"
 # Match the error message too, so an unrelated 400 (e.g. a malformed
@@ -120,13 +124,22 @@ req "$KEY" POST /sandboxes -d "{\"image\":\"ubuntu-dev\",\"ssh_public_key\":\"$S
 check "TTL below 60 s → 400" err_is "ttl_seconds must be between"
 req "$KEY" POST /sandboxes -d '{"image":"ubuntu-dev","ssh_public_key":"not a key"}'
 check "invalid SSH key → 400" err_is "ssh_public_key must be"
+req "$KEY" POST /sandboxes -d "{\"image\":\"ubuntu-dev\",\"ssh_public_key\":\"$SSH_PUB\",\"runtime\":\"runc\"}"
+check "unknown runtime → 400" err_is "runtime must be one of"
+# Kata is offered only where it's installed (D65): created there, refused
+# with a clear message elsewhere (a laptop cluster).
+req "$KEY" POST /sandboxes -d "{\"image\":\"ubuntu-base\",\"ssh_public_key\":\"$SSH_PUB\",\"runtime\":\"kata\"}"
+KID=$(json "$TMP/out" "d.get('id', '')")
+[ -n "$KID" ] && SANDBOXES+=("$KID")
+check "runtime kata → 201 here, or 400 \"isn't available\"" eval '[ "$CODE $(json "$TMP/out" "d.get(\"runtime\", \"\")")" = "201 kata" ] || err_is "isn.t available on this cluster"'
 
 # --- lifecycle ---------------------------------------------------------------
 section "lifecycle"
 START=$(date +%s)
-req "$KEY" POST /sandboxes -d "{\"image\":\"ubuntu-dev\",\"ssh_public_key\":\"$SSH_PUB\",\"ttl_seconds\":600}"
+req "$KEY" POST /sandboxes -d "{\"image\":\"ubuntu-dev\",\"ssh_public_key\":\"$SSH_PUB\",\"ttl_seconds\":600$RT}"
 ID=$(json "$TMP/out" "d['id']")
 check "create → 201 with an sb- id" test "$CODE ${ID:0:3}" = "201 sb-"
+check "runtime is ${SANDBOX_RUNTIME:-gvisor}" test "$(json "$TMP/out" "d['runtime']")" = "${SANDBOX_RUNTIME:-gvisor}"
 [ -n "$ID" ] && SANDBOXES+=("$ID")
 
 STATUS=""
@@ -144,7 +157,14 @@ check "listed in GET /sandboxes" test "$(json "$TMP/out" "any(s['id']=='$ID' for
 section "exec"
 exec_cmd() { req "$KEY" POST "/sandboxes/$ID/exec" -d "$1"; }
 exec_cmd '{"command":"uname -r"}'
-check "runs under gVisor" grep -q gvisor <<<"$(json "$TMP/out" "d['stdout']")"
+KERNEL=$(json "$TMP/out" "d['stdout'].strip()")
+if [ "${SANDBOX_RUNTIME:-gvisor}" = kata ]; then
+	# Its own VM's kernel: not gVisor's, not the node's.
+	NODE_KERNEL=$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kernelVersion}')
+	check "runs in its own VM (kernel $KERNEL, node $NODE_KERNEL)" eval '[[ -n "$KERNEL" && "$KERNEL" != *gvisor* && "$KERNEL" != "$NODE_KERNEL" ]]'
+else
+	check "runs under gVisor" grep -q gvisor <<<"$KERNEL"
+fi
 exec_cmd '{"command":"python3 -c \"print(6*7)\""}'
 check "python3 → 42" test "$(json "$TMP/out" "d['stdout'].strip()")" = 42
 exec_cmd '{"command":"echo oops >&2; exit 3"}'

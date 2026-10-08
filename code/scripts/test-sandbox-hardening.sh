@@ -21,6 +21,9 @@ KEY="$(cat "${SANDBOX_KEYFILE:-$ROOT/.devenv/state/admin-api-key}")"
 TMP="$(mktemp -d "$ROOT/.devenv/state/tmp/harden.XXXXXX")"
 # The key goes to curl in a header file, never on its command line (ps).
 (umask 077 && printf 'Authorization: Bearer %s\n' "$KEY" >"$TMP/auth")
+# SANDBOX_RUNTIME=kata runs the sandbox(es) under Kata (D65); default: the
+# cluster's default runtime (gVisor).
+RT=${SANDBOX_RUNTIME:+,\"runtime\":\"$SANDBOX_RUNTIME\"}
 PASSED=0 FAILED=0 SB=""
 
 pass() { PASSED=$((PASSED + 1)); printf "  \033[32mPASS\033[0m  %s\n" "$1"; }
@@ -41,7 +44,7 @@ for _ in $(seq 1 40); do curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/healt
 
 ssh-keygen -q -t ed25519 -N "" -f "$TMP/k"
 SB=$(curl -s -H @"$TMP/auth" -X POST "$API/sandboxes" \
-	-d "{\"image\":\"ubuntu-dev\",\"ssh_public_key\":\"$(cat "$TMP/k.pub")\"}" |
+	-d "{\"image\":\"ubuntu-dev\",\"ssh_public_key\":\"$(cat "$TMP/k.pub")\"$RT}" |
 	python3 -c "import json,sys; print(json.load(sys.stdin)['id'])") || die "could not create a sandbox"
 s=""
 for _ in $(seq 1 90); do
@@ -50,7 +53,7 @@ for _ in $(seq 1 90); do
 	sleep 1
 done
 [ "$s" = running ] || die "sandbox $SB not running (status: $s)"
-printf "sandbox %s (ubuntu-dev)\n" "$SB"
+printf "sandbox %s (ubuntu-dev, %s)\n" "$SB" "${SANDBOX_RUNTIME:-default runtime}"
 
 # run <command>: exec in the sandbox; prints "<exit_code>|<last output line>"
 run() {
