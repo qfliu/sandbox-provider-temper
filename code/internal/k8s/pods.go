@@ -365,9 +365,12 @@ var DockerCapabilities = []corev1.Capability{
 }
 
 // KataDockerCapabilities are added for Docker sandboxes under Kata only
-// (D64): runc lowers each nested container's OOM score below the pod's, which
-// needs SYS_RESOURCE; inside a Kata VM it reaches only that VM.
-var KataDockerCapabilities = []corev1.Capability{"SYS_RESOURCE"}
+// (D64, D71): runc lowers each nested container's OOM score below the pod's,
+// which needs SYS_RESOURCE; `docker exec` into a container whose process
+// isn't root opens that process's namespaces, which needs SYS_PTRACE (redis,
+// postgres and many official images). Inside a Kata VM they reach only that
+// VM. gVisor's kernel needs neither.
+var KataDockerCapabilities = []corev1.Capability{"SYS_RESOURCE", "SYS_PTRACE"}
 
 // SandboxSecurityContext is the sandbox container's security context: drop
 // all capabilities but SandboxCapabilities (plus DockerCapabilities for a

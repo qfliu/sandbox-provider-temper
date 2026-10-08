@@ -181,9 +181,9 @@ for rc in gvisor:runsc gvisor-docker:runsc-docker kata:kata-clh; do
 done
 if kubectl get runtimeclass kata >/dev/null 2>&1; then
 	KATA='s/runtimeClassName: gvisor$/runtimeClassName: kata/;'
-	admitted "a kata pod with Docker's capabilities and SYS_RESOURCE" \
-		"${KATA}"'s/add: \[CHOWN\]/add: [CHOWN, MKNOD, NET_RAW, SETFCAP, SETPCAP, SYS_ADMIN, NET_ADMIN, SYS_RESOURCE]/'
-	for c in "adds SYS_PTRACE under kata|${KATA}s/add: \[CHOWN\]/add: [CHOWN, SYS_PTRACE]/|may only add back" \
+	admitted "a kata pod with Docker's capabilities, SYS_RESOURCE and SYS_PTRACE" \
+		"${KATA}"'s/add: \[CHOWN\]/add: [CHOWN, MKNOD, NET_RAW, SETFCAP, SETPCAP, SYS_ADMIN, NET_ADMIN, SYS_RESOURCE, SYS_PTRACE]/'
+	for c in "adds SYS_MODULE under kata|${KATA}s/add: \[CHOWN\]/add: [CHOWN, SYS_MODULE]/|may only add back" \
 		"is privileged under kata|${KATA}$(CSC 'privileged: true')|must not be privileged" \
 		"carries a Kata annotation|${KATA}s/^(  labels: .*)\$/\$1\n  annotations: {io.katacontainers.config.hypervisor.kernel_params: \"x=1\"}/|must not carry Kata annotations" \
 		"mounts a hostPath volume under kata|${KATA}s/^(  automountServiceAccountToken: .*)\$/\$1\n  volumes: [{name: h, hostPath: {path: \/}}]/|must not mount hostPath volumes"; do

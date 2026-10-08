@@ -107,7 +107,7 @@ flowchart LR
     works as `user`.
   - `ubuntu-docker` runs under its own gVisor runtime, `gvisor-docker`
     (raw sockets on, 6 more capabilities, granted inside gVisor only), or
-    under Kata (the same 6 plus `SYS_RESOURCE`, inside its VM), with 2 CPUs
+    under Kata (the same 6 plus `SYS_RESOURCE` and `SYS_PTRACE`, inside its VM), with 2 CPUs
     and 4 GiB, half of it for Docker's storage, which is in memory.
   - Limits: 1 CPU / 1 GiB memory / 5 GiB disk.
   - Workspace: `/home/user` survives restarts of the process, not loss of the
@@ -116,7 +116,7 @@ flowchart LR
   - An admission policy rejects any pod in the sandboxes namespace that
     isn't gVisor or Kata, mounts a token, adds capabilities beyond the ones
     sshd and sudo need (plus Docker's only under `gvisor-docker` or `kata`,
-    and `SYS_RESOURCE` only under `kata`), carries Kata annotations, uses
+    and `SYS_RESOURCE`/`SYS_PTRACE` only under `kata`), carries Kata annotations, uses
     the host's namespaces, paths or ports, or skips limits, even if the
     request comes from the API.
   - NetworkPolicies let sandboxes reach DNS and the public internet only. Only

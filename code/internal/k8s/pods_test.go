@@ -165,8 +165,8 @@ func TestBuildPodKata(t *testing.T) {
 	if want := len(SandboxCapabilities) + len(DockerCapabilities) + len(KataDockerCapabilities); len(got) != want {
 		t.Fatalf("docker kata capabilities = %v, want %d", got, want)
 	}
-	if got[len(got)-1] != "SYS_RESOURCE" {
-		t.Fatalf("docker kata capabilities = %v, want SYS_RESOURCE", got)
+	if got[len(got)-2] != "SYS_RESOURCE" || got[len(got)-1] != "SYS_PTRACE" {
+		t.Fatalf("docker kata capabilities = %v, want SYS_RESOURCE and SYS_PTRACE last", got)
 	}
 	c := pod.Spec.Containers[0]
 	if c.Resources.Limits.Memory().Cmp(resource.MustParse("4Gi")) != 0 || len(c.Env) != 1 || c.Env[0].Name != "DOCKER_STORAGE_SIZE" {
@@ -174,12 +174,12 @@ func TestBuildPodKata(t *testing.T) {
 	}
 
 	// gVisor (and an unset runtime, as for rows from before D65) never gets
-	// SYS_RESOURCE.
+	// the Kata-only capabilities.
 	gv := testSandbox
 	gv.Image = DockerImage
 	for _, c := range BuildPod(gv, testCfg).Spec.Containers[0].SecurityContext.Capabilities.Add {
-		if c == "SYS_RESOURCE" {
-			t.Fatal("gvisor-docker sandbox got SYS_RESOURCE")
+		if c == "SYS_RESOURCE" || c == "SYS_PTRACE" {
+			t.Fatalf("gvisor-docker sandbox got %s", c)
 		}
 	}
 }

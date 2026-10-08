@@ -114,7 +114,7 @@ instead of it.
     own handler;
   - no service-account token;
   - only the capabilities sshd and sudo need, plus Docker's six only under
-    `gvisor-docker` or `kata`, and `SYS_RESOURCE` only under `kata`;
+    `gvisor-docker` or `kata`, and `SYS_RESOURCE`/`SYS_PTRACE` only under `kata`;
   - no Kata annotations (they could reconfigure the VM);
   - no host namespaces, hostPath, host ports, sysctls or AppArmor/SELinux
     overrides (Pod Security `baseline`'s rules, which the namespace can no

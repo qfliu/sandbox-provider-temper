@@ -61,9 +61,11 @@ spec:
     expression: "['MKNOD', 'NET_RAW', 'SETFCAP', 'SETPCAP', 'SYS_ADMIN', 'NET_ADMIN']"
   # Kata only, for Docker: runc lowers each nested container's OOM score
   # below the pod's (Kubernetes gives a Burstable pod ~900), which needs
-  # SYS_RESOURCE. gVisor doesn't apply OOM scores, so it never needs it.
+  # SYS_RESOURCE; `docker exec` into a container whose process isn't root
+  # needs SYS_PTRACE to open that process's namespaces (D71). gVisor's own
+  # kernel needs neither. Inside a Kata VM both reach only that VM.
   - name: kataCaps
-    expression: "['SYS_RESOURCE']"
+    expression: "['SYS_RESOURCE', 'SYS_PTRACE']"
   validations:
   - expression: "variables.runtime in ['gvisor', 'gvisor-docker', 'kata']"
     message: "sandbox pods must run under gVisor or Kata (runtimeClassName: gvisor, gvisor-docker or kata)"
