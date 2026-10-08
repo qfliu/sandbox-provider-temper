@@ -58,6 +58,11 @@ curl -s -H @$HOME/.sandbox-auth -X PUT --data-binary @job.py "$SANDBOX/v1/sandbo
 curl -s -H @$HOME/.sandbox-auth -X POST $SANDBOX/v1/sandboxes/$ID/exec -d '{"command":"python3 job.py > out.txt"}'
 curl -s -H @$HOME/.sandbox-auth "$SANDBOX/v1/sandboxes/$ID/files?path=out.txt"
 
+# A server inside, reached from outside through the API (any port):
+curl -s -H @$HOME/.sandbox-auth -X POST $SANDBOX/v1/sandboxes/$ID/exec \
+  -d '{"command":"(setsid python3 -m http.server 8000 >/dev/null 2>&1 &); sleep 1"}'
+curl -s -H @$HOME/.sandbox-auth "$SANDBOX/v1/sandboxes/$ID/ports/8000/"
+
 # List yours (add ?include_ended=true for ended ones), then delete:
 curl -s -H @$HOME/.sandbox-auth $SANDBOX/v1/sandboxes
 curl -s -H @$HOME/.sandbox-auth -X DELETE $SANDBOX/v1/sandboxes/$ID

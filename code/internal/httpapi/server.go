@@ -3,9 +3,11 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -71,6 +73,9 @@ func NewHandler(d Deps) http.Handler {
 	v1.HandleFunc("POST /v1/sandboxes/{id}/exec", handleExec(d.Log, d.Sandboxes))
 	v1.HandleFunc("PUT /v1/sandboxes/{id}/files", handleUpload(d.Log, d.Sandboxes))
 	v1.HandleFunc("GET /v1/sandboxes/{id}/files", handleDownload(d.Log, d.Sandboxes))
+	// Any method: it's a proxy to the sandbox's own HTTP server (D66).
+	v1.HandleFunc("/v1/sandboxes/{id}/ports/{port}/{path...}", handlePort(d.Log, d.Sandboxes))
+	v1.HandleFunc("/v1/sandboxes/{id}/ports/{port}", handlePortRoot)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
@@ -138,3 +143,12 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
 }
+
+// Hijack, Flush and Unwrap pass through to the real writer: the port proxy
+// (D66) streams responses and switches protocols (WebSockets), and
+// ReverseProxy asserts these interfaces directly.
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return http.NewResponseController(r.ResponseWriter).Hijack()
+}
+func (r *statusRecorder) Flush()                      { _ = http.NewResponseController(r.ResponseWriter).Flush() }
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }

@@ -115,6 +115,38 @@ applies (D45).
 - **No auto-refresh:** an earlier htmx version polled every few seconds. It
   was removed for simplicity (D50); a Refresh link is enough for v1.
 
+## Optional features: what agents need most (D66)
+
+The assigner left four to us: streaming, custom images, public URLs for
+ports, and secrets. Ranked by how much an agent is stuck without them:
+
+1. **URLs for sandbox ports: built.** An agent that runs `docker compose up`
+   or a dev server needs to check the result from outside, and a person
+   reviewing the agent's work needs to see it. Without this the app is
+   reachable only from inside the sandbox. `/v1/sandboxes/{id}/ports/{port}/`
+   proxies HTTP (and WebSockets) to it, with the owner's API key, over the
+   sandbox's own SSH connection, so no new network path to sandboxes opens.
+   *Production next step:* subdomain URLs (`8080-sb-x.sandboxes.example`,
+   as E2B does) with a wildcard certificate and short-lived signed links
+   for browsers; that needs a domain we control (Azure's free DNS names
+   have no wildcards).
+2. **Streaming output: next.** Today `exec` returns when the command ends
+   (up to 10 minutes). Agents running builds or test suites benefit from
+   seeing output as it comes (progress, early failure). SSH already streams
+   it (`ssh sb-…@gateway cmd`), so this is an API transport choice (chunked
+   NDJSON or server-sent events over the existing SSH session), not new
+   plumbing.
+3. **Secrets: after that.** Agents need tokens (GitHub, package registries,
+   model APIs) inside the sandbox. Today they can pass them in `exec` or
+   upload a file. A proper version stores them encrypted per user and
+   mounts them per sandbox, with redaction in logs; it's mostly key
+   management.
+4. **Custom images: last.** `ubuntu-docker` covers most of it: an agent can
+   build and run any image inside its sandbox. Letting users boot their own
+   root images needs image scanning, size limits and a policy on what a
+   sandbox image must contain (sshd, our entrypoint), and slows first starts
+   (no pre-pull).
+
 ## Reliability
 
 - **Platform:** API and gateway run 2 replicas each and are stateless. On

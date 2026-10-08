@@ -115,6 +115,9 @@ run "docker rm -f w1 w2" >/dev/null
 works "docker compose up --build"     "cd app && docker compose up -d --build --quiet-pull 2>&1 | tail -1 && sleep 6 && docker compose ps --format '{{.Service}}={{.State}}' | sort | tr '\n' ' '" "web=running"
 works "compose: services reach each other by name" "cd app && docker compose logs --no-log-prefix client | tr '\n' ' '" "PONG 2"
 works "compose: ports: published"      "$GET http://127.0.0.1:8090/" "200"
+# The same app from outside, through the API's port URL (D66).
+code=$(curl -s -o /dev/null -w '%{http_code}' -H @"$TMP/auth" "$API/sandboxes/$SB/ports/8090/")
+[ "$code" = 200 ] && pass "compose app through /v1/sandboxes/$SB/ports/8090/ → 200" || fail "port URL" "$code"
 works "compose down"                   "cd app && docker compose down >/dev/null 2>&1; echo remaining=\$(docker ps -q | wc -l)" "remaining=0"
 
 printf "\nisolation still holds for nested containers\n"

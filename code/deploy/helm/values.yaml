@@ -26,7 +26,7 @@ image:
 # drift apart. Release new images under a NEW tag (D46).
 sandboxImages:
   repository: sandbox/
-  tag: "0.1"
+  tag: "0.2"
   names: [ubuntu-base, ubuntu-dev, ubuntu-docker]
 
 # Runtimes sandboxes may ask for, the first being the default (D65): gvisor,

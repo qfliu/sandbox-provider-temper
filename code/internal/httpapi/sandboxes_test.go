@@ -52,6 +52,10 @@ func (f fakeSandboxes) Download(_ context.Context, _ store.User, _, _ string, se
 	return err
 }
 
+func (f fakeSandboxes) OpenPort(context.Context, store.User, string, int) (sandbox.PortDialer, func(), error) {
+	return nil, nil, f.err
+}
+
 func sandboxHandler(err error) http.Handler {
 	return NewHandler(Deps{
 		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),

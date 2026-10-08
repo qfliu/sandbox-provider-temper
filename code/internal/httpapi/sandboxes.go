@@ -26,6 +26,7 @@ type SandboxService interface {
 	Exec(ctx context.Context, user store.User, id string, req sandbox.ExecRequest) (sshx.ExecResult, error)
 	Upload(ctx context.Context, user store.User, id, path string, r io.Reader) (int64, error)
 	Download(ctx context.Context, user store.User, id, path string, setSize func(int64), w io.Writer) error
+	OpenPort(ctx context.Context, user store.User, id string, port int) (sandbox.PortDialer, func(), error)
 }
 
 const (
@@ -186,6 +187,8 @@ func serviceError(log *slog.Logger, err error) (int, string) {
 		return http.StatusNotFound, "sandbox not found"
 	case errors.Is(err, store.ErrQuotaExceeded):
 		return http.StatusTooManyRequests, "sandbox quota exceeded: delete a sandbox first"
+	case errors.Is(err, sandbox.ErrTooManyPortRequests):
+		return http.StatusTooManyRequests, "too many requests to this sandbox's ports at once, try again"
 	case errors.Is(err, sandbox.ErrUnavailable):
 		return http.StatusServiceUnavailable, "cluster busy or unavailable, try again"
 	default:
