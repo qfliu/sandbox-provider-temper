@@ -16,9 +16,9 @@ variable "location" {
 }
 
 variable "node_size" {
-  description = "Node VM size. Standard_D2ps_v5: 2 vCPU, 8 GiB, arm64 (Ampere), so the arm64 images run unchanged."
+  description = "Node VM size. Standard_D4s_v5: 4 vCPU, 16 GiB, x86 (Intel), with nested virtualization for Kata (D63). arm64 sizes (e.g. Standard_D2ps_v5) still work for gVisor only."
   type        = string
-  default     = "Standard_D2ps_v5"
+  default     = "Standard_D4s_v5"
 }
 
 variable "node_count" {

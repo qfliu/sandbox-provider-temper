@@ -219,14 +219,20 @@ room frees up. More or larger nodes (or the cluster autoscaler) raise that.
 
 ## On Azure (AKS)
 
-Needs an Azure subscription (a free account works: its default quota of 4
-vCPUs per region fits exactly) and the local cluster from `./up.sh`, which
-builds the arm64 images.
+Needs an Azure subscription with 8 vCPUs of quota in the region (2 x86
+`Standard_D4s_v5` nodes, which support nested virtualization for Kata; a
+free account starts at 4, so request more under Quotas, or set
+`AZURE_NODE_SIZE=Standard_D2ps_v5` for 2 small arm64 nodes, gVisor only),
+and the local cluster from `./up.sh`. For x86 nodes `cloud-up.sh` builds
+amd64 images on the local (arm64) cluster under QEMU emulation, about 5
+minutes the first time (D63). Node size and count are remembered only while
+the cluster exists, so a new cluster gets the x86 default even after an
+earlier arm64 run.
 
 ```bash
 ./code/scripts/bootstrap-cloud-tools.sh      # Terraform + Azure CLI into ./.devenv (once)
 source ./env.sh && az login                  # once, in your own terminal
-./cloud-up.sh                                # ~10 minutes; costs about $0.20/hour while it exists
+./cloud-up.sh                                # ~10-15 minutes; costs about $0.45/hour while it exists
 source ./env.sh aks && ./demo.sh             # the same demo and test scripts, against AKS
 ./cloud-down.sh                              # deletes everything and checks nothing is left
 ```
@@ -275,7 +281,7 @@ and the test scripts between the two clusters.
    (revokes their keys, quota 0; the script prints which cluster it acted
    on). Adding the same name again gives them a
    new key and their quota back. Then `./cloud-down.sh` when the session is
-   over: it all costs about $0.20/hour while it runs.
+   over: it all costs about $0.45/hour while it runs.
 
 Let's Encrypt issues at most 5 certificates a week for one name, and each
 `cloud-up.sh` after a `cloud-down.sh` needs a new one. Past that,

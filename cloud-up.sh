@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Deploys the sandbox provider to Azure (Phase 7, D54): an AKS cluster with
-# 2 arm64 nodes and a container registry (Terraform), gVisor on the nodes,
+# 2 x86 nodes and a container registry (Terraform), gVisor on the nodes,
 # the platform images, the Helm chart with a public SSH gateway and a public
 # HTTPS address for the API and dashboard (Let's Encrypt certificate on an
 # Azure DNS name), and an admin API key. Re-run to deploy new code (this
@@ -8,10 +8,10 @@
 # connect with --allowlist-only. ./cloud-down.sh deletes everything.
 # TESTING.md is the guide for the people who then test it.
 #
-# Costs money while it exists (about $0.20/hour: 2 small VMs, a disk, a
-# public IP; the AKS control plane is free). Needs: an Azure subscription
+# Costs money while it exists (about $0.45/hour: 2 4-vCPU VMs, disks, public
+# IPs; the AKS control plane is free). Needs: an Azure subscription
 # and `source ./env.sh && az login` once, and the local cluster (./up.sh),
-# which builds the arm64 images that are pushed to the registry.
+# which builds the images (for x86 nodes, under emulation; D63).
 #
 # Usage: ./cloud-up.sh                    then: source ./env.sh aks && ./demo.sh
 #        ALLOWED_CIDRS=... ./cloud-up.sh --allowlist-only
@@ -19,13 +19,17 @@
 #                                        image build or rollout, so testers'
 #                                        sessions keep running
 # Settings (environment): AZURE_LOCATION (westus2), AZURE_NAME
-# (sandbox-provider), AZURE_NODE_SIZE (Standard_D2ps_v5), AZURE_NODES (2);
+# (sandbox-provider), AZURE_NODE_SIZE (Standard_D4s_v5; x86 with nested
+# virtualization; an arm64 size such as Standard_D2ps_v5 also works, gVisor
+# only), AZURE_NODES (2). 2 x 4 vCPUs needs a vCPU quota of 8 in the region:
+# free accounts start at 4 (the check below says so before creating anything);
 # ALLOWED_CIDRS: comma-separated CIDRs (e.g. testers' office ranges) that
 # alone may use the HTTPS API and the SSH gateway, your own IP always added;
 # empty or "none": open to anyone, who still needs an API key / sandbox key.
 # Settings are remembered (.devenv/state/aks/settings): a re-run without
 # them keeps the last values, and changing one that would replace an
-# existing cluster (region, name, node size or count) is refused.
+# existing cluster (region, name, node size or count) is refused. Node size
+# and count are remembered only while that cluster exists.
 # ACME_EMAIL: optional, for Let's Encrypt notices. AZURE_DNS_LABEL: the
 # name's first part (default sandbox-<8 hex of the subscription>, stable);
 # Let's Encrypt issues at most 5 certificates a week for one name and every
@@ -56,9 +60,13 @@ grep -q '"azurerm_kubernetes_cluster"' .devenv/state/terraform/aks.tfstate 2>/de
 # setting <key> <env var> <default> <why>: the variable if set, else the
 # remembered value, else the default. With a cluster up, a different value is
 # refused, for <why>.
+# With a 5th argument "while-up", the remembered value counts only while the
+# cluster exists: a new cluster gets the current default (review of #74: an
+# old run's arm64 size otherwise outlived the switch to x86).
 setting() {
 	local key=$1 var=$2 def=$3 why=$4 env=${!2:-} old
 	old=$(saved "$key")
+	[ "${5:-}" != while-up ] || [ -n "$EXISTS" ] || old=""
 	if [ -n "$EXISTS" ] && [ -n "$env" ] && [ -n "$old" ] && [ "$env" != "$old" ]; then
 		echo "$var=$env, but the running cluster has $old: $why." >&2
 		echo "Run ./cloud-down.sh first, or leave $var unset." >&2
@@ -70,8 +78,8 @@ REPLACE="changing it would make Terraform replace the cluster and delete its dat
 RESIZE="cloud-up.sh doesn't resize a running cluster (its quota check only runs before the first apply)"
 LOCATION=$(setting LOCATION AZURE_LOCATION westus2 "$REPLACE")
 NAME=$(setting NAME AZURE_NAME sandbox-provider "$REPLACE")
-NODE_SIZE=$(setting NODE_SIZE AZURE_NODE_SIZE Standard_D2ps_v5 "$RESIZE")
-NODES=$(setting NODES AZURE_NODES 2 "$RESIZE")
+NODE_SIZE=$(setting NODE_SIZE AZURE_NODE_SIZE Standard_D4s_v5 "$RESIZE" while-up)
+NODES=$(setting NODES AZURE_NODES 2 "$RESIZE" while-up)
 # Who may connect: as given (empty or "none": anyone), else as last time.
 if [ "${ALLOWED_CIDRS+set}" = set ]; then CIDRS=$ALLOWED_CIDRS; else CIDRS=$(saved ALLOWED_CIDRS); fi
 [ "$CIDRS" != none ] || CIDRS=""
@@ -84,6 +92,7 @@ save_settings() {
 # kubeconfig: with KUBECONFIG on AKS, `minikube status` reports
 # "Misconfigured" and fails.
 mk() { KUBECONFIG="$_SB_STATE/kube/config" minikube "$@"; }
+mk_env() { KUBECONFIG="$_SB_STATE/kube/config" "$@"; } # a script against the local cluster
 # After Terraform has created resources, any failure leaves them billing:
 # say so, with the way out.
 CREATED=""
@@ -99,7 +108,10 @@ MYIP=$(curl -fsS https://api.ipify.org)
 LABEL=${AZURE_DNS_LABEL:-$(saved LABEL)}
 LABEL=${LABEL:-sandbox-$(printf %s "$SUB" | shasum | cut -c1-8)}
 ALLOWED=""
-[ -z "$CIDRS" ] || ALLOWED="$MYIP/32,${CIDRS// /}"
+# Your IP first, then the rest without repeats (a remembered list often
+# already holds it).
+[ -z "$CIDRS" ] || ALLOWED=$(printf '%s,%s' "$MYIP/32" "$CIDRS" | tr ', ' '\n\n' |
+	awk 'NF { if ($0 !~ /\//) $0 = $0 "/32"; if (!seen[$0]++) print }' | paste -sd, -)
 
 if [ "$MODE" = allowlist ]; then
 	# Only the allowlists change: the proxy reloads its config and Azure
@@ -132,18 +144,22 @@ skus = [s for s in json.load(open(path)) if s["name"] == size]
 if not skus:
     print("- 0 missing"); sys.exit()
 s = skus[0]
-vcpus = next((c["value"] for c in s.get("capabilities", []) if c["name"] == "vCPUs"), "0")
+caps = {c["name"]: c["value"] for c in s.get("capabilities", [])}
+vcpus = caps.get("vCPUs", "0")
+arch = {"Arm64": "arm64", "x64": "amd64"}.get(caps.get("CpuArchitectureType", ""), "unknown")
 # Only a region-wide restriction stops us; zone-only ones (type "Zone")
 # don't matter to a cluster that doesn't pin zones.
 region = [r for r in s.get("restrictions") or [] if r.get("type") == "Location"]
-print(s["family"], vcpus, "restricted" if region else "ok")
+print(s["family"], vcpus, "restricted" if region else "ok", arch)
 PY
 ) || { echo "couldn't read the size list for $LOCATION" >&2; exit 1; }
-read -r FAMILY VCPUS RESTRICTED <<<"$SKU"
+# ARCH: the nodes' CPU architecture, which the images are built for (D63).
+read -r FAMILY VCPUS RESTRICTED ARCH <<<"$SKU"
 case "$RESTRICTED" in
 missing) echo "$NODE_SIZE isn't offered in $LOCATION; set AZURE_LOCATION or AZURE_NODE_SIZE" >&2; exit 1 ;;
 restricted) echo "$NODE_SIZE is restricted for this subscription in $LOCATION; try another AZURE_LOCATION" >&2; exit 1 ;;
 esac
+[ "$ARCH" = arm64 ] || [ "$ARCH" = amd64 ] || { echo "can't tell $NODE_SIZE's CPU architecture" >&2; exit 1; }
 NEED=$((VCPUS * NODES))
 if [ ! -s .devenv/state/terraform/aks.tfstate ] || ! grep -q '"azurerm_kubernetes_cluster"' .devenv/state/terraform/aks.tfstate; then
 	az vm list-usage -l "$LOCATION" -o json >"$TMPDIR/usage.json"
@@ -190,11 +206,33 @@ echo "==> gVisor on the nodes"
 kubectl apply -f code/deploy/cloud/gvisor-installer.yaml >/dev/null
 kubectl -n gvisor-system rollout status ds/gvisor-installer --timeout=10m >/dev/null
 
-echo "==> images: build on the local cluster (arm64), push to $ACR"
+echo "==> images: build on the local cluster for $ARCH, push to $ACR"
 DIRTY="$(git diff --quiet HEAD -- code || echo -dirty)"
 TAG="$(git rev-parse --short HEAD)${DIRTY}-$(date +%s)"
-mk image build -t "$ACR/sandbox/api:$TAG" code >"$TMPDIR/cloud-build.log" 2>&1 ||
+# When the nodes have the local cluster's architecture, its own sandbox
+# images (from ./up.sh) are pushed as they are. Otherwise (x86 nodes, an
+# Apple Silicon Mac) every image is built for amd64 here, the sandbox images
+# under QEMU emulation (D63; about 5 minutes the first time, then cached).
+LOCAL_ARCH=$(mk ssh -- uname -m | tr -d '\r')
+case "$LOCAL_ARCH" in aarch64 | arm64) LOCAL_ARCH=arm64 ;; x86_64) LOCAL_ARCH=amd64 ;; esac
+CROSS=""
+if [ "$ARCH" != "$LOCAL_ARCH" ]; then
+	[ "$ARCH" = amd64 ] ||
+		{ echo "the local cluster is $LOCAL_ARCH and the nodes $ARCH: only building amd64 on arm64 is supported; pick an x86 AZURE_NODE_SIZE" >&2; exit 1; }
+	mk_env ./code/scripts/enable-amd64-builds.sh
+	CROSS=--build-opt=opt=platform=linux/amd64
+fi
+# ${CROSS:+...}, not an empty array: macOS's bash 3.2 calls "${a[@]}" of an
+# empty array unbound under set -u (review of #74).
+mk image build -t "$ACR/sandbox/api:$TAG" ${CROSS:+"$CROSS"} code >"$TMPDIR/cloud-build.log" 2>&1 ||
 	{ tail -30 "$TMPDIR/cloud-build.log"; echo "platform image build failed" >&2; exit 1; }
+if [ -n "$CROSS" ]; then
+	for target in base dev docker; do
+		mk image build -t "$ACR/sandbox/ubuntu-$target:0.1" "$CROSS" --build-opt=opt=target="$target" \
+			code/images/sandbox >>"$TMPDIR/cloud-build.log" 2>&1 ||
+			{ tail -30 "$TMPDIR/cloud-build.log"; echo "sandbox image build ($target, amd64) failed" >&2; exit 1; }
+	done
+fi
 # The registry token reaches ctr on the minikube node through stdin, never
 # on a command line on this Mac. Inside the VM it is in ctr's arguments
 # while a push runs (a single-user local VM). It lasts about 3 hours and is
@@ -203,19 +241,25 @@ TOKEN=$(az acr login -n "$ACR_NAME" --expose-token --query accessToken -o tsv --
 	{ echo "couldn't get a token for the registry $ACR_NAME" >&2; exit 1; }
 push() { # push <local ref> <registry ref>
 	local out
-	out=$(printf '%s\n' "$TOKEN" | mk ssh -- "read -r T; sudo ctr -n k8s.io images tag --force $1 $2 >/dev/null &&
+	local tag="sudo ctr -n k8s.io images tag --force $1 $2 >/dev/null &&"
+	[ "$1" != "$2" ] || tag="" # built under its registry name already
+	out=$(printf '%s\n' "$TOKEN" | mk ssh -- "read -r T; $tag
 		sudo ctr -n k8s.io images push --user 00000000-0000-0000-0000-000000000000:\$T $2 >/dev/null && echo pushed-ok" 2>&1 |
 		tr -d '\r') || true
 	if ! grep -q pushed-ok <<<"$out"; then
 		echo "push of $2 failed: $(tail -3 <<<"$out")" >&2
-		echo "(if it says 'content digest … not found', rebuild the local images: ./up.sh)" >&2
+		[ -n "$CROSS" ] || echo "(if it says 'content digest … not found', rebuild the local images: ./up.sh)" >&2
 		return 1
 	fi
 	echo "    $2"
 }
 push "$ACR/sandbox/api:$TAG" "$ACR/sandbox/api:$TAG"
 for img in ubuntu-base ubuntu-dev ubuntu-docker; do
-	push "docker.io/sandbox/$img:0.1" "$ACR/sandbox/$img:0.1"
+	if [ -n "$CROSS" ]; then
+		push "$ACR/sandbox/$img:0.1" "$ACR/sandbox/$img:0.1"
+	else
+		push "docker.io/sandbox/$img:0.1" "$ACR/sandbox/$img:0.1"
+	fi
 done
 unset TOKEN
 
@@ -292,5 +336,5 @@ Sandbox provider is up on AKS ($(( $(date +%s) - START )) s): cluster $CLUSTER i
   Your key:    $SANDBOX_KEYFILE
   Testers:     ./code/scripts/add-tester.sh <name>, then send them TESTING.md, the URL and their key
   Use it here: source ./env.sh aks    (kubectl, demo.sh and the test scripts then target AKS)
-  Costs about \$0.20/hour while it exists. Remove it all: ./cloud-down.sh
+  Costs about \$0.45/hour while it exists. Remove it all: ./cloud-down.sh
 MSG
