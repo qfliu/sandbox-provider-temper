@@ -3,9 +3,11 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -141,3 +143,12 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
 }
+
+// Hijack, Flush and Unwrap pass through to the real writer: the port proxy
+// (D66) streams responses and switches protocols (WebSockets), and
+// ReverseProxy asserts these interfaces directly.
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return http.NewResponseController(r.ResponseWriter).Hijack()
+}
+func (r *statusRecorder) Flush()                      { _ = http.NewResponseController(r.ResponseWriter).Flush() }
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }

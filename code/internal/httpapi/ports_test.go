@@ -1,14 +1,19 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
+	"net/textproto"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qfliu/sandbox-provider-temper/code/internal/sandbox"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
@@ -108,5 +113,103 @@ func TestPortProxyErrors(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/sandboxes/sb-1/ports/8080/", nil))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("no key = %d, want 401", rec.Code)
+	}
+}
+
+// Review of #77: what a sandbox's response may not carry through this
+// origin, 1xx responses dropped, redirects kept under the prefix, escaped
+// paths kept escaped, and only canonical port numbers.
+func TestPortProxyHardening(t *testing.T) {
+	var gotRawPath string
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRawPath = r.URL.EscapedPath()
+		w.Header().Set("Set-Cookie", "x=1; Path=/ui")
+		w.WriteHeader(http.StatusEarlyHints) // a 103 with a cookie
+		for _, h := range []string{"Clear-Site-Data", "Strict-Transport-Security", "Alt-Svc", "WWW-Authenticate", "Access-Control-Allow-Origin"} {
+			w.Header().Set(h, "x")
+		}
+		w.Header().Set("Location", "/login")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer app.Close()
+	h := portHandler(&portSandboxes{addr: strings.TrimPrefix(app.URL, "http://")})
+
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/sandboxes/sb-1/ports/8080/a%2Fb/c", nil)
+	req.Header.Set("Authorization", "Bearer "+goodKey)
+	var early []string
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+		Got1xxResponse: func(code int, _ textproto.MIMEHeader) error { early = append(early, strconv.Itoa(code)); return nil },
+	}))
+	resp, err := (&http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(early) != 0 {
+		t.Errorf("1xx responses passed on: %v", early)
+	}
+	for _, h := range []string{"Set-Cookie", "Clear-Site-Data", "Strict-Transport-Security", "Alt-Svc", "WWW-Authenticate", "Access-Control-Allow-Origin"} {
+		if resp.Header.Get(h) != "" {
+			t.Errorf("%s passed through", h)
+		}
+	}
+	if got := resp.Header.Get("Location"); got != "/v1/sandboxes/sb-1/ports/8080/login" {
+		t.Errorf("Location = %q, want it under the prefix", got)
+	}
+	if resp.Header.Get("X-Content-Type-Options") != "nosniff" || resp.Header.Get("X-Sandbox-Port") != "8080" {
+		t.Errorf("headers = %v", resp.Header)
+	}
+	if gotRawPath != "/a%2Fb/c" {
+		t.Errorf("app saw %q, want the escaped slash kept", gotRawPath)
+	}
+
+	for _, p := range []string{"+80", "0080"} {
+		if rec := do(h, http.MethodGet, "/v1/sandboxes/sb-1/ports/"+p+"/", ""); rec.Code != http.StatusBadRequest {
+			t.Errorf("port %q = %d, want 400", p, rec.Code)
+		}
+	}
+}
+
+// Upgrades (WebSockets) pass through the proxy, wrapper included.
+func TestPortProxyUpgrade(t *testing.T) {
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Upgrade") != "echo" {
+			http.Error(w, "want an upgrade", http.StatusBadRequest)
+			return
+		}
+		conn, rw, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+		rw.Flush()
+		line, _ := rw.ReadString('\n')
+		rw.WriteString("echo: " + line)
+		rw.Flush()
+	}))
+	defer app.Close()
+	srv := httptest.NewServer(portHandler(&portSandboxes{addr: strings.TrimPrefix(app.URL, "http://")}))
+	defer srv.Close()
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	io.WriteString(conn, "GET /v1/sandboxes/sb-1/ports/8080/ws HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer "+goodKey+
+		"\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade through the proxy: %v %v", resp, err)
+	}
+	// Then the connection is the app's: a line goes there and back.
+	io.WriteString(conn, "hello\n")
+	if line, _ := br.ReadString('\n'); line != "echo: hello\n" {
+		t.Fatalf("after the upgrade: %q", line)
 	}
 }

@@ -53,6 +53,7 @@ type Service struct {
 	ssh   *sshx.Pool
 	cfg   config.Sandbox
 	log   *slog.Logger
+	ports portSlots // in-flight port requests per sandbox (D66)
 }
 
 // NewService returns a Service. sshPool connects to sandboxes for exec and

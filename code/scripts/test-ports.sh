@@ -5,7 +5,7 @@
 # body but without the caller's API key or cookies; that responses lose
 # their cookies and gain a CSP sandbox header; that a port with nothing on
 # it is a 502, another user's sandbox a 404, no key a 401; and that the
-# forward can't leave the sandbox (only 127.0.0.1 inside it). Prints
+# sandbox's sshd is set to forward only to its own 127.0.0.1. Prints
 # PASS/FAIL per check; exits non-zero on any failure.
 #
 # Usage (from the project root, with the API deployed; minikube or AKS):
@@ -107,20 +107,27 @@ for p in 0 65536 x; do
 done
 [ -z "$bad" ] && pass "ports 0, 65536 and 'x' → 400" || fail "bad ports" "$bad (want 400)"
 # Another user's sandbox looks like it doesn't exist (smoke-api.sh's second
-# user; smoke-api.sh refreshes its key for the current cluster).
-OKEY=$(cat "$ROOT/.devenv/state/smoke-keys/smoke-other" 2>/dev/null || true)
-if [ -n "$OKEY" ] && [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OKEY" "$API/me")" = 200 ]; then
+# user, smoke-other; its cached key is renewed when this cluster rejects it).
+KF="$ROOT/.devenv/state/smoke-keys/smoke-other"
+OKEY=$(cat "$KF" 2>/dev/null || true)
+if [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${OKEY:-none}" "$API/me")" != 200 ]; then
+	kx() { kubectl -n sandbox-system exec deploy/sandbox-api -- /api "$@" 2>&1; }
+	out=$(kx create-user --name smoke-other) || out=$(kx create-key --user smoke-other --name smoke)
+	OKEY=$(printf '%s\n' "$out" | grep -o 'sk_[A-Za-z0-9_-]*' | tail -1)
+	[ -z "$OKEY" ] || (umask 077 && mkdir -p "${KF%/*}" && printf '%s\n' "$OKEY" >"$KF")
+fi
+if [ -n "$OKEY" ]; then
 	(umask 077 && printf 'Authorization: Bearer %s\n' "$OKEY" >"$TMP/oauth")
 	code=$(curl -s -o /dev/null -w '%{http_code}' -H @"$TMP/oauth" "$U/8000/")
 	[ "$code" = 404 ] && pass "another user's key → 404" || fail "another user" "$code"
 else
-	fail "another user" "no valid key for smoke-other on this cluster: run smoke-api.sh first"
+	fail "another user" "couldn't get a key for smoke-other: $out"
 fi
 # The forward stays inside the sandbox: its sshd permits only loopback.
 r=$(curl -s -H @"$TMP/auth" -X POST "$API/sandboxes/$SB/exec" -d '{"command":"grep -E \"^(AllowTcpForwarding|PermitOpen)\" /etc/ssh/sshd_config | tr \"\\n\" \" \""}' |
 	python3 -c "import json,sys; print(json.load(sys.stdin)['stdout'])")
-[[ "$r" == *"AllowTcpForwarding local"*"PermitOpen localhost:* 127.0.0.1:*"* ]] &&
-	pass "sandbox sshd forwards only to its own loopback" || fail "sshd forwarding config" "$r"
+[[ "$r" == *"AllowTcpForwarding local"*"PermitOpen 127.0.0.1:*"* && "$r" != *localhost* ]] &&
+	pass "sandbox sshd is configured to forward only to its own 127.0.0.1" || fail "sshd forwarding config" "$r"
 
 printf "\n%d passed, %d failed\n" "$PASSED" "$FAILED"
 [ "$FAILED" -eq 0 ]

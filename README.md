@@ -154,7 +154,9 @@ Notes:
   - Needs the owner's (or an admin's) API key, like every call. The key and
     any cookies are removed before the request reaches the sandbox;
     responses lose `Set-Cookie` and get `Content-Security-Policy: sandbox`.
-    The app sees its prefix in `X-Forwarded-Prefix`.
+    The app sees its prefix in `X-Forwarded-Prefix`; a redirect to `/x`
+    stays under the prefix. At most 64 requests at once per sandbox
+    (429 beyond).
   - It goes over the sandbox's own SSH connection (a forward to its
     loopback), so no other network path to the sandbox exists.
 - **Exec**

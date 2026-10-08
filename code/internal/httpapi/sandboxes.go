@@ -187,6 +187,8 @@ func serviceError(log *slog.Logger, err error) (int, string) {
 		return http.StatusNotFound, "sandbox not found"
 	case errors.Is(err, store.ErrQuotaExceeded):
 		return http.StatusTooManyRequests, "sandbox quota exceeded: delete a sandbox first"
+	case errors.Is(err, sandbox.ErrTooManyPortRequests):
+		return http.StatusTooManyRequests, "too many requests to this sandbox's ports at once, try again"
 	case errors.Is(err, sandbox.ErrUnavailable):
 		return http.StatusServiceUnavailable, "cluster busy or unavailable, try again"
 	default:
