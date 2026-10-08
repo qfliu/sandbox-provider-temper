@@ -16,7 +16,8 @@ would add. The full decision log, with every alternative considered, is
   A sandbox's files survive process crashes but not the loss of its pod or
   node (D8). Persistent disks are the next step below, not v1.
 - **Startup time matters**, so the target is about a second for one sandbox
-  on a warm node, and no image download on the critical path.
+  on a warm node (met on the laptop; ~3 s on AKS with gVisor, ~7 s with
+  Kata), and no image download on the critical path.
 
 ## Main trade-offs
 
@@ -30,25 +31,26 @@ instead of it.
 |---|---|---|---|
 | Boundary | a user-space kernel (gVisor's Sentry) between the sandbox and the host kernel | a hardware-virtualized VM with its own Linux kernel | a microVM, as Kata |
 | Runs on | any node, including arm64 and a laptop | x86 nodes with nested virtualization (Azure Dv5/Dsv5; Azure's Arm sizes have none) | the same as Kata |
-| Start, one sandbox on AKS | ~3 s to `running` | ~7 s | ~125 ms VM boot; the rest is ours to build |
-| Fixed cost per sandbox | none beyond its pod | +250m CPU, +130 Mi (the VM) | lower than Kata |
-| Docker inside | works, with gVisor's raw-socket flags, a separate runtime class and 6 extra capabilities (D61, D62); no ICMP NAT | works with a real kernel (Docker's own networking); the capabilities stay inside the VM (D64) | works |
-| Compatibility | most software; some syscalls and `/proc` details differ | everything a Linux kernel runs | the same |
+| Start: one sandbox, create → `running` on AKS (end to end) | ~3 s | ~7 s | not measured (its VM boot alone is ~125 ms, published) |
+| Declared cost per sandbox | none (gVisor's own processes count against the sandbox's limits) | +250m CPU, +130 Mi (the VM's overhead) | lower than Kata (expected) |
+| Docker inside | works, with gVisor's raw-socket flags, a separate runtime class and 6 extra capabilities (D61, D62); no ICMP NAT | works with a real kernel (Docker's own networking); the capabilities stay inside the VM (D64) | expected (not tested) |
+| Compatibility | most software; some syscalls and `/proc` details differ | nearly everything Linux runs (a minimal guest kernel, no host devices) | the same as Kata |
 | What it took us | a node installer we wrote (D54) | the official installer, one Helm chart (D64) | a VM orchestrator of our own, replacing the pod layer: weeks |
 
 - **Why both:** gVisor starts faster, costs nothing extra per sandbox, runs
   on every node and on a laptop, so it's the default. Kata is the stronger
   boundary (a bug must escape a VM, not a user-space kernel) and runs
-  anything a Linux kernel runs, at a few seconds and a few hundred MB more.
+  nearly anything Linux runs, at a few seconds more to start and 250m
+  CPU / 130 Mi more declared per sandbox.
   The caller chooses per sandbox (`"runtime": "kata"`); both run on the
   same x86 nodes.
 - **Why not Firecracker:** its strengths (fastest boot, smallest footprint,
-  memory snapshots for pause/resume) matter at E2B-like density or with
-  pause/resume, which the assigner said isn't needed. Used directly it
-  means our own VM orchestration instead of Kubernetes pods; through Kata
-  (`kata-fc`) it needs a devmapper pool on every node and can't share
-  folders into the VM (Secrets, emptyDir). Kata can switch to it later by
-  configuration, not redesign.
+  memory snapshots) matter at E2B-like density or for pause/resume, which
+  v1 doesn't offer (D8). Used directly it means our own VM orchestration
+  instead of Kubernetes pods; through Kata (`kata-fc`) it needs a
+  devmapper pool on every node and has no shared filesystem (no virtio-fs:
+  Kata copies Secret files into the VM instead). Kata can switch to it
+  later by configuration, not redesign.
 - **What Kata costs us in defence in depth:** under Kata the VM is the only
   boundary. Kata turns off seccomp in the guest and the guest has no
   AppArmor, so a Docker sandbox (SYS_ADMIN) is root in its VM; that's by
@@ -171,75 +173,98 @@ ports, and secrets. Ranked by how much an agent is stuck without them:
 ## Scaling to thousands (D67)
 
 Measured at the scale the assigner asked for: 10 sandboxes at once, p50/p95
-to `running` (README, D48/D56, and per runtime in 8.6). The rest is argued
-from the design: what each part costs per sandbox, what limits it first, and
-how it grows. Nothing here holds a sandbox's state in memory that another
-replica couldn't rebuild from Postgres and the Kubernetes API.
+to `running` (README). The rest is argued from the design: what each part
+costs per sandbox, what limits it first, and how it grows. No part keeps
+state that another replica couldn't rebuild from Postgres and the
+Kubernetes API.
 
 **Nodes: the real cost.** A sandbox *requests* 250m CPU and 256 Mi (Docker
-sandboxes 1 Gi); Kata adds 250m and 130 Mi per VM (its RuntimeClass
-overhead). A 4-vCPU AKS node has 3.86 CPUs allocatable, of which AKS's own
-pods and ours take 1.4, so it fits about 9 gVisor or 4 Kata sandboxes:
-that's why 10 at once needs two nodes. On 16-vCPU nodes the fixed share
-shrinks: about 58 gVisor or 29 Kata per node, so 1,000 live sandboxes is
-roughly 18 gVisor nodes or 35 Kata nodes (CPU requests; most sandboxes
-idle far below their 1-2 CPU limits, which is why requests are low).
-Growth: the cluster autoscaler adds nodes when sandboxes stay `pending`;
-the pre-pull DaemonSet (D46) puts the images on a new node before or while
-its first sandboxes wait, and a warm pool (pods started ahead, assigned at
-create) hides the node and image time entirely.
+sandboxes 1 Gi); Kata adds a declared 250m and 130 Mi per VM (its
+RuntimeClass overhead); gVisor declares none (its own processes count
+against the sandbox's limits). Measured on a 4-vCPU AKS node (3.86 CPUs
+allocatable): per-node pods (AKS agents, CSI drivers, the gVisor and Kata
+installers, the pre-pull DaemonSet) request 0.37 CPU; one-off cluster pods
+(CoreDNS, metrics-server, our API, gateway, Postgres and HTTPS proxy)
+request 1.01 CPU in all. On a one-node cluster that leaves room for about
+9 gVisor or 4 Kata sandboxes, so 10 at once of each needs a second node.
+On 16-vCPU nodes only the per-node 0.37 repeats: about 60 gVisor or 30
+Kata sandboxes per node by CPU (Docker sandboxes hit their 1 Gi memory
+requests at about the same count on a 64 GiB node), so 1,000 live
+sandboxes is roughly 17 gVisor nodes or 34 Kata nodes. Requests are low
+because most sandboxes idle far below their 1-2 CPU limits. Growth: the
+cluster autoscaler adds nodes when sandboxes stay `pending`; the pre-pull
+DaemonSet (D46) puts the images on a new node while its first sandboxes
+wait; a warm pool (pods started ahead, assigned at create) would hide the
+node and image time entirely.
 
-**Kubernetes API.** A create is two writes (the host-key Secret, the pod)
-and a delete one (the Secret goes with the pod). The first limit a burst
-hits is ours: client-go's default rate limit of 5 requests/s (burst 10)
-per API replica, about 2.5 creates/s once the burst is spent; it's raised
-in 8.6 (measured there). Beyond that the API server's own fairness limits
-and the control plane's size apply: AKS's Free tier is for testing, the
-Standard tier (and its SLA) is for this. The pod watch (one informer per API
-replica on the sandboxes namespace) costs a few KB per pod: tens of
-thousands are fine.
+**Kubernetes API.** A create is three writes (the host-key Secret, the pod,
+the Secret's owner reference) and a delete two. The first software limit
+was our own: client-go's default client-side rate limit of 5 requests/s
+(burst 10) per API replica, shared with the reaper and reconcile: under
+1.7 creates/s once the burst is spent, and at 10 at once the create request
+itself waited 2-4 s. It's now 50/s (burst 100); measured at 10 at once on
+the laptop, the create request dropped from p50 2.3-4.2 s to 0.1 s and p95
+to `running` from 4.9-5.2 s to 3.6-4.7 s (D68). Above that, the API
+server's own fairness limits and the control plane's size apply: AKS's
+Free tier is for testing, its Standard tier is for this. Two costs grow
+with the number of sandboxes rather than requests:
+- the pod watch (one informer per API replica on the sandboxes namespace),
+  a few KB per pod: tens of thousands are fine;
+- the reconcile (D28): every 30 s each API replica reads every live
+  sandbox from Postgres and LISTs every sandbox's host-key Secret (to
+  delete orphans). At 10,000 sandboxes that's a 10,000-object LIST per
+  replica per 30 s, the most expensive kind of API call. The fix is to run
+  the reconcile on one replica (leader election) and to read Secrets
+  through a label-filtered informer instead of LISTing them.
 
-**API replicas: stateless.** Each request is independent; the replicas
-share Postgres. Per sandbox, each replica keeps at most one pooled SSH
-connection (sshd allows 64 sessions on it) for exec, files and port URLs,
-closed when idle. CPU goes to SSH crypto and to copying bytes for exec
-output and file transfers, so replicas scale with request volume, not with
-the number of sandboxes. More replicas behind the same Service; nothing to
-coordinate (the reaper claims rows atomically, D32).
+**API replicas: stateless.** Each request is independent and the replicas
+share Postgres; the reaper claims rows atomically (D32). Per sandbox, a
+replica keeps at most one pooled SSH connection (sshd allows 64 sessions on
+it; port URLs are capped at 64 requests in flight) for exec, files and
+port URLs, closed after 5 minutes idle. CPU goes to SSH and to copying exec
+output, files and proxied responses, so replicas scale with request volume;
+the reconcile above is the part that scales with sandbox count.
 
 **SSH gateway: stateless.** Each SSH session is two TCP connections and a
-few goroutines; a replica caps itself at 1,000 connections, 20 handshakes
-per client and 10 per sandbox (D49). More replicas behind the one load
-balancer; a session that loses its replica reconnects to another.
+few goroutines. A replica caps itself at 1,000 connections, 20 unfinished
+handshakes per client and 10 connections per sandbox (D49). More replicas
+go behind the one load balancer; if a replica goes away, its clients
+reconnect and land on another.
 
 **Postgres: small and boring.** Writes: one row per create, one update per
-status change, one activity touch per exec or file call, and one
-`ssh_activity` upsert per open SSH session per minute. The reconcile reads
-every live sandbox every 30 s per API replica (indexed). At 10,000 live
-sandboxes that's a few hundred writes and a few hundred rows read per
-second: one modest instance. What it needs at that point is availability,
-not size: a managed, highly available Postgres (D10 next step), and a
-connection pooler once replicas × 10 connections gets large.
+status change, one activity touch per exec, file call or port request (and
+per minute on long port connections), and one `ssh_activity` upsert per
+open SSH session per minute. Reads: the reconcile above. At 10,000 live
+sandboxes that's a few hundred small writes and reads per second, one
+modest instance. What it needs at that point is availability: a managed,
+highly available Postgres (a next step below), and a connection pooler
+once API and gateway replicas add up (each has its own pool).
 
-**Image pulls.** 145 to 350 MB per image, pulled once per node and kept
-(pre-pull). From a registry in the same region a cold node takes 5-10 s per
-image (D56). With autoscaling, that's on the critical path only for the
-first sandboxes on a brand-new node; registry replication or image
-streaming help at larger scale.
+**Image pulls.** 145-350 MB per image (`ubuntu-base`, `ubuntu-dev`,
+`ubuntu-docker`), pulled once per node and kept (pre-pull). A cold node took
+5-10 s per image from a registry in the same region (D56, arm64 nodes);
+with autoscaling that's on the critical path only for the first sandboxes
+on a brand-new node. Registry replication or image streaming help further.
 
-**Beyond one cluster.** One cluster runs thousands of sandboxes (Kubernetes
-supports 5,000 nodes and 150,000 pods; AKS allows 250 pods per node with
-this network setup). Past that, or for regions and failure isolation: more
-clusters ("cells"), each with its own gateway; Postgres records which cell
-a sandbox lives in, and the API sends each call there. The sandbox ID
-already routes every request, so that's an addition, not a redesign.
+**Beyond one cluster.** One cluster can run thousands of sandboxes
+(Kubernetes supports 5,000 nodes and 150,000 pods; AKS allows 250 pods per
+node with this network setup). Past that, or for regions and failure
+isolation: more clusters ("cells"), each with its own gateway; Postgres
+records which cell a sandbox lives in, and the API sends each call there.
+Every call already carries the sandbox ID, so that's an addition, not a
+redesign.
 
-**What would break first at 1,000 concurrent creates, in order:** node
-capacity (sandboxes wait as `pending` until the autoscaler adds nodes),
-then the API's client-side rate limit (fixed in 8.6), then the per-user
-quota row lock if one user creates them all (it serializes that user's
-creates; per-sandbox reservations would remove it), then the Kubernetes
-control plane tier.
+**What would happen at 1,000 creates at once** (with quotas raised: the
+default of 10 live sandboxes per user stops one user long before this):
+1. **Node capacity.** Sandboxes beyond what fits stay `pending` until the
+   autoscaler adds nodes (minutes), then the images download.
+2. **The create request.** Each create makes its pod inside the HTTP
+   request. With 50 requests/s per replica that's ~17 creates/s per
+   replica; a client that gives up first (say after 30 s) cancels its
+   create, which is recorded as `failed` with a 503. Creating the pod
+   after replying (a queue) would make bursts cheap for clients.
+3. **The reconcile LIST**, as the count of sandboxes grows (above).
+4. **The control plane tier.**
 
 ## Reliability
 
@@ -299,7 +324,7 @@ control plane tier.
 - **Install:** Helm only via `helm upgrade --install`. Generated secrets rely
   on `lookup`, which GitOps rendering doesn't run (D52).
 - **Postgres:** no external or managed Postgres option in the chart yet.
-- **Images:** two fixed images (D2). User-supplied images would need image
+- **Images:** three fixed images (D2, D62). User-supplied images would need image
   scanning and policy.
 - **Tenancy:** users and admins only, no organizations, teams or per-sandbox
   sharing.

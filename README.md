@@ -4,14 +4,16 @@ Isolated Linux sandboxes for AI agents, on Kubernetes. An agent with an API
 key creates a sandbox, runs commands in it, moves files in and out, and can
 SSH in, like a person would. Each sandbox is an Ubuntu pod running under
 **gVisor**, a user-space kernel, so code in it never talks to the host's
-kernel directly. It is cut off from the cluster and other sandboxes by
-NetworkPolicies, and it is deleted when its owner says so, when it has been
+kernel directly, or, when the caller asks for it, under **Kata
+Containers**: a lightweight VM with its own Linux kernel (on clusters with
+x86 nodes that support nested virtualization). It is cut off from the
+cluster and other sandboxes by NetworkPolicies, and it is deleted when its owner says so, when it has been
 idle for 30 minutes, or when its lifetime runs out.
 
 - **HTTP API** (`/v1`) for agents: create, list, exec, upload, download, delete.
 - **SSH gateway**: `ssh <sandbox-id>@<gateway>` with the key given at create.
 - **Dashboard** (`/ui`): your sandboxes and API keys; for admins, every user and sandbox.
-- **Helm chart** for any cluster with gVisor; scripts for a laptop.
+- **Helm chart** for any cluster with gVisor (and Kata, where installed); scripts for a laptop and for Azure AKS.
 
 Design decisions and the reasons for them are logged in [DESIGN.md](DESIGN.md)
 (D1–D59); [WRITEUP.md](WRITEUP.md) covers the trade-offs and what comes next.
@@ -72,7 +74,7 @@ flowchart LR
     pg[("Postgres<br/>users, keys, sandboxes")]
     pre["pre-pull DaemonSet"]
   end
-  subgraph sbx["namespace sandboxes (gVisor, default-deny network)"]
+  subgraph sbx["namespace sandboxes (gVisor or Kata, default-deny network)"]
     s1["sandbox pod<br/>Ubuntu + sshd"]
     s2["sandbox pod"]
   end
@@ -100,20 +102,23 @@ flowchart LR
   (plus Python 3, Node.js, package managers) or `ubuntu-docker` (plus Docker
   Engine 29, Compose and Buildx: `docker build`, `docker run -p`,
   `docker compose up` work as `user`, without sudo).
-  - Runtime: gVisor, as `root` inside the pod with only the capabilities sshd
-    and sudo need. The agent works as `user`.
+  - Runtime: gVisor by default, or Kata (`"runtime": "kata"`), as `root`
+    inside the pod with only the capabilities sshd and sudo need. The agent
+    works as `user`.
   - `ubuntu-docker` runs under its own gVisor runtime, `gvisor-docker`
-    (raw sockets on, 6 more capabilities, granted inside gVisor only), with
-    2 CPUs and 4 GiB, half of it for Docker's storage, which is in memory.
+    (raw sockets on, 6 more capabilities, granted inside gVisor only), or
+    under Kata (the same 6 plus `SYS_RESOURCE`, inside its VM), with 2 CPUs
+    and 4 GiB, half of it for Docker's storage, which is in memory.
   - Limits: 1 CPU / 1 GiB memory / 5 GiB disk.
   - Workspace: `/home/user` survives restarts of the process, not loss of the
     pod or its node; a lost sandbox is marked `lost`, not recreated.
 - **Guard rails in the cluster**:
-  - An admission policy rejects any pod in the sandboxes namespace that isn't
-    gVisor, mounts a token, adds capabilities beyond the ones sshd and sudo
-    need (plus Docker's, only under the `gvisor-docker` runtime), uses the
-    host's namespaces, paths or ports, or skips limits, even if the request
-    comes from the API.
+  - An admission policy rejects any pod in the sandboxes namespace that
+    isn't gVisor or Kata, mounts a token, adds capabilities beyond the ones
+    sshd and sudo need (plus Docker's only under `gvisor-docker` or `kata`,
+    and `SYS_RESOURCE` only under `kata`), carries Kata annotations, uses
+    the host's namespaces, paths or ports, or skips limits, even if the
+    request comes from the API.
   - NetworkPolicies let sandboxes reach DNS and the public internet only. Only
     the API and gateway may reach a sandbox, on port 22.
   - Postgres roles keep the API off superuser and limit the gateway to
@@ -259,8 +264,9 @@ source ./env.sh aks && ./demo.sh             # the same demo and test scripts, a
 `cloud-up.sh` checks the login, the region's quota and that the node size
 is offered, creates the cluster and registry with Terraform (Kubernetes API
 open to your IP only), installs gVisor on the nodes
-(`code/deploy/cloud/gvisor-installer.yaml`), pushes the images, and installs
-the chart. That gives:
+(`code/deploy/cloud/gvisor-installer.yaml`) and, on x86 nodes, Kata
+Containers (`kata-deploy`, `code/deploy/cloud/kata-values.yaml`), pushes the
+images, and installs the chart. That gives:
 
 - a public SSH gateway on port 22;
 - the API and dashboard on **`https://sandbox-<id>.<region>.cloudapp.azure.com`**,

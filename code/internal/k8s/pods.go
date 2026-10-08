@@ -48,10 +48,12 @@ func NewClientset() (kubernetes.Interface, error) {
 			return nil, fmt.Errorf("load kubernetes config: %w", err)
 		}
 	}
-	// client-go's default client-side limit is 5 requests/s (burst 10); a
-	// create is two writes (Secret, pod), so one API replica could start only
-	// ~2.5 sandboxes/s once the burst was spent (D67). The API server's own
-	// priority and fairness limits still apply above this.
+	// client-go's default client-side limit is 5 requests/s (burst 10). A
+	// create is three writes (Secret, pod, the Secret's owner reference) and
+	// a delete two, and the reaper and reconcile share the budget, so one
+	// API replica could start under ~1.7 sandboxes/s once the burst was spent,
+	// and the create request itself waited 2-4 s at 10 at once (D68). The API
+	// server's own priority and fairness limits still apply above this.
 	cfg.QPS, cfg.Burst = ClientQPS, ClientBurst
 	return kubernetes.NewForConfig(cfg)
 }
