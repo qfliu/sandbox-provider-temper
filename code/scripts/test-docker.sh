@@ -114,6 +114,9 @@ works "published port on the sandbox's own address" "$GET http://\$(hostname -i 
 run "docker rm -f w1 w2" >/dev/null
 works "docker compose up --build"     "cd app && docker compose up -d --build --quiet-pull 2>&1 | tail -1 && sleep 6 && docker compose ps --format '{{.Service}}={{.State}}' | sort | tr '\n' ' '" "web=running"
 works "compose: services reach each other by name" "cd app && docker compose logs --no-log-prefix client | tr '\n' ' '" "PONG 2"
+# docker exec into a container whose process isn't root (redis runs as
+# redis): under Kata it needs SYS_PTRACE (D71).
+works "docker exec into a non-root container" "cd app && docker compose exec -T redis redis-cli ping" "PONG"
 works "compose: ports: published"      "$GET http://127.0.0.1:8090/" "200"
 # The same app from outside, through the API's port URL (D66).
 code=$(curl -s -o /dev/null -w '%{http_code}' -H @"$TMP/auth" "$API/sandboxes/$SB/ports/8090/")
@@ -135,9 +138,9 @@ r=$(tcp "$KIP" 443)
 [[ "$r" == *"connect=1" ]] && pass "nested container can't reach the Kubernetes API ($KIP)" || fail "kubernetes API" "$r"
 # --privileged can only hand out what dockerd holds: the sandbox's 16
 # capabilities (D61), bounding set a82435fb; under Kata also SYS_RESOURCE
-# (D64), a92435fb.
+# and SYS_PTRACE (D64, D71), a92c35fb.
 BND=00000000a82435fb N=16
-[ "${SANDBOX_RUNTIME:-}" = kata ] && BND=00000000a92435fb N=17
+[ "${SANDBOX_RUNTIME:-}" = kata ] && BND=00000000a92c35fb N=18
 r=$(run "docker run --rm --privileged alpine:3.22 grep CapBnd /proc/self/status")
 [[ "$r" == "0|"*"$BND" ]] && pass "nested --privileged gets only the sandbox's $N capabilities" || fail "nested --privileged" "$r"
 
