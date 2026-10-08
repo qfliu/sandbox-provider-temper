@@ -57,7 +57,7 @@ that, this section was written from memory; R1–R8 match it.
   MacOS"; and "as for gVisor, that won't handle the snapshot/restore behavior
   all sandbox providers offer. If we only do gVisor / Kata on regular k8s, its
   a few line config setting."
-- 2026-10-07, our scope questions (awaiting answers): is snapshot/restore
+- 2026-10-07, our scope questions: is snapshot/restore
   required, and if so files only or full running state, pause/resume of the
   same sandbox or new sandboxes from a snapshot; are streaming output and
   background processes, custom images, public URLs for sandbox ports, and
@@ -68,6 +68,16 @@ that, this section was written from memory; R1–R8 match it.
   new pod, its own checkpoint API being for runc containers, so that is the
   work it would take.) Comparison with hosted providers:
   WRITEUP.md, "Compared with hosted sandbox providers".
+- 2026-10-08, his answers ("my last email was a bit muddled"): **Docker
+  must work inside the sandboxes** (build, run, compose with ports, a recent
+  version); "gVisor struggles there, so check that first"; Firecracker or
+  Kata give a real VM boundary and nested virtualization works on regular
+  AWS (C7i/M8i) and Azure (Dv5) nodes, "your call, just explain the
+  tradeoffs"; streaming, custom images, URLs and secrets are optional,
+  "build what you think matters most for agents and tell us why"; the
+  dashboard's "interact" means a baseline UI; ~10 concurrent sandboxes with
+  p50/p95 startup times is enough scale, "argue the rest from the design".
+  Snapshot/restore isn't among them. Phase 8 (D60–D69) is the response.
 
 ### Must have
 - R1. Sandbox provider for agents to securely run code.

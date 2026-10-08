@@ -48,7 +48,7 @@ what this platform has.
 
 | Feature | Who offers it | Here |
 |---|---|---|
-| **Snapshot / restore / fork, pause / resume** | all three: files everywhere; memory and running processes in E2B's default pause/resume, experimental at Modal, VM sandboxes only at Daytona | not built; awaiting the brief author's answer. gVisor can checkpoint a running sandbox (`runsc checkpoint`); the missing part is restoring it into a new pod: Kubernetes has no restore path for gVisor checkpoints (its checkpoint API is for runc containers) |
+| **Snapshot / restore / fork, pause / resume** | all three: files everywhere; memory and running processes in E2B's default pause/resume, experimental at Modal, VM sandboxes only at Daytona | not built: the assigner's follow-up (2026-10-08) names Docker inside sandboxes, not snapshots, as the requirement. gVisor can checkpoint a running sandbox (`runsc checkpoint`); the missing part is restoring it into a new pod: Kubernetes has no restore path for gVisor checkpoints (its checkpoint API is for runc containers) |
 | **Streaming command output, background processes, stdin** | all three | commands run to completion and return their output; SSH streams |
 | **Custom images / templates** (your own Dockerfile, start and ready commands) | all three | three fixed images; build and run any image *inside* `ubuntu-docker` |
 | **Environment variables and secrets at create** | all three | none |
