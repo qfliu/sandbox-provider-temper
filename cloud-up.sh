@@ -40,6 +40,8 @@ START=$(date +%s)
 NS=sandbox-system
 KATA_CHART=oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy
 KATA_VERSION=4.2.0
+# The sandbox images' tag: the chart's sandboxImages.tag (one place to change).
+IMAGE_TAG=$(awk '/^sandboxImages:/ {f = 1} f && /^  tag:/ {gsub(/"/, "", $2); print $2; exit}' code/deploy/helm/values.yaml)
 MODE=full
 case "${1:-}" in
 "") ;;
@@ -244,7 +246,7 @@ mk image build -t "$ACR/sandbox/api:$TAG" ${CROSS:+"$CROSS"} code >"$TMPDIR/clou
 	{ tail -30 "$TMPDIR/cloud-build.log"; echo "platform image build failed" >&2; exit 1; }
 if [ -n "$CROSS" ]; then
 	for target in base dev docker; do
-		mk image build -t "$ACR/sandbox/ubuntu-$target:0.1" "$CROSS" --build-opt=opt=target="$target" \
+		mk image build -t "$ACR/sandbox/ubuntu-$target:$IMAGE_TAG" "$CROSS" --build-opt=opt=target="$target" \
 			code/images/sandbox >>"$TMPDIR/cloud-build.log" 2>&1 ||
 			{ tail -30 "$TMPDIR/cloud-build.log"; echo "sandbox image build ($target, amd64) failed" >&2; exit 1; }
 	done
@@ -272,9 +274,9 @@ push() { # push <local ref> <registry ref>
 push "$ACR/sandbox/api:$TAG" "$ACR/sandbox/api:$TAG"
 for img in ubuntu-base ubuntu-dev ubuntu-docker; do
 	if [ -n "$CROSS" ]; then
-		push "$ACR/sandbox/$img:0.1" "$ACR/sandbox/$img:0.1"
+		push "$ACR/sandbox/$img:$IMAGE_TAG" "$ACR/sandbox/$img:$IMAGE_TAG"
 	else
-		push "docker.io/sandbox/$img:0.1" "$ACR/sandbox/$img:0.1"
+		push "docker.io/sandbox/$img:$IMAGE_TAG" "$ACR/sandbox/$img:$IMAGE_TAG"
 	fi
 done
 unset TOKEN

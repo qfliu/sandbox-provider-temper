@@ -71,6 +71,9 @@ func NewHandler(d Deps) http.Handler {
 	v1.HandleFunc("POST /v1/sandboxes/{id}/exec", handleExec(d.Log, d.Sandboxes))
 	v1.HandleFunc("PUT /v1/sandboxes/{id}/files", handleUpload(d.Log, d.Sandboxes))
 	v1.HandleFunc("GET /v1/sandboxes/{id}/files", handleDownload(d.Log, d.Sandboxes))
+	// Any method: it's a proxy to the sandbox's own HTTP server (D66).
+	v1.HandleFunc("/v1/sandboxes/{id}/ports/{port}/{path...}", handlePort(d.Log, d.Sandboxes))
+	v1.HandleFunc("/v1/sandboxes/{id}/ports/{port}", handlePortRoot)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)

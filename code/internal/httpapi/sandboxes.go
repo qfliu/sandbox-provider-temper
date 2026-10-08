@@ -26,6 +26,7 @@ type SandboxService interface {
 	Exec(ctx context.Context, user store.User, id string, req sandbox.ExecRequest) (sshx.ExecResult, error)
 	Upload(ctx context.Context, user store.User, id, path string, r io.Reader) (int64, error)
 	Download(ctx context.Context, user store.User, id, path string, setSize func(int64), w io.Writer) error
+	OpenPort(ctx context.Context, user store.User, id string, port int) (sandbox.PortDialer, func(), error)
 }
 
 const (

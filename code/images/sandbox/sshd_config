@@ -24,7 +24,13 @@ MaxSessions 64
 UsePAM no
 PrintMotd no
 X11Forwarding no
-AllowTcpForwarding no
+# Local forwarding to the sandbox's own loopback only: the API proxies HTTP
+# to a port inside the sandbox over its SSH connection (D66). The SSH
+# gateway refuses forwarding channels, so users can't use this; and no
+# forward may leave the sandbox.
+AllowTcpForwarding local
+PermitOpen localhost:* 127.0.0.1:*
+AllowStreamLocalForwarding no
 AllowAgentForwarding no
 PermitTunnel no
 

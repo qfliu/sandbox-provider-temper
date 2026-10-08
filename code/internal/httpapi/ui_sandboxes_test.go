@@ -112,6 +112,9 @@ func (f *ownedSandboxes) Upload(context.Context, store.User, string, string, io.
 func (f *ownedSandboxes) Download(context.Context, store.User, string, string, func(int64), io.Writer) error {
 	return nil
 }
+func (f *ownedSandboxes) OpenPort(context.Context, store.User, string, int) (sandbox.PortDialer, func(), error) {
+	return nil, nil, store.ErrNotFound
+}
 
 // alice (u1, via goodKey) owns two sandboxes, one ended; bob (u9) owns one.
 func aliceAndBob() *ownedSandboxes {

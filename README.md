@@ -54,6 +54,7 @@ To work on the code, run `source ./env.sh` (like a Python venv; `deactivate_sand
 | `code/scripts/smoke-api.sh` | API end to end (28 checks) |
 | `code/scripts/test-gateway-e2e.sh` | SSH gateway end to end, incl. attacks (16 checks) |
 | `code/scripts/test-sandbox-hardening.sh` | what code inside a sandbox can and can't do, and the admission policy (35 checks) |
+| `code/scripts/test-ports.sh` | port URLs: proxying, credential stripping, refusals (13 checks) |
 | `code/scripts/test-docker.sh` | Docker in an `ubuntu-docker` sandbox: build, run, `-p`, compose with ports; isolation of nested containers; forged packets stay on the node |
 | `code/scripts/test-network-policy.sh` | sandbox network isolation (15 checks) |
 | `code/scripts/load-test.sh N [image]` | N sandboxes at once, startup percentiles |
@@ -133,6 +134,7 @@ Every call needs `Authorization: Bearer <api key>`. Errors are
 | `PUT /v1/sandboxes/{id}/files?path=p` | upload the request body to `p` (relative to `/home/user`), up to 100 MiB |
 | `GET /v1/sandboxes/{id}/files?path=p` | download `p` as raw bytes |
 | `DELETE /v1/sandboxes/{id}` | delete now |
+| `ANY /v1/sandboxes/{id}/ports/{port}/{path}` | HTTP to a server inside the sandbox on `port` (e.g. an app started with `docker compose up`); see below |
 
 Notes:
 
@@ -145,6 +147,16 @@ Notes:
     cluster". Every image works under both; responses include `runtime`.
   - `ttl_seconds` runs from 60 to 86400; the default is 3600.
   - `ssh_public_key` is the only key the gateway accepts for this sandbox.
+- **Ports** (D66)
+  - Any method, any path under the prefix, WebSockets too; the server must
+    listen on `127.0.0.1` or `0.0.0.0` inside the sandbox (Docker's
+    published ports do). Nothing listening → **502**.
+  - Needs the owner's (or an admin's) API key, like every call. The key and
+    any cookies are removed before the request reaches the sandbox;
+    responses lose `Set-Cookie` and get `Content-Security-Policy: sandbox`.
+    The app sees its prefix in `X-Forwarded-Prefix`.
+  - It goes over the sandbox's own SSH connection (a forward to its
+    loopback), so no other network path to the sandbox exists.
 - **Exec**
   - `command` runs in `bash -c` as `user`, who has passwordless `sudo`.
   - `timeout_seconds` can be up to 600 (default 60); a command that runs out
