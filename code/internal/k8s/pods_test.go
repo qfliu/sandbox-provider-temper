@@ -142,7 +142,8 @@ func TestBuildPodDocker(t *testing.T) {
 }
 
 // Under Kata (D65) every sandbox's RuntimeClass is kata; a Docker sandbox
-// keeps Docker's capabilities and gains SYS_RESOURCE, a plain one keeps
+// keeps Docker's capabilities and gains KataDockerCapabilities (SYS_RESOURCE,
+// SYS_PTRACE), a plain one keeps
 // exactly the plain set.
 func TestBuildPodKata(t *testing.T) {
 	plain := testSandbox

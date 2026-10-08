@@ -141,6 +141,7 @@ for c in "runs without gVisor|\$_='' if /runtimeClassName/|must run under gVisor
 	"keeps default capabilities|s/drop: \[ALL\], //|drop ALL" \
 	"adds MKNOD|s/add: \[CHOWN\]/add: [CHOWN, MKNOD]/|may only add back" \
 	"adds SYS_ADMIN without gvisor-docker|s/add: \[CHOWN\]/add: [CHOWN, SYS_ADMIN]/|may only add back" \
+	"adds SYS_PTRACE under plain gvisor|s/add: \[CHOWN\]/add: [CHOWN, SYS_PTRACE]/|may only add back" \
 	"adds SYS_PTRACE under gvisor-docker|${DOCKER}s/add: \[CHOWN\]/add: [CHOWN, SYS_ADMIN, SYS_PTRACE]/|may only add back" \
 	"adds ALL under gvisor-docker|${DOCKER}s/add: \[CHOWN\]/add: [ALL]/|may only add back" \
 	"adds SYS_RESOURCE under gvisor-docker (Kata only)|${DOCKER}s/add: \[CHOWN\]/add: [CHOWN, SYS_RESOURCE]/|may only add back" \

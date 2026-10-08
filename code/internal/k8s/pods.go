@@ -374,7 +374,8 @@ var KataDockerCapabilities = []corev1.Capability{"SYS_RESOURCE", "SYS_PTRACE"}
 
 // SandboxSecurityContext is the sandbox container's security context: drop
 // all capabilities but SandboxCapabilities (plus DockerCapabilities for a
-// Docker sandbox), and the RuntimeDefault seccomp
+// Docker sandbox, and KataDockerCapabilities for one under Kata), and the
+// RuntimeDefault seccomp
 // profile (not applied under gVisor, whose own syscall filter is the
 // barrier; it applies if a pod ever runs on another runtime, D45).
 // Privilege escalation stays allowed
