@@ -582,3 +582,11 @@ func TestUIExec(t *testing.T) {
 		t.Fatal("ended sandbox shows a command form")
 	}
 }
+
+// The sandbox page says how to pick a key ssh doesn't offer by default.
+func TestUIDetailSSHKeyHint(t *testing.T) {
+	body := uiDo(sandboxUI(aliceAndBob(), "203.0.113.7:22"), http.MethodGet, "/ui/sandboxes/sb-alice0000001", nil, alice).Body.String()
+	if !strings.Contains(body, "ssh -i ~/.ssh/your_key sb-alice0000001@203.0.113.7") {
+		t.Fatalf("no -i example on the sandbox page:\n%s", body)
+	}
+}

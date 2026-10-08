@@ -14,7 +14,7 @@
     <code id="ssh-cmd">{{.SSHCommand}}</code>
     <button type="button" class="secondary" data-copy="ssh-cmd">Copy</button>
   </div>
-  <p class="hint">Use the private key that matches the public key this sandbox was created with{{if not .GatewaySet}}, and replace <code>&lt;gateway&gt;</code> with the SSH gateway's address{{end}}.</p>
+  <p class="hint">Use the private key that matches the public key this sandbox was created with{{if not .GatewaySet}}, and replace <code>&lt;gateway&gt;</code> with the SSH gateway's address{{end}}. If it isn't a key ssh offers by default (<code>~/.ssh/id_ed25519</code>, <code>~/.ssh/id_rsa</code>, or one in ssh-agent), name its file with <code>-i</code>: <code>{{.SSHCommandWithKey}}</code>.</p>
 </section>
 {{end}}
 
