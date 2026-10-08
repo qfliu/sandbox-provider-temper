@@ -40,7 +40,8 @@ refresh on their own; use the Refresh link.
 ssh-keygen -t ed25519 -N "" -f ~/.ssh/sandbox-test      # a key pair for SSH (step 5)
 
 # Create one: image ubuntu-base, ubuntu-dev (Python, Node.js) or ubuntu-docker
-# (plus Docker and Compose), 10-minute lifetime.
+# (plus Docker and Compose), 10-minute lifetime. Add "runtime":"kata" for a
+# sandbox in its own VM (gVisor is the default).
 curl -s -H @$HOME/.sandbox-auth -X POST $SANDBOX/v1/sandboxes \
   -d "{\"image\":\"ubuntu-dev\",\"ttl_seconds\":600,\"ssh_public_key\":\"$(cat ~/.ssh/sandbox-test.pub)\"}"
 # → {"id":"sb-…","status":"pending",…}
@@ -81,7 +82,8 @@ instead, ask the person running the deployment for the line to put in
   inside it, try to reach the Kubernetes API (`curl -k
   https://kubernetes.default.svc`), the cloud metadata service (`curl
   http://169.254.169.254/`), other sandboxes, or private addresses. All of
-  them should time out. `uname -r` shows the gVisor kernel, not the host's.
+  them should time out. `uname -r` shows the gVisor kernel (or, with
+  `"runtime":"kata"`, the sandbox VM's own Linux kernel), not the host's.
 - **Inside the sandbox:** `sudo` works (you're `user`), and package installs
   work: `pip` (in a virtualenv) and `npm` (in `ubuntu-dev`).
 - **Docker** (`ubuntu-docker`): `docker run`, `docker build`, `docker run -p

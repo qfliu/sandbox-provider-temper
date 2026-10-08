@@ -42,6 +42,7 @@ type ui struct {
 	// Sandbox limits shown in and enforced by the create form.
 	ttlChoices  []int
 	idleTimeout time.Duration // the SSH gateway's public host:port, may be empty
+	runtimes    []string      // offered in the create form, the default first
 	pages       map[string]*template.Template
 }
 
@@ -64,6 +65,7 @@ type page struct {
 	Sandboxes  []store.Sandbox
 	ShowEnded  bool
 	Images     []string
+	Runtimes   []string // the choice is shown only when there are several
 	TTLChoices []int
 	IdleFor    string // e.g. "30m"
 	Form       createForm
@@ -93,6 +95,7 @@ type page struct {
 // an error.
 type createForm struct {
 	Image        string
+	Runtime      string
 	SSHPublicKey string
 	TTLHours     int
 }
@@ -120,6 +123,14 @@ func (u *ui) setLimits(maxTTL, idle time.Duration) {
 	u.idleTimeout = 30 * time.Minute
 	if idle > 0 {
 		u.idleTimeout = idle
+	}
+}
+
+// setRuntimes sets the runtimes the create form offers (D65).
+func (u *ui) setRuntimes(runtimes []string) {
+	u.runtimes = runtimes
+	if len(u.runtimes) == 0 {
+		u.runtimes = []string{"gvisor"}
 	}
 }
 
@@ -185,6 +196,7 @@ func humanDuration(d time.Duration) string {
 func newUI(log *slog.Logger, auth Authenticator, sandboxes SandboxService, keys KeyService, admin AdminService, gateway string) *ui {
 	u := &ui{log: log, auth: auth, sandboxes: sandboxes, keys: keys, admin: admin, gateway: gateway, pages: map[string]*template.Template{}}
 	u.setLimits(0, 0)
+	u.setRuntimes(nil)
 	partials := []string{"templates/rows.html", "templates/status.html", "templates/admin_rows.html", "templates/keyref.html", "templates/pager.html"}
 	for _, name := range []string{"login", "list", "detail", "keys", "admin"} {
 		files := append([]string{"templates/layout.html", "templates/" + name + ".html"}, partials...)
@@ -360,8 +372,8 @@ func (u *ui) listPage(r *http.Request) (page, error) {
 	return page{ActiveKeys: u.activeKeys(r, user),
 		Title: "Your sandboxes", User: &user, Pager: newPager(r, "page", n, total), Self: selfURL(r),
 		Sandboxes: list, ShowEnded: showEnded,
-		Images: sandbox.Images, TTLChoices: u.ttlChoices, IdleFor: humanDuration(u.idleTimeout),
-		Form: createForm{Image: sandbox.Images[0], TTLHours: 1},
+		Images: sandbox.Images, Runtimes: u.runtimes, TTLChoices: u.ttlChoices, IdleFor: humanDuration(u.idleTimeout),
+		Form: createForm{Image: sandbox.Images[0], Runtime: u.runtimes[0], TTLHours: 1},
 	}, err
 }
 
@@ -378,6 +390,7 @@ func (u *ui) create(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r.Context())
 	form := createForm{
 		Image:        r.PostFormValue("image"),
+		Runtime:      r.PostFormValue("runtime"),
 		SSHPublicKey: strings.TrimSpace(r.PostFormValue("ssh_public_key")),
 	}
 	var err error
@@ -389,7 +402,7 @@ func (u *ui) create(w http.ResponseWriter, r *http.Request) {
 		err = &sandbox.ValidationError{Msg: "pick a lifetime from the list"}
 	} else {
 		sb, err = u.sandboxes.Create(r.Context(), user, sandbox.CreateRequest{
-			Image: form.Image, SSHPublicKey: form.SSHPublicKey, TTLSeconds: form.TTLHours * 3600,
+			Image: form.Image, Runtime: form.Runtime, SSHPublicKey: form.SSHPublicKey, TTLSeconds: form.TTLHours * 3600,
 			CreatedBy: callerKey(r.Context()),
 		})
 	}

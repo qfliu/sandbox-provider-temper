@@ -365,6 +365,28 @@ func TestUICreateFormFollowsConfig(t *testing.T) {
 	}
 }
 
+// The runtime choice (D65) appears only when the cluster offers more than
+// one, and what the user picks reaches the service.
+func TestUIRuntimeChoice(t *testing.T) {
+	one := uiDo(sandboxUI(aliceAndBob(), ""), http.MethodGet, "/ui/", nil, alice).Body.String()
+	if strings.Contains(one, `name="runtime"`) {
+		t.Error("runtime choice shown with only gVisor available")
+	}
+	svc := aliceAndBob()
+	h := NewHandler(Deps{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DB: fakeDB{}, Auth: uiAuth{},
+		Sandboxes: svc, Runtimes: []string{"gvisor", "kata"}})
+	both := uiDo(h, http.MethodGet, "/ui/", nil, alice).Body.String()
+	if !strings.Contains(both, `<option value="kata">kata</option>`) || !strings.Contains(both, `<option value="gvisor" selected>`) {
+		t.Error("runtime choice missing, or gvisor isn't the default")
+	}
+	rec := uiDo(h, http.MethodPost, "/ui/sandboxes", url.Values{
+		"image": {"ubuntu-dev"}, "runtime": {"kata"}, "ssh_public_key": {"ssh-ed25519 AAAAkey"}, "ttl_hours": {"1"},
+	}, alice)
+	if rec.Code != http.StatusSeeOther || len(svc.created) != 1 || svc.created[0].Runtime != "kata" {
+		t.Fatalf("create with kata = %d, requests %+v", rec.Code, svc.created)
+	}
+}
+
 // Creating a sandbox records the key that made the request, from /v1 and
 // from the dashboard, and a client can't claim another key in the body.
 func TestCreateRecordsKey(t *testing.T) {

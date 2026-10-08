@@ -5,6 +5,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -53,7 +55,16 @@ type Sandbox struct {
 	InternalKeySecret string
 	// InternalKeyFile is the matching private key the API logs in with.
 	InternalKeyFile string
+	// Runtimes are the sandbox runtimes this cluster offers, the first being
+	// the default (D65): "gvisor", and "kata" where Kata is installed
+	// (SANDBOX_RUNTIMES, comma-separated; default "gvisor").
+	Runtimes []string
 }
+
+// KnownRuntimes are the runtimes the API knows how to run sandboxes under.
+// Adding one also means migration 0009's CHECK and the admission policy's
+// runtime list (deploy/helm/templates/sandbox-pod-policy.yaml).
+var KnownRuntimes = []string{"gvisor", "kata"}
 
 // LoadAPI reads API settings from the environment, applying defaults.
 func LoadAPI() (API, error) {
@@ -75,6 +86,11 @@ func LoadAPI() (API, error) {
 			InternalKeyFile:   os.Getenv("SANDBOX_INTERNAL_KEY_FILE"),
 		},
 	}
+	runtimes, err := parseRuntimes(getenv("SANDBOX_RUNTIMES", "gvisor"))
+	if err != nil {
+		return API{}, err
+	}
+	cfg.Sandbox.Runtimes = runtimes
 	if cfg.Sandbox.InternalKeyFile == "" {
 		return API{}, fmt.Errorf("SANDBOX_INTERNAL_KEY_FILE is required (the platform's private SSH key)")
 	}
@@ -131,4 +147,26 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// parseRuntimes reads SANDBOX_RUNTIMES: known names, no repeats, at least one.
+func parseRuntimes(v string) ([]string, error) {
+	var out []string
+	for _, r := range strings.Split(v, ",") {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		if !slices.Contains(KnownRuntimes, r) {
+			return nil, fmt.Errorf("SANDBOX_RUNTIMES: unknown runtime %q (known: %s)", r, strings.Join(KnownRuntimes, ", "))
+		}
+		if slices.Contains(out, r) {
+			return nil, fmt.Errorf("SANDBOX_RUNTIMES: %q listed twice", r)
+		}
+		out = append(out, r)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("SANDBOX_RUNTIMES must list at least one runtime")
+	}
+	return out, nil
 }

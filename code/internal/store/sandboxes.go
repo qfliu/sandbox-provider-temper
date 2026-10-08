@@ -34,6 +34,7 @@ type Sandbox struct {
 	ID             string     `json:"id"`
 	UserID         string     `json:"user_id"`
 	Image          string     `json:"image"`
+	Runtime        string     `json:"runtime"` // gvisor or kata (D65)
 	Status         string     `json:"status"`
 	StatusReason   string     `json:"status_reason,omitempty"`
 	SSHPublicKey   string     `json:"ssh_public_key"`
@@ -63,6 +64,7 @@ type NewSandbox struct {
 	ID            string
 	UserID        string
 	Image         string
+	Runtime       string // "" means gvisor
 	SSHPublicKey  string
 	HostPublicKey string
 	TTLSeconds    int
@@ -77,7 +79,7 @@ type NewSandbox struct {
 const lastActivity = `GREATEST(sandboxes.last_activity_at,
 	(SELECT LEAST(a.last_seen_at, now()) FROM ssh_activity a WHERE a.sandbox_id = sandboxes.id))`
 
-const sandboxColumns = `id, user_id::text, image, status, status_reason, ssh_public_key,
+const sandboxColumns = `id, user_id::text, image, runtime, status, status_reason, ssh_public_key,
 	pod_name, pod_ip, host_public_key, ttl_seconds, created_at, expires_at, ` + lastActivity + `, deleted_at,
 	created_by_key_id::text, created_by_key_name, created_by_key_prefix`
 
@@ -94,7 +96,7 @@ func newSandboxScan(s *Sandbox) *sandboxScan {
 
 func (sc *sandboxScan) dest(extra ...any) []any {
 	s := sc.s
-	return append([]any{&s.ID, &s.UserID, &s.Image, &s.Status, &s.StatusReason, &s.SSHPublicKey,
+	return append([]any{&s.ID, &s.UserID, &s.Image, &s.Runtime, &s.Status, &s.StatusReason, &s.SSHPublicKey,
 		&s.PodName, &s.PodIP, &s.HostPublicKey, &s.TTLSeconds, &s.CreatedAt, &s.ExpiresAt, &s.LastActivityAt,
 		&s.DeletedAt, &sc.keyID, &sc.keyName, &sc.keyPrefix}, extra...)
 }
@@ -136,6 +138,10 @@ func (s *Store) CreateSandbox(ctx context.Context, n NewSandbox) (Sandbox, error
 	if k := n.CreatedByKey; k != nil {
 		keyID, keyName, keyPrefix = &k.ID, &k.Name, &k.Prefix
 	}
+	runtime := n.Runtime
+	if runtime == "" {
+		runtime = "gvisor"
+	}
 	var sb Sandbox
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		var max, live int
@@ -155,10 +161,10 @@ func (s *Store) CreateSandbox(ctx context.Context, n NewSandbox) (Sandbox, error
 		var err error
 		sb, err = scanSandbox(tx.QueryRow(ctx, `
 			INSERT INTO sandboxes (id, user_id, image, ssh_public_key, host_public_key, pod_name, ttl_seconds, expires_at,
-				created_by_key_id, created_by_key_name, created_by_key_prefix)
-			VALUES ($1, $2, $3, $4, $5, $1, $6::int, now() + make_interval(secs => $6::int), $7::uuid, $8, $9)
+				created_by_key_id, created_by_key_name, created_by_key_prefix, runtime)
+			VALUES ($1, $2, $3, $4, $5, $1, $6::int, now() + make_interval(secs => $6::int), $7::uuid, $8, $9, $10)
 			RETURNING `+sandboxColumns,
-			n.ID, n.UserID, n.Image, n.SSHPublicKey, n.HostPublicKey, n.TTLSeconds, keyID, keyName, keyPrefix))
+			n.ID, n.UserID, n.Image, n.SSHPublicKey, n.HostPublicKey, n.TTLSeconds, keyID, keyName, keyPrefix, runtime))
 		return err
 	})
 	return sb, err

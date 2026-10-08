@@ -163,6 +163,7 @@ func serve(log *slog.Logger) error {
 		Keys:        st,
 		Admin:       st,
 		MaxTTL:      cfg.Sandbox.MaxTTL,
+		Runtimes:    cfg.Sandbox.Runtimes,
 		IdleTimeout: cfg.Sandbox.IdleTimeout,
 	}))
 

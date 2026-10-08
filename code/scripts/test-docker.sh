@@ -29,6 +29,9 @@ TMP="$(mktemp -d "$ROOT/.devenv/state/tmp/docker.XXXXXX")"
 CAPNS="docker-test-capture-$$"
 # A pinned network toolbox for the capture pod (tcpdump), multi-arch.
 NETSHOOT="nicolaka/netshoot:v0.15"
+# SANDBOX_RUNTIME=kata runs the sandbox(es) under Kata (D65); default: the
+# cluster's default runtime (gVisor).
+RT=${SANDBOX_RUNTIME:+,\"runtime\":\"$SANDBOX_RUNTIME\"}
 PASSED=0 FAILED=0 SB=""
 
 pass() { PASSED=$((PASSED + 1)); printf "  \033[32mPASS\033[0m  %s\n" "$1"; }
@@ -50,7 +53,7 @@ for _ in $(seq 1 40); do curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/healt
 ssh-keygen -q -t ed25519 -N "" -f "$TMP/k"
 T0=$(date +%s)
 SB=$(curl -s -H @"$TMP/auth" -X POST "$API/sandboxes" \
-	-d "{\"image\":\"ubuntu-docker\",\"ssh_public_key\":\"$(cat "$TMP/k.pub")\"}" |
+	-d "{\"image\":\"ubuntu-docker\",\"ssh_public_key\":\"$(cat "$TMP/k.pub")\"$RT}" |
 	python3 -c "import json,sys; print(json.load(sys.stdin)['id'])") || die "could not create an ubuntu-docker sandbox"
 s=""
 for _ in $(seq 1 120); do
@@ -59,7 +62,7 @@ for _ in $(seq 1 120); do
 	sleep 1
 done
 [ "$s" = running ] || die "sandbox $SB not running (status: $s)"
-printf "sandbox %s (ubuntu-docker), running after %d s\n" "$SB" "$(($(date +%s) - T0))"
+printf "sandbox %s (ubuntu-docker, %s), running after %d s\n" "$SB" "${SANDBOX_RUNTIME:-default runtime}" "$(($(date +%s) - T0))"
 
 # run <command> [timeout]: exec in the sandbox as `user`; prints
 # "<exit_code>|<last output line>"
@@ -127,10 +130,13 @@ r=$(tcp 169.254.169.254 80)
 [[ "$r" == *"connect=1" ]] && pass "nested container can't reach the cloud metadata address" || fail "metadata" "$r"
 r=$(tcp "$KIP" 443)
 [[ "$r" == *"connect=1" ]] && pass "nested container can't reach the Kubernetes API ($KIP)" || fail "kubernetes API" "$r"
-# Inside gVisor, --privileged can only hand out what dockerd holds: the
-# sandbox's 16 capabilities (D61), whose bounding set is a82435fb.
+# --privileged can only hand out what dockerd holds: the sandbox's 16
+# capabilities (D61), bounding set a82435fb; under Kata also SYS_RESOURCE
+# (D64), a92435fb.
+BND=00000000a82435fb N=16
+[ "${SANDBOX_RUNTIME:-}" = kata ] && BND=00000000a92435fb N=17
 r=$(run "docker run --rm --privileged alpine:3.22 grep CapBnd /proc/self/status")
-[[ "$r" == "0|"*"00000000a82435fb" ]] && pass "nested --privileged gets only the sandbox's 16 capabilities" || fail "nested --privileged" "$r"
+[[ "$r" == "0|"*"$BND" ]] && pass "nested --privileged gets only the sandbox's $N capabilities" || fail "nested --privileged" "$r"
 
 printf "\nforged source addresses don't leave the node\n"
 NODE=$(kubectl -n sandboxes get pod "$SB" -o jsonpath='{.spec.nodeName}')

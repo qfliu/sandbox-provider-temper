@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -90,5 +91,35 @@ func TestLoadAPIReaperSettings(t *testing.T) {
 	t.Setenv("SANDBOX_IDLE_TIMEOUT", "11m")
 	if _, err := LoadAPI(); err != nil {
 		t.Fatalf("11m exceeds the max exec and should be accepted: %v", err)
+	}
+}
+
+// SANDBOX_RUNTIMES (D65): gvisor by default; known names only, no repeats.
+func TestLoadAPIRuntimes(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	t.Setenv("SANDBOX_INTERNAL_KEY_FILE", "/keys/id")
+	for _, c := range []struct {
+		env  string
+		want []string
+		ok   bool
+	}{
+		{"", []string{"gvisor"}, true},
+		{"gvisor,kata", []string{"gvisor", "kata"}, true},
+		{" kata , gvisor ", []string{"kata", "gvisor"}, true},
+		{"gvisor,runc", nil, false},
+		{"gvisor,gvisor", nil, false},
+		{",", nil, false},
+	} {
+		t.Setenv("SANDBOX_RUNTIMES", c.env)
+		cfg, err := LoadAPI()
+		if !c.ok {
+			if err == nil {
+				t.Errorf("SANDBOX_RUNTIMES=%q accepted", c.env)
+			}
+			continue
+		}
+		if err != nil || strings.Join(cfg.Sandbox.Runtimes, ",") != strings.Join(c.want, ",") {
+			t.Errorf("SANDBOX_RUNTIMES=%q: %v, %v; want %v", c.env, cfg.Sandbox.Runtimes, err, c.want)
+		}
 	}
 }

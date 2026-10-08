@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -62,7 +63,10 @@ func NewService(s *store.Store, pods Pods, sshPool *sshx.Pool, cfg config.Sandbo
 
 // CreateRequest is the body of POST /v1/sandboxes.
 type CreateRequest struct {
-	Image        string `json:"image"`
+	Image string `json:"image"`
+	// Runtime is optional: "gvisor" or "kata" (D65); "" means the cluster's
+	// default, the first of its runtimes.
+	Runtime      string `json:"runtime"`
 	SSHPublicKey string `json:"ssh_public_key"`
 	// TTLSeconds is optional; 0 means the default (1 hour).
 	TTLSeconds int `json:"ttl_seconds"`
@@ -76,6 +80,10 @@ type CreateRequest struct {
 // it stops counting toward the quota.
 func (s *Service) Create(ctx context.Context, user store.User, req CreateRequest) (store.Sandbox, error) {
 	if err := s.validateImage(req.Image); err != nil {
+		return store.Sandbox{}, err
+	}
+	runtime, err := s.runtime(req.Runtime)
+	if err != nil {
 		return store.Sandbox{}, err
 	}
 	key, err := normalizeSSHKey(req.SSHPublicKey)
@@ -98,6 +106,7 @@ func (s *Service) Create(ctx context.Context, user store.User, req CreateRequest
 		ID:            newID(),
 		UserID:        user.ID,
 		Image:         req.Image,
+		Runtime:       runtime,
 		SSHPublicKey:  key,
 		HostPublicKey: hostPub,
 		TTLSeconds:    int(ttl / time.Second),
@@ -116,7 +125,7 @@ func (s *Service) Create(ctx context.Context, user store.User, req CreateRequest
 		}
 		return store.Sandbox{}, ErrUnavailable
 	}
-	s.log.Info("sandbox created", "sandbox", sb.ID, "user", user.Name, "image", sb.Image, "ttl", ttl)
+	s.log.Info("sandbox created", "sandbox", sb.ID, "user", user.Name, "image", sb.Image, "runtime", sb.Runtime, "ttl", ttl)
 	return sb, nil
 }
 
@@ -186,6 +195,26 @@ func (s *Service) validateImage(image string) error {
 		}
 	}
 	return &ValidationError{fmt.Sprintf("image must be one of %s", strings.Join(Images, ", "))}
+}
+
+// runtime resolves the requested runtime: the default when empty, refused
+// when unknown or not installed on this cluster (Kata needs x86 nodes with
+// nested virtualization, so a laptop cluster has only gVisor).
+func (s *Service) runtime(r string) (string, error) {
+	if r == "" {
+		if len(s.cfg.Runtimes) == 0 {
+			return "gvisor", nil
+		}
+		return s.cfg.Runtimes[0], nil
+	}
+	if !slices.Contains(config.KnownRuntimes, r) {
+		return "", &ValidationError{fmt.Sprintf("runtime must be one of %s", strings.Join(config.KnownRuntimes, ", "))}
+	}
+	if !slices.Contains(s.cfg.Runtimes, r) {
+		return "", &ValidationError{fmt.Sprintf("runtime %s isn't available on this cluster (available: %s)",
+			r, strings.Join(s.cfg.Runtimes, ", "))}
+	}
+	return r, nil
 }
 
 func (s *Service) ttl(seconds int) (time.Duration, error) {
