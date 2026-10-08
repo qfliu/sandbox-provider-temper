@@ -12,7 +12,7 @@ idle for 30 minutes, or when its lifetime runs out.
 
 - **HTTP API** (`/v1`) for agents: create, list, exec, upload, download, delete.
 - **SSH gateway**: `ssh <sandbox-id>@<gateway>` with the key given at create.
-- **Dashboard** (`/ui`): your sandboxes and API keys; for admins, every user and sandbox.
+- **Dashboard** (`/ui`): your sandboxes (create, run a command, delete) and API keys; for admins, every user and sandbox.
 - **Helm chart** for any cluster with gVisor (and Kata, where installed); scripts for a laptop and for Azure AKS.
 
 Design decisions and the reasons for them are logged in [DESIGN.md](DESIGN.md)

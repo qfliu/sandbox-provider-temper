@@ -25,6 +25,7 @@ type ownedSandboxes struct {
 	rows    map[string]store.Sandbox
 	created []sandbox.CreateRequest
 	deleted []string
+	execs   []string // commands run (D69)
 }
 
 func newOwnedSandboxes(rows ...store.Sandbox) *ownedSandboxes {
@@ -103,8 +104,14 @@ func (f *ownedSandboxes) Delete(ctx context.Context, u store.User, id string) (s
 	return sb, nil
 }
 
-func (f *ownedSandboxes) Exec(context.Context, store.User, string, sandbox.ExecRequest) (sshx.ExecResult, error) {
-	return sshx.ExecResult{}, nil
+func (f *ownedSandboxes) Exec(_ context.Context, u store.User, id string, req sandbox.ExecRequest) (sshx.ExecResult, error) {
+	if _, err := f.Get(context.Background(), u, id); err != nil {
+		return sshx.ExecResult{}, err
+	}
+	f.mu.Lock()
+	f.execs = append(f.execs, req.Command)
+	f.mu.Unlock()
+	return sshx.ExecResult{Stdout: "<script>alert(1)</script>\n", Stderr: "warn\n", ExitCode: 3, DurationMS: 12}, nil
 }
 func (f *ownedSandboxes) Upload(context.Context, store.User, string, string, io.Reader) (int64, error) {
 	return 0, nil
@@ -326,8 +333,8 @@ func TestUntil(t *testing.T) {
 func TestUISandboxRoutesRefuseCrossSitePOSTs(t *testing.T) {
 	svc := aliceAndBob()
 	h := sandboxUI(svc, "")
-	for _, path := range []string{"/ui/sandboxes", "/ui/sandboxes/sb-alice0000001/delete"} {
-		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("image=ubuntu-dev&ssh_public_key=ssh-ed25519+AAAA&ttl_hours=1"))
+	for _, path := range []string{"/ui/sandboxes", "/ui/sandboxes/sb-alice0000001/delete", "/ui/sandboxes/sb-alice0000001/exec"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("image=ubuntu-dev&ssh_public_key=ssh-ed25519+AAAA&ttl_hours=1&command=id"))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Sec-Fetch-Site", "cross-site")
 		req.AddCookie(alice)
@@ -337,8 +344,8 @@ func TestUISandboxRoutesRefuseCrossSitePOSTs(t *testing.T) {
 			t.Errorf("cross-site POST %s = %d, want 403", path, rec.Code)
 		}
 	}
-	if len(svc.created) != 0 || len(svc.deleted) != 0 {
-		t.Fatalf("cross-site POSTs changed state: created %v, deleted %v", svc.created, svc.deleted)
+	if len(svc.created) != 0 || len(svc.deleted) != 0 || len(svc.execs) != 0 {
+		t.Fatalf("cross-site POSTs changed state: created %v, deleted %v, ran %v", svc.created, svc.deleted, svc.execs)
 	}
 }
 
@@ -528,5 +535,50 @@ func TestUISandboxPagesSurviveKeyListFailure(t *testing.T) {
 				t.Errorf("%s, %s = %d; want 200 with a plain label", name, path, rec.Code)
 			}
 		}
+	}
+}
+
+// The run-a-command box (D69): runs through the service as the user, shows
+// the output escaped, and refuses empty commands and others' sandboxes.
+func TestUIExec(t *testing.T) {
+	svc := aliceAndBob()
+	h := sandboxUI(svc, "")
+	page := uiDo(h, http.MethodGet, "/ui/sandboxes/sb-alice0000001", nil, alice).Body.String()
+	if !strings.Contains(page, `action="/ui/sandboxes/sb-alice0000001/exec"`) {
+		t.Fatal("running sandbox page has no command form")
+	}
+	rec := uiDo(h, http.MethodPost, "/ui/sandboxes/sb-alice0000001/exec", url.Values{"command": {"  echo hi  "}}, alice)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || len(svc.execs) != 1 || svc.execs[0] != "echo hi" {
+		t.Fatalf("exec = %d, ran %v", rec.Code, svc.execs)
+	}
+	if strings.Contains(body, "<script>alert(1)</script>") || !strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") {
+		t.Fatal("command output isn't escaped")
+	}
+	if !strings.Contains(body, "Exit code <strong>3</strong>") || !strings.Contains(body, "warn") || !strings.Contains(body, `value="echo hi"`) {
+		t.Fatal("result or command missing from the page")
+	}
+	if rec := uiDo(h, http.MethodPost, "/ui/sandboxes/sb-alice0000001/exec", url.Values{"command": {"  "}}, alice); rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty command = %d, want 400", rec.Code)
+	}
+	// The limit counts characters (as the browser's maxlength does), not bytes.
+	if rec := uiDo(h, http.MethodPost, "/ui/sandboxes/sb-alice0000001/exec", url.Values{"command": {strings.Repeat("é", 4097)}}, alice); rec.Code != http.StatusBadRequest {
+		t.Fatalf("4097-character command = %d, want 400", rec.Code)
+	}
+	svc.execs = nil
+	quoted := uiDo(h, http.MethodPost, "/ui/sandboxes/sb-alice0000001/exec", url.Values{"command": {strings.Repeat("é", 4000) + `"><script>x()</script>`}}, alice).Body.String()
+	if len(svc.execs) != 1 || strings.Contains(quoted, `"><script>x()`) {
+		t.Fatal("a long non-ASCII command was refused, or the echoed command broke out of its attribute")
+	}
+	svc.execs = []string{"echo hi"}
+	if rec := uiDo(h, http.MethodPost, "/ui/sandboxes/sb-bob000000001/exec", url.Values{"command": {"id"}}, alice); rec.Code != http.StatusNotFound {
+		t.Fatalf("another user's sandbox = %d, want 404", rec.Code)
+	}
+	if len(svc.execs) != 1 {
+		t.Fatalf("refused requests still ran: %v", svc.execs)
+	}
+	// An ended sandbox has no form.
+	if strings.Contains(uiDo(h, http.MethodGet, "/ui/sandboxes/sb-alice0000old", nil, alice).Body.String(), "/exec") {
+		t.Fatal("ended sandbox shows a command form")
 	}
 }

@@ -168,6 +168,10 @@ func serviceError(log *slog.Logger, err error) (int, string) {
 	var verr *sandbox.ValidationError
 	var notRunning *sandbox.NotRunningError
 	switch {
+	case errors.Is(err, context.Canceled):
+		// The client went away (closed the tab, gave up): nothing to tell it,
+		// and not a server error (review of #79).
+		return 499, "request cancelled by the client"
 	case errors.As(err, &verr):
 		return http.StatusBadRequest, verr.Msg
 	case errors.As(err, &notRunning):

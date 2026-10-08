@@ -4,6 +4,7 @@
   <h1><code>{{.Sandbox.ID}}</code></h1>
   <a href="{{.Self}}">Refresh</a>
 </div>
+{{with .Error}}<p class="error" role="alert">{{.}}</p>{{end}}
 {{template "status" .}}
 
 {{if live .Sandbox.Status}}
@@ -14,6 +15,23 @@
     <button type="button" class="secondary" data-copy="ssh-cmd">Copy</button>
   </div>
   <p class="hint">Use the private key that matches the public key this sandbox was created with{{if not .GatewaySet}}, and replace <code>&lt;gateway&gt;</code> with the SSH gateway's address{{end}}.</p>
+</section>
+{{end}}
+
+{{if eq .Sandbox.Status "running"}}
+<section class="card">
+  <h2>Run a command</h2>
+  <form method="post" action="/ui/sandboxes/{{.Sandbox.ID}}/exec">
+    <label for="command">Command (runs in <code>bash</code> as <code>user</code>, up to 60 s)</label>
+    <input id="command" name="command" type="text" required maxlength="4096" autocomplete="off" spellcheck="false" placeholder="ls -la; python3 --version" value="{{.ExecCommand}}">
+    <button type="submit">Run</button>
+  </form>
+  {{with .Exec}}
+  <p class="hint">Exit code <strong>{{.ExitCode}}</strong> in {{.DurationMS}} ms{{if .TimedOut}}, <strong>timed out</strong>{{end}}{{if .Truncated}}, output truncated{{end}}.</p>
+  {{if .Stdout}}<h3>Output</h3><pre class="output">{{.Stdout}}</pre>{{end}}
+  {{if .Stderr}}<h3>Errors</h3><pre class="output">{{.Stderr}}</pre>{{end}}
+  {{if and (not .Stdout) (not .Stderr)}}<p class="hint">No output.</p>{{end}}
+  {{end}}
 </section>
 {{end}}
 {{end}}

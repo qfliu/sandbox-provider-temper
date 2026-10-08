@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/qfliu/sandbox-provider-temper/code/internal/sandbox"
+	"github.com/qfliu/sandbox-provider-temper/code/internal/sshx"
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 	"github.com/qfliu/sandbox-provider-temper/code/web"
 )
@@ -79,6 +80,9 @@ type page struct {
 	Sandbox    store.Sandbox
 	SSHCommand string
 	GatewaySet bool
+	// The run-a-command box (D69): what was run and its result.
+	ExecCommand string
+	Exec        *sshx.ExecResult
 
 	// API keys.
 	Keys       []store.APIKey
@@ -227,6 +231,7 @@ func (u *ui) routes() http.Handler {
 	mux.Handle("POST /ui/sandboxes", u.requireSession(http.HandlerFunc(u.create)))
 	mux.Handle("GET /ui/sandboxes/{id}", u.requireSession(http.HandlerFunc(u.detail)))
 	mux.Handle("POST /ui/sandboxes/{id}/delete", u.requireSession(http.HandlerFunc(u.delete)))
+	mux.Handle("POST /ui/sandboxes/{id}/exec", u.requireSession(http.HandlerFunc(u.exec)))
 	// Keys and Admin are optional dependencies: without them those pages
 	// don't exist (404) rather than crash.
 	if u.keys != nil {
@@ -468,6 +473,50 @@ func (u *ui) detail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.render(w, http.StatusOK, "detail", p)
+}
+
+// uiExecTimeout is how long a command from the dashboard may run: the page
+// waits for it, so it's shorter than the API's 10-minute maximum.
+const uiExecTimeout = 60
+
+// maxUICommand bounds the command text from the form.
+const maxUICommand = 4096
+
+// exec runs one command in the sandbox, as `user`, through the same service
+// call as POST /v1/sandboxes/{id}/exec, and shows the sandbox page again
+// with its output (D69). Owner or admin, as for the page itself; the
+// cross-site-POST protection and the session apply as for every form.
+func (u *ui) exec(w http.ResponseWriter, r *http.Request) {
+	cmd := strings.TrimSpace(r.PostFormValue("command"))
+	p, err := u.detailPage(r)
+	if err != nil {
+		u.fail(w, r, err)
+		return
+	}
+	p.Self = "/ui/sandboxes/" + p.Sandbox.ID // Refresh: the page, not this POST
+	p.ExecCommand = cmd
+	status := http.StatusOK
+	switch {
+	case cmd == "":
+		status, p.Error = http.StatusBadRequest, "Type a command to run."
+	case utf8.RuneCountInString(cmd) > maxUICommand:
+		status, p.Error = http.StatusBadRequest, fmt.Sprintf("The command is longer than %d characters.", maxUICommand)
+	default:
+		user := userFrom(r.Context())
+		// Who ran something where (not what: commands can hold secrets).
+		u.log.Info("dashboard exec", "user", user.Name, "sandbox", p.Sandbox.ID,
+			"owner_is_user", p.Sandbox.UserID == user.ID, "command_chars", utf8.RuneCountInString(cmd))
+		res, err := u.sandboxes.Exec(r.Context(), user, p.Sandbox.ID,
+			sandbox.ExecRequest{Command: cmd, TimeoutSeconds: uiExecTimeout})
+		if err != nil {
+			var msg string
+			status, msg = serviceError(u.log, err)
+			p.Error = "Couldn't run the command: " + msg + "."
+		} else {
+			p.Exec = &res
+		}
+	}
+	u.render(w, status, "detail", p)
 }
 
 func (u *ui) delete(w http.ResponseWriter, r *http.Request) {
