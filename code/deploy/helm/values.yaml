@@ -27,7 +27,7 @@ image:
 sandboxImages:
   repository: sandbox/
   tag: "0.1"
-  names: [ubuntu-base, ubuntu-dev]
+  names: [ubuntu-base, ubuntu-dev, ubuntu-docker]
 
 # Namespace for sandbox pods (untrusted code); created by the chart.
 sandboxNamespace: sandboxes

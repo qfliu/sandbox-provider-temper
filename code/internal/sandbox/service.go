@@ -20,8 +20,9 @@ import (
 	"github.com/qfliu/sandbox-provider-temper/code/internal/store"
 )
 
-// Images is the fixed set of images users may pick from (D2).
-var Images = []string{"ubuntu-base", "ubuntu-dev"}
+// Images is the fixed set of images users may pick from (D2). ubuntu-docker
+// (D62) runs Docker, under its own gVisor runtime (k8s.DockerImage).
+var Images = []string{"ubuntu-base", "ubuntu-dev", "ubuntu-docker"}
 
 const minTTL = time.Minute
 

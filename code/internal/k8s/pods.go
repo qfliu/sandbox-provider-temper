@@ -199,9 +199,43 @@ func BuildHostKeySecret(sb store.Sandbox, cfg config.Sandbox, hostKeyPEM []byte)
 // reaper is down (D27).
 const DeadlineGrace = 60
 
+// DockerImage is the image whose sandboxes run Docker (D62). Only its pods
+// get the gvisor-docker runtime and Docker's capabilities (D61), and more
+// memory and CPU, because Docker's storage is a tmpfs inside the sandbox.
+const DockerImage = "ubuntu-docker"
+
+// podProfile is what differs between a plain sandbox and a Docker one.
+type podProfile struct {
+	runtimeClass  string
+	docker        bool
+	cpuLimit      string
+	memoryRequest string
+	memoryLimit   string
+	env           []corev1.EnvVar
+}
+
+func profileFor(image string) podProfile {
+	if image == DockerImage {
+		return podProfile{
+			runtimeClass: "gvisor-docker", docker: true,
+			// Docker's images, layers and build cache live in this tmpfs,
+			// inside the 4 Gi: half for Docker, half for everything else.
+			// The request is a quarter of the limit (review of #73): a
+			// node packs more Docker sandboxes than could all fill up, so
+			// under memory pressure these Burstable pods are evicted first
+			// and lose their Docker state. A request equal to the limit
+			// would make that impossible at four times the cost per node.
+			cpuLimit: "2", memoryRequest: "1Gi", memoryLimit: "4Gi",
+			env: []corev1.EnvVar{{Name: "DOCKER_STORAGE_SIZE", Value: "2g"}},
+		}
+	}
+	return podProfile{runtimeClass: "gvisor", cpuLimit: "1", memoryRequest: "256Mi", memoryLimit: "1Gi"}
+}
+
 // BuildPod returns the pod spec for a sandbox. It mirrors the hand-tested
 // code/deploy/dev/sandbox-pod.yaml from Phase 1.
 func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
+	prof := profileFor(sb.Image)
 	no := false
 	grace := int64(5)
 	keyMode := int32(0o444)
@@ -215,9 +249,9 @@ func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 			Labels:    labelsFor(sb, "sandbox"),
 		},
 		Spec: corev1.PodSpec{
-			RuntimeClassName:              ptr("gvisor"), // D4: gVisor isolation
-			AutomountServiceAccountToken:  &no,           // sandbox code gets no cluster credentials
-			EnableServiceLinks:            &no,           // don't leak cluster service env vars
+			RuntimeClassName:              ptr(prof.runtimeClass), // D4, D61: gVisor isolation
+			AutomountServiceAccountToken:  &no,                    // sandbox code gets no cluster credentials
+			EnableServiceLinks:            &no,                    // don't leak cluster service env vars
 			TerminationGracePeriodSeconds: &grace,
 			ActiveDeadlineSeconds:         &deadline, // D27: kubelet kills it even if the API is down
 			Containers: []corev1.Container{{
@@ -225,6 +259,7 @@ func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 				Image:           cfg.ImageRepo + sb.Image + ":" + cfg.ImageTag,
 				ImagePullPolicy: corev1.PullIfNotPresent,
 				Ports:           []corev1.ContainerPort{{Name: "ssh", ContainerPort: 22}},
+				Env:             prof.env,
 				Resources: corev1.ResourceRequirements{
 					// Requests are what the scheduler reserves. Ephemeral
 					// storage needs an explicit request: with only a limit,
@@ -233,16 +268,16 @@ func BuildPod(sb store.Sandbox, cfg config.Sandbox) *corev1.Pod {
 					// D48). Each can still grow to its 5 Gi limit.
 					Requests: corev1.ResourceList{
 						corev1.ResourceCPU:              resource.MustParse("250m"),
-						corev1.ResourceMemory:           resource.MustParse("256Mi"),
+						corev1.ResourceMemory:           resource.MustParse(prof.memoryRequest),
 						corev1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
 					},
 					Limits: corev1.ResourceList{
-						corev1.ResourceCPU:              resource.MustParse("1"),
-						corev1.ResourceMemory:           resource.MustParse("1Gi"),
+						corev1.ResourceCPU:              resource.MustParse(prof.cpuLimit),
+						corev1.ResourceMemory:           resource.MustParse(prof.memoryLimit),
 						corev1.ResourceEphemeralStorage: resource.MustParse("5Gi"),
 					},
 				},
-				SecurityContext: SandboxSecurityContext(),
+				SecurityContext: SandboxSecurityContext(prof.docker),
 				ReadinessProbe: &corev1.Probe{
 					ProbeHandler:  corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(22)}},
 					PeriodSeconds: 1, // "running" as soon as sshd answers (load test, D48)
@@ -291,18 +326,33 @@ var SandboxCapabilities = []corev1.Capability{
 	"KILL", "NET_BIND_SERVICE", "SYS_CHROOT", "AUDIT_WRITE",
 }
 
+// DockerCapabilities are added for Docker sandboxes only (D61, measured):
+// the rest of Docker's default container set, which dockerd must hold to
+// give nested containers (MKNOD, NET_RAW, SETFCAP, SETPCAP), and what
+// dockerd needs for mounts and its bridge (SYS_ADMIN, NET_ADMIN). They are
+// granted inside gVisor's kernel, under the gvisor-docker runtime; the
+// admission policy allows them with that runtime only.
+var DockerCapabilities = []corev1.Capability{
+	"MKNOD", "NET_RAW", "SETFCAP", "SETPCAP", "SYS_ADMIN", "NET_ADMIN",
+}
+
 // SandboxSecurityContext is the sandbox container's security context: drop
-// all capabilities but SandboxCapabilities, and the RuntimeDefault seccomp
+// all capabilities but SandboxCapabilities (plus DockerCapabilities for a
+// Docker sandbox), and the RuntimeDefault seccomp
 // profile (not applied under gVisor, whose own syscall filter is the
 // barrier; it applies if a pod ever runs on another runtime, D45).
 // Privilege escalation stays allowed
 // because sudo (setuid) is part of the sandbox (D2): the user is meant to
 // be root inside their own gVisor sandbox.
-func SandboxSecurityContext() *corev1.SecurityContext {
+func SandboxSecurityContext(docker bool) *corev1.SecurityContext {
+	add := append([]corev1.Capability{}, SandboxCapabilities...)
+	if docker {
+		add = append(add, DockerCapabilities...)
+	}
 	return &corev1.SecurityContext{
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
-			Add:  SandboxCapabilities,
+			Add:  add,
 		},
 		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 		Privileged:     ptr(false),
