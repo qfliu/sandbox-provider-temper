@@ -1,5 +1,5 @@
 # Azure infrastructure for the sandbox provider (Phase 7, D54): one resource
-# group holding an AKS cluster (2 arm64 nodes) and a container registry the
+# group holding an AKS cluster (2 x86 nodes, D63) and a container registry the
 # cluster pulls from. Applied and destroyed by ./cloud-up.sh and
 # ./cloud-down.sh (repo root); state lives in .devenv/state, never in git.
 # The state holds the cluster's admin credentials (kube_config), so its
