@@ -58,10 +58,13 @@ instead of it.
 **Defence in depth around the runtime.** The runtime (gVisor or Kata) is one layer. The others:
 - **Admission policy** (CEL), enforced by Kubernetes itself, even against
   the API's own service account:
-  - only gVisor (`gvisor`, or `gvisor-docker` for sandboxes that run Docker);
+  - only gVisor (`gvisor`, or `gvisor-docker` for sandboxes that run
+    Docker) or Kata (`kata`), and each RuntimeClass checked to point at its
+    own handler;
   - no service-account token;
   - only the capabilities sshd and sudo need, plus Docker's six only under
-    `gvisor-docker`;
+    `gvisor-docker` or `kata`, and `SYS_RESOURCE` only under `kata`;
+  - no Kata annotations (they could reconfigure the VM);
   - no host namespaces, hostPath, host ports, sysctls or AppArmor/SELinux
     overrides (Pod Security `baseline`'s rules, which the namespace can no
     longer enforce itself because Docker needs capabilities it forbids);
