@@ -126,12 +126,16 @@ req "$KEY" POST /sandboxes -d '{"image":"ubuntu-dev","ssh_public_key":"not a key
 check "invalid SSH key → 400" err_is "ssh_public_key must be"
 req "$KEY" POST /sandboxes -d "{\"image\":\"ubuntu-dev\",\"ssh_public_key\":\"$SSH_PUB\",\"runtime\":\"runc\"}"
 check "unknown runtime → 400" err_is "runtime must be one of"
-# Kata is offered only where it's installed (D65): created there, refused
-# with a clear message elsewhere (a laptop cluster).
+# Kata is offered only where it's installed (D65): created where the kata
+# RuntimeClass exists, refused with a clear message elsewhere (a laptop).
 req "$KEY" POST /sandboxes -d "{\"image\":\"ubuntu-base\",\"ssh_public_key\":\"$SSH_PUB\",\"runtime\":\"kata\"}"
 KID=$(json "$TMP/out" "d.get('id', '')")
 [ -n "$KID" ] && SANDBOXES+=("$KID")
-check "runtime kata → 201 here, or 400 \"isn't available\"" eval '[ "$CODE $(json "$TMP/out" "d.get(\"runtime\", \"\")")" = "201 kata" ] || err_is "isn.t available on this cluster"'
+if kubectl get runtimeclass kata >/dev/null 2>&1; then
+	check "runtime kata → 201 (Kata is installed here)" test "$CODE $(json "$TMP/out" "d.get('runtime', '')")" = "201 kata"
+else
+	check "runtime kata → 400 \"isn't available\" (no Kata here)" err_is "isn.t available on this cluster"
+fi
 
 # --- lifecycle ---------------------------------------------------------------
 section "lifecycle"
@@ -160,8 +164,9 @@ exec_cmd '{"command":"uname -r"}'
 KERNEL=$(json "$TMP/out" "d['stdout'].strip()")
 if [ "${SANDBOX_RUNTIME:-gvisor}" = kata ]; then
 	# Its own VM's kernel: not gVisor's, not the node's.
-	NODE_KERNEL=$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kernelVersion}')
-	check "runs in its own VM (kernel $KERNEL, node $NODE_KERNEL)" eval '[[ -n "$KERNEL" && "$KERNEL" != *gvisor* && "$KERNEL" != "$NODE_KERNEL" ]]'
+	NODE=$(kubectl -n sandboxes get pod "$ID" -o jsonpath='{.spec.nodeName}')
+	NODE_KERNEL=$(kubectl get node "$NODE" -o jsonpath='{.status.nodeInfo.kernelVersion}')
+	check "runs in its own VM (kernel $KERNEL, node $NODE_KERNEL)" eval '[[ -n "$NODE_KERNEL" && $KERNEL =~ ^[0-9]+\.[0-9]+ && "$KERNEL" != *gvisor* && "$KERNEL" != "$NODE_KERNEL" ]]'
 else
 	check "runs under gVisor" grep -q gvisor <<<"$KERNEL"
 fi

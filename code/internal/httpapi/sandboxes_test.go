@@ -20,7 +20,7 @@ import (
 type fakeSandboxes struct{ err error }
 
 func (f fakeSandboxes) Create(_ context.Context, _ store.User, req sandbox.CreateRequest) (store.Sandbox, error) {
-	return store.Sandbox{ID: "sb-1", Image: req.Image, Status: "pending"}, f.err
+	return store.Sandbox{ID: "sb-1", Image: req.Image, Runtime: req.Runtime, Status: "pending"}, f.err
 }
 func (f fakeSandboxes) Get(_ context.Context, _ store.User, id string) (store.Sandbox, error) {
 	return store.Sandbox{ID: id}, f.err
@@ -135,5 +135,14 @@ func TestUploadTooLarge(t *testing.T) {
 	big := strings.Repeat("x", maxUploadBody+1)
 	if rec := do(sandboxHandler(nil), "PUT", "/v1/sandboxes/sb-1/files?path=a", big); rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413", rec.Code)
+	}
+}
+
+// The runtime in a /v1 create reaches the service and comes back (D65).
+func TestCreateRuntimeField(t *testing.T) {
+	rec := do(sandboxHandler(nil), http.MethodPost, "/v1/sandboxes",
+		`{"image":"ubuntu-dev","ssh_public_key":"ssh-ed25519 AAAA","runtime":"kata"}`)
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"runtime":"kata"`) {
+		t.Fatalf("create = %d %s", rec.Code, rec.Body.String())
 	}
 }

@@ -62,6 +62,8 @@ type Sandbox struct {
 }
 
 // KnownRuntimes are the runtimes the API knows how to run sandboxes under.
+// Adding one also means migration 0009's CHECK and the admission policy's
+// runtime list (deploy/helm/templates/sandbox-pod-policy.yaml).
 var KnownRuntimes = []string{"gvisor", "kata"}
 
 // LoadAPI reads API settings from the environment, applying defaults.

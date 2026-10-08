@@ -168,6 +168,10 @@ func TestBuildPodKata(t *testing.T) {
 	if got[len(got)-1] != "SYS_RESOURCE" {
 		t.Fatalf("docker kata capabilities = %v, want SYS_RESOURCE", got)
 	}
+	c := pod.Spec.Containers[0]
+	if c.Resources.Limits.Memory().Cmp(resource.MustParse("4Gi")) != 0 || len(c.Env) != 1 || c.Env[0].Name != "DOCKER_STORAGE_SIZE" {
+		t.Fatalf("docker kata sandbox lost Docker's resources or env: %v %v", c.Resources.Limits, c.Env)
+	}
 
 	// gVisor (and an unset runtime, as for rows from before D65) never gets
 	// SYS_RESOURCE.

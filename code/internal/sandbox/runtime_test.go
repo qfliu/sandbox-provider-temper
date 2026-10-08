@@ -13,6 +13,7 @@ func TestRuntimeChoice(t *testing.T) {
 	gvisorOnly := &Service{cfg: config.Sandbox{Runtimes: []string{"gvisor"}}}
 	both := &Service{cfg: config.Sandbox{Runtimes: []string{"gvisor", "kata"}}}
 	unset := &Service{}
+	kataOnly := &Service{cfg: config.Sandbox{Runtimes: []string{"kata"}}}
 	for _, c := range []struct {
 		s       *Service
 		in      string
@@ -27,6 +28,8 @@ func TestRuntimeChoice(t *testing.T) {
 		{both, "", "gvisor", ""},
 		{both, "kata", "kata", ""},
 		{unset, "", "gvisor", ""},
+		{kataOnly, "", "kata", ""},
+		{kataOnly, "gvisor", "", "isn't available on this cluster (available: kata)"},
 	} {
 		got, err := c.s.runtime(c.in)
 		if c.wantErr != "" {

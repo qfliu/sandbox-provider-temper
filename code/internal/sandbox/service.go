@@ -217,14 +217,6 @@ func (s *Service) runtime(r string) (string, error) {
 	return r, nil
 }
 
-// Runtimes returns the runtimes this cluster offers, the default first.
-func (s *Service) Runtimes() []string {
-	if len(s.cfg.Runtimes) == 0 {
-		return []string{"gvisor"}
-	}
-	return s.cfg.Runtimes
-}
-
 func (s *Service) ttl(seconds int) (time.Duration, error) {
 	if seconds == 0 {
 		return s.cfg.DefaultTTL, nil

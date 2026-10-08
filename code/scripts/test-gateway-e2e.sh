@@ -110,8 +110,10 @@ printf "\nlogin\n"
 out=$(gw_ssh a "$A" -n uname -r 2>&1)
 # The sandbox's kernel: gVisor's, or under Kata (D65) its own VM's, not the node's.
 if [ "${SANDBOX_RUNTIME:-gvisor}" = kata ]; then
-	NODE_KERNEL=$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kernelVersion}')
-	[[ -n "$out" && "$out" != *gvisor* && "$out" != *"$NODE_KERNEL"* && "$out" != *denied* ]] &&
+	NODE_KERNEL=$(kubectl get node "$(kubectl -n sandboxes get pod "$A" -o jsonpath='{.spec.nodeName}')" \
+		-o jsonpath='{.status.nodeInfo.kernelVersion}')
+	# A kernel version, so an ssh error message can't pass (review of #76).
+	[[ -n "$NODE_KERNEL" && $out =~ ^[0-9]+\.[0-9]+[^[:space:]]*$ && "$out" != *gvisor* && "$out" != "$NODE_KERNEL" ]] &&
 		pass "sandbox's own key → shell in the sandbox's VM ($out)" || fail "own key" "$out"
 else
 	[[ "$out" == *gvisor* ]] && pass "sandbox's own key → shell in the sandbox ($out)" || fail "own key" "$out"
