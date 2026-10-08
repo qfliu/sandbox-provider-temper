@@ -48,8 +48,20 @@ func NewClientset() (kubernetes.Interface, error) {
 			return nil, fmt.Errorf("load kubernetes config: %w", err)
 		}
 	}
+	// client-go's default client-side limit is 5 requests/s (burst 10); a
+	// create is two writes (Secret, pod), so one API replica could start only
+	// ~2.5 sandboxes/s once the burst was spent (D67). The API server's own
+	// priority and fairness limits still apply above this.
+	cfg.QPS, cfg.Burst = ClientQPS, ClientBurst
 	return kubernetes.NewForConfig(cfg)
 }
+
+// ClientQPS and ClientBurst are the API's client-side rate limit toward the
+// Kubernetes API (D68).
+const (
+	ClientQPS   = 50
+	ClientBurst = 100
+)
 
 // Pods creates and deletes sandbox pods (and their host-key Secrets) in one
 // namespace.
