@@ -285,6 +285,10 @@ func TestSSHCommand(t *testing.T) {
 		if got := sshCommand("sb-x", gateway); got != want {
 			t.Errorf("sshCommand(%q) = %q, want %q", gateway, got, want)
 		}
+		// The same with a key file: -i right after ssh, before any -p.
+		if got, want := sshCommandWithKey("sb-x", gateway), strings.Replace(want, "ssh ", "ssh -i ~/.ssh/your_key ", 1); got != want {
+			t.Errorf("sshCommandWithKey(%q) = %q, want %q", gateway, got, want)
+		}
 	}
 }
 
@@ -580,5 +584,13 @@ func TestUIExec(t *testing.T) {
 	// An ended sandbox has no form.
 	if strings.Contains(uiDo(h, http.MethodGet, "/ui/sandboxes/sb-alice0000old", nil, alice).Body.String(), "/exec") {
 		t.Fatal("ended sandbox shows a command form")
+	}
+}
+
+// The sandbox page says how to pick a key ssh doesn't offer by default.
+func TestUIDetailSSHKeyHint(t *testing.T) {
+	body := uiDo(sandboxUI(aliceAndBob(), "203.0.113.7:22"), http.MethodGet, "/ui/sandboxes/sb-alice0000001", nil, alice).Body.String()
+	if !strings.Contains(body, "ssh -i ~/.ssh/your_key sb-alice0000001@203.0.113.7") {
+		t.Fatalf("no -i example on the sandbox page:\n%s", body)
 	}
 }

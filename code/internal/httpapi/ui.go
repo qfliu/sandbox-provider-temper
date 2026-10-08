@@ -79,7 +79,10 @@ type page struct {
 	// Sandbox detail.
 	Sandbox    store.Sandbox
 	SSHCommand string
-	GatewaySet bool
+	// SSHCommandWithKey is the same with -i and a placeholder key path, for
+	// keys ssh doesn't offer by default.
+	SSHCommandWithKey string
+	GatewaySet        bool
 	// The run-a-command box (D69): what was run and its result.
 	ExecCommand string
 	Exec        *sshx.ExecResult
@@ -463,6 +466,7 @@ func (u *ui) detailPage(r *http.Request) (page, error) {
 	return page{ActiveKeys: active, Self: selfURL(r),
 		Title: sb.ID, User: &user, Sandbox: sb,
 		SSHCommand: sshCommand(sb.ID, u.gateway), GatewaySet: gatewaySet(u.gateway),
+		SSHCommandWithKey: sshCommandWithKey(sb.ID, u.gateway),
 	}, err
 }
 
@@ -714,4 +718,10 @@ func sshCommand(id, gateway string) string {
 		return "ssh " + id + "@" + host
 	}
 	return "ssh -p " + port + " " + id + "@" + host
+}
+
+// sshCommandWithKey is sshCommand naming a key file, for keys ssh doesn't
+// offer on its own.
+func sshCommandWithKey(id, gateway string) string {
+	return "ssh -i ~/.ssh/your_key" + strings.TrimPrefix(sshCommand(id, gateway), "ssh")
 }
