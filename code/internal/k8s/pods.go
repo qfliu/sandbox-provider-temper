@@ -218,9 +218,14 @@ func profileFor(image string) podProfile {
 	if image == DockerImage {
 		return podProfile{
 			runtimeClass: "gvisor-docker", docker: true,
-			cpuLimit: "2", memoryRequest: "512Mi", memoryLimit: "4Gi",
 			// Docker's images, layers and build cache live in this tmpfs,
 			// inside the 4 Gi: half for Docker, half for everything else.
+			// The request is a quarter of the limit (review of #73): a
+			// node packs more Docker sandboxes than could all fill up, so
+			// under memory pressure these Burstable pods are evicted first
+			// and lose their Docker state. A request equal to the limit
+			// would make that impossible at four times the cost per node.
+			cpuLimit: "2", memoryRequest: "1Gi", memoryLimit: "4Gi",
 			env: []corev1.EnvVar{{Name: "DOCKER_STORAGE_SIZE", Value: "2g"}},
 		}
 	}

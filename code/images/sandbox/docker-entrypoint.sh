@@ -32,20 +32,32 @@ start_dockerd() {
   # fallback is too big behind Calico's IP-in-IP (1480), so full-size
   # packets from nested containers were dropped (TLS, image pulls stalled).
   mtu=$(ip -o link show dev "$dev" | sed -n 's/.* mtu \([0-9]*\).*/\1/p')
-  [ -n "$dev" ] && [ -n "$addr" ] && [ -n "$mtu" ] || { log "no default route"; return 1; }
-  echo 1 >/proc/sys/net/ipv4/ip_forward
+  # Some CNIs (Cilium's tunnel modes) set a smaller MTU on the route than
+  # on the link; use the smaller.
+  rmtu=$(ip route show default | sed -n 's/.* mtu \([0-9]*\).*/\1/p' | head -1)
+  [ -n "$rmtu" ] && [ -n "$mtu" ] && [ "$rmtu" -lt "$mtu" ] && mtu=$rmtu
+  [ -n "$dev" ] && [ -n "$addr" ] && [ -n "$mtu" ] ||
+    { log "can't read the pod's network (device '$dev', address '$addr', MTU '$mtu')"; return 1; }
+  echo 1 >/proc/sys/net/ipv4/ip_forward || { log "can't enable IP forwarding"; return 1; }
   # -C first: a container restart keeps the pod's (gVisor's) network stack.
   for proto in tcp udp; do
     iptables -t nat -C POSTROUTING -o "$dev" -p "$proto" -j SNAT --to-source "$addr" 2>/dev/null ||
       iptables -t nat -A POSTROUTING -o "$dev" -p "$proto" -j SNAT --to-source "$addr" || return 1
   done
-  dockerd --iptables=false --ip6tables=false --mtu="$mtu" >>/var/log/dockerd.log 2>&1 &
+  # Restarted if it exits (a crash, or killed for memory): Docker state on
+  # the tmpfs survives that, unlike a restart of the whole container.
+  (
+    while :; do
+      dockerd --iptables=false --ip6tables=false --mtu="$mtu" >>/var/log/dockerd.log 2>&1
+      echo "docker-entrypoint: dockerd exited ($?); restarting in 2 s" >>/var/log/dockerd.log
+      sleep 2
+    done
+  ) &
   # Wait for the API socket (about a second), so the sandbox reports
   # "running" only once Docker answers.
   i=0
   while [ $i -lt 150 ]; do
     docker version >/dev/null 2>&1 && return 0
-    kill -0 $! 2>/dev/null || return 1
     sleep 0.1; i=$((i + 1))
   done
   return 1

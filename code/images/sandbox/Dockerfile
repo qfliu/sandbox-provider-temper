@@ -60,7 +60,7 @@ ARG DOCKER_KEY_FPR=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 RUN apt-get update \
  && apt-get install -y --no-install-recommends gnupg iproute2 iptables \
  && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /tmp/docker.asc \
- && [ "$(gpg --show-keys --with-colons /tmp/docker.asc | awk -F: '/^fpr/{print $10; exit}')" = "$DOCKER_KEY_FPR" ] \
+ && [ "$(gpg --show-keys --with-colons /tmp/docker.asc | awk -F: '$1 == "pub" {n++} /^fpr/ && !f {f = $10} END {print n ":" f}')" = "1:$DOCKER_KEY_FPR" ] \
  && install -m 0755 -d /etc/apt/keyrings \
  && gpg --dearmor -o /etc/apt/keyrings/docker.gpg /tmp/docker.asc \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" \
@@ -71,7 +71,7 @@ RUN apt-get update \
       containerd.io="$CONTAINERD_VERSION" \
       docker-compose-plugin="$COMPOSE_VERSION" docker-buildx-plugin="$BUILDX_VERSION" \
  && apt-get purge -y gnupg && apt-get autoremove -y \
- && rm -rf /var/lib/apt/lists/* /tmp/docker.asc \
+ && rm -rf /var/lib/apt/lists/* /tmp/docker.asc /root/.gnupg \
  && usermod -aG docker user
 
 # gVisor implements iptables' legacy interface, not nftables. dockerd calls
