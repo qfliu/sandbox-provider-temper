@@ -12,7 +12,12 @@
 # SYS_ADMIN, NET_ADMIN and NET_RAW, which baseline forbids and which only
 # gVisor contains), so the baseline rules that matter for these pods (no host
 # namespaces, hostPath, host ports, unsafe sysctls, unmasked /proc, AppArmor
-# or SELinux overrides) are repeated here.
+# or SELinux overrides, Windows host processes) are repeated here.
+# Ordering: Helm applies the Namespace before this policy, so the one upgrade
+# from a pre-D61 release has a moment (about a second) when the namespace is
+# already `privileged` and the old policy, without the host rules, is still
+# in force. Accepted: only the API's service account can create pods there,
+# and it would have to be compromised in that moment (review of #72).
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -117,6 +122,13 @@ spec:
         !k.startsWith('container.apparmor.security.beta.kubernetes.io/') ||
         object.metadata.annotations[k] != 'unconfined'))
     message: "sandbox pods must not run AppArmor-unconfined"
+  - expression: >-
+      !(has(object.spec.securityContext) && has(object.spec.securityContext.windowsOptions) &&
+        has(object.spec.securityContext.windowsOptions.hostProcess) &&
+        object.spec.securityContext.windowsOptions.hostProcess) &&
+      variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.windowsOptions) ||
+        !has(c.securityContext.windowsOptions.hostProcess) || !c.securityContext.windowsOptions.hostProcess)
+    message: "sandbox pods must not be Windows host processes"
   - expression: >-
       variables.containers.all(c, has(c.resources) && has(c.resources.limits) &&
         'cpu' in c.resources.limits && 'memory' in c.resources.limits)

@@ -23,7 +23,9 @@
 # (D22), no oci-seccomp (breaks threads under gVisor, D45), raw sockets off.
 # runsc-docker (RuntimeClass gvisor-docker, only for sandboxes that run
 # Docker) also turns on raw sockets and packet-socket writes, which dockerd
-# needs inside gVisor; both act inside gVisor's own network stack (D61).
+# needs inside gVisor. They let the sandbox write any frame onto its pod's
+# interface, so beyond the NetworkPolicies, Calico's anti-spoofing checks on
+# workload interfaces are what drop forged source addresses (D61).
 #
 # Privileged with the host's PID namespace and /: it is node setup, like a
 # cloud-init script, and lives in its own namespace that nothing else uses.
@@ -121,15 +123,20 @@ data:
       exit 1
     fi
     [ -f "$CONF.before-gvisor" ] || cp "$CONF" "$CONF.before-gvisor"
+    # Roll back to the config the node was running, not to .before-gvisor:
+    # on a node from the runsc-only installer that would take away a
+    # working runsc (review of #72).
+    cp "$CONF" "$CONF.gvisor-prev"
     mv "$CONF.gvisor-new" "$CONF"
     systemctl restart containerd
     sleep 3
     if ! systemctl is-active --quiet containerd || ! loaded; then
-      echo "containerd isn't running with the runsc runtimes after the change; restoring the old config" >&2
-      cp "$CONF.before-gvisor" "$CONF"
+      echo "containerd isn't running with the runsc runtimes after the change; restoring the previous config" >&2
+      cp "$CONF.gvisor-prev" "$CONF"
       systemctl restart containerd
       exit 1
     fi
+    rm -f "$CONF.gvisor-prev"
     echo "containerd configured for runsc and runsc-docker (config version ${VER:-2}, $CRI) and restarted"
 ---
 apiVersion: apps/v1

@@ -65,8 +65,9 @@ echo "==> configuring containerd"
 #    runsc-docker.toml adds what dockerd needs inside gVisor (gVisor's
 #    "Docker in gVisor" guide; without them dockerd's network setup fails):
 #    raw sockets, and writes on packet sockets (ARP/NDP on Docker's bridge).
-#    Both act inside gVisor's own network stack; the NetworkPolicies still
-#    apply outside it.
+#    They let the sandbox write any frame onto its pod's interface, so
+#    beyond the NetworkPolicies, Calico's anti-spoofing checks on workload
+#    interfaces are what drop forged source addresses (D61).
 minikube ssh -- 'set -e
   sudo ln -sf /data/gvisor/runsc /usr/bin/runsc
   sudo ln -sf /data/gvisor/containerd-shim-runsc-v1 /usr/bin/containerd-shim-runsc-v1

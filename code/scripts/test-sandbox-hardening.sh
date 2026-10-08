@@ -145,13 +145,16 @@ for c in "runs without gVisor|\$_='' if /runtimeClassName/|must run under gVisor
 	"lacks CPU and memory limits|\$_='' if /resources:/|CPU and memory limits" \
 	"mounts a service account token|+volumes: [{name: tok, projected: {sources: [{serviceAccountToken: {path: token}}]}}]|service account token" \
 	"uses another service account|+serviceAccountName: hardening-probe|default service account" \
-	"uses the host network|+hostNetwork: true|host's network" \
-	"uses the host PID namespace|+hostPID: true|host's network, PID" \
-	"mounts a hostPath volume|+volumes: [{name: h, hostPath: {path: /}}]|hostPath" \
-	"uses a host port|s/^(    resources: )/    ports: [{containerPort: 22, hostPort: 2222}]\n\$1/|host ports" \
-	"sets a sysctl|s/^  securityContext: \{seccompProfile: \{type: RuntimeDefault\}\}/  securityContext: {seccompProfile: {type: RuntimeDefault}, sysctls: [{name: net.ipv4.ping_group_range, value: \"0 0\"}]}/|sysctls" \
-	"runs AppArmor-unconfined|$(CSC 'appArmorProfile: {type: Unconfined}')|AppArmor" \
-	"sets SELinux options|$(CSC 'seLinuxOptions: {type: spc_t}')|SELinux"; do
+	"uses the host network|+hostNetwork: true|must not use the host's network, PID or IPC namespace" \
+	"uses the host PID namespace|+hostPID: true|must not use the host's network, PID or IPC namespace" \
+	"uses the host IPC namespace|+hostIPC: true|must not use the host's network, PID or IPC namespace" \
+	"mounts a hostPath volume|+volumes: [{name: h, hostPath: {path: /}}]|must not mount hostPath volumes" \
+	"uses a host port|s/^(    resources: )/    ports: [{containerPort: 22, hostPort: 2222}]\n\$1/|must not use host ports" \
+	"sets a sysctl|s/^  securityContext: \{seccompProfile: \{type: RuntimeDefault\}\}/  securityContext: {seccompProfile: {type: RuntimeDefault}, sysctls: [{name: net.ipv4.ping_group_range, value: \"0 0\"}]}/|must not set sysctls" \
+	"runs AppArmor-unconfined|$(CSC 'appArmorProfile: {type: Unconfined}')|must not run AppArmor-unconfined" \
+	"sets SELinux options|$(CSC 'seLinuxOptions: {type: spc_t}')|must not set SELinux options" \
+	"sets pod-level SELinux options|s/^  securityContext: \{seccompProfile: \{type: RuntimeDefault\}\}/  securityContext: {seccompProfile: {type: RuntimeDefault}, seLinuxOptions: {type: spc_t}}/|must not set SELinux options" \
+	"has an AppArmor-unconfined annotation|s/^(  labels: .*)\$/\$1\n  annotations: {container.apparmor.security.beta.kubernetes.io\/c: unconfined}/|must not run AppArmor-unconfined"; do
 	IFS='|' read -r name expr want <<<"$c"
 	out=$(probe "$name" "$expr")
 	[[ "$out" == *"$want"* ]] && pass "pod that $name is denied" || fail "pod that $name" "$out"
