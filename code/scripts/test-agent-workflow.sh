@@ -15,6 +15,9 @@
 #      and the sandbox keep working, cleanup frees it.
 # Prints PASS/FAIL per check; exits non-zero on any failure.
 #
+# It pulls six images from Docker Hub unauthenticated (names below); back-to-
+# back runs from one address can hit Hub's rate limit, which shows as FAILs.
+#
 # Usage (from the project root, with the API deployed; minikube or AKS):
 #   source ./env.sh && ./code/scripts/test-agent-workflow.sh
 #   SANDBOX_RUNTIME=kata ./code/scripts/test-agent-workflow.sh   (on a cluster with Kata)
@@ -30,6 +33,9 @@ TMP="$(mktemp -d "$ROOT/.devenv/state/tmp/agent.XXXXXX")"
 (umask 077 && printf 'Authorization: Bearer %s\n' "$KEY" >"$TMP/auth")
 RT=${SANDBOX_RUNTIME:+,\"runtime\":\"$SANDBOX_RUNTIME\"}
 PASSED=0 FAILED=0 SB=""
+# Images the workflows use (in the sandbox, from Docker Hub).
+PY_IMG=python:3.13-alpine REDIS_IMG=redis:8-alpine PG_IMG=postgres:17-alpine
+GO_IMG=golang:1.27.1-alpine ALPINE_IMG=alpine:3.22 WS_IMG=jmalloc/echo-server:v0.3.7
 
 pass() { PASSED=$((PASSED + 1)); printf "  \033[32mPASS\033[0m  %s\n" "$1"; }
 fail() { FAILED=$((FAILED + 1)); printf "  \033[31mFAIL\033[0m  %s  (%s)\n" "$1" "$2"; }
@@ -75,7 +81,11 @@ works() {
 	[ "${r%%|*}" = 0 ] && [[ "${r#*|}" == *"$3"* ]] && pass "$1" || fail "$1" "$r"
 }
 # put <local file> <path in /home/user>
-put() { curl -s -o /dev/null -w '%{http_code}' -H @"$TMP/auth" -X PUT --data-binary @"$1" "$API/sandboxes/$SB/files?path=$2"; }
+put() {
+	local code
+	code=$(curl -s -o /dev/null -w '%{http_code}' -H @"$TMP/auth" -X PUT --data-binary @"$1" "$API/sandboxes/$SB/files?path=$2")
+	[ "$code" = 200 ] || die "upload of $2 failed (HTTP $code)"
+}
 # url <port> <path>: GET through the port URL
 url() { curl -s -m 30 -H @"$TMP/auth" "$API/sandboxes/$SB/ports/$1/$2"; }
 
@@ -107,26 +117,31 @@ from app import render
 class T(unittest.TestCase):
     def test_render(self): self.assertEqual(json.loads(render(3))["visits"], 3)
 EOF
-printf 'FROM python:3.13-alpine\nRUN pip install --no-cache-dir redis==5.2.1\nCOPY app.py /app.py\nCMD ["python", "/app.py"]\n' >"$TMP/counter/Dockerfile"
-printf 'services:\n  web:\n    build: .\n    ports: ["8000:8000"]\n    depends_on: [cache]\n  cache:\n    image: redis:8-alpine\n' >"$TMP/counter/compose.yaml"
+printf "FROM $PY_IMG\nRUN pip install --no-cache-dir redis==5.2.1\nCOPY app.py /app.py\nCMD [\"python\", \"/app.py\"]\n" >"$TMP/counter/Dockerfile"
+printf 'services:\n  web:\n    build: .\n    ports: ["8000:8000"]\n    depends_on: [cache]\n  cache:\n    image: %s\n' "$REDIS_IMG" >"$TMP/counter/compose.yaml"
 run "mkdir -p counter pg gobuild" >/dev/null
-for f in app.py test_app.py Dockerfile compose.yaml; do put "$TMP/counter/$f" "counter/$f" >/dev/null; done
+for f in app.py test_app.py Dockerfile compose.yaml; do put "$TMP/counter/$f" "counter/$f"; done
 works "unit tests pass" "cd counter && python3 -m unittest 2>&1 | tail -1" "OK"
-works "compose up --build (web + redis)" "cd counter && docker compose up -d --build --quiet-pull 2>&1 | tail -1 && sleep 3 && docker compose ps --format '{{.Service}}={{.State}}' | sort | tr '\n' ' '" "web=running" 600
+works "compose up --build (web + redis)" "cd counter && { docker compose up -d --build --quiet-pull >/tmp/up.log 2>&1 || { tail -5 /tmp/up.log; exit 1; }; } && docker compose ps --format '{{.Service}}={{.State}}' | sort | tr '\n' ' '" "web=running" 600
+# The first visit is retried until the server answers; then two more.
+visits() { url 8000 "" | python3 -c "import json,sys; print(json.load(sys.stdin)['visits'])" 2>/dev/null; }
 v=""
-for _ in 1 2 3; do v=$(url 8000 "" | python3 -c "import json,sys; print(json.load(sys.stdin)['visits'])" 2>/dev/null); done
+for _ in $(seq 1 15); do v=$(visits) && [ -n "$v" ] && break; sleep 1; done
+v=$(visits); v=$(visits)
 [ "$v" = 3 ] && pass "port URL: three visits counted (Redis reached by name)" || fail "port URL visits" "got '$v', want 3"
-works "docker exec into redis (non-root) reads the counter" "cd counter && docker compose exec -T cache redis-cli get visits" "3"
-run "cd counter && docker compose down" >/dev/null
+works "docker exec into redis (non-root) reads the counter" "cd counter && docker compose exec -T cache redis-cli get visits | grep -qx 3 && echo counter=3" "counter=3"
+run "cd counter && docker compose down -v" >/dev/null
 
 # ---------------------------------------------------------------------------
 printf "\n2. Postgres in compose: SQL through docker exec psql\n"
-printf 'services:\n  db:\n    image: postgres:17-alpine\n    environment: {POSTGRES_PASSWORD: example}\n    healthcheck: {test: ["CMD", "pg_isready", "-U", "postgres"], interval: 2s, retries: 30}\n' >"$TMP/pg.yaml"
-put "$TMP/pg.yaml" "pg/compose.yaml" >/dev/null
-works "postgres starts and becomes healthy" "cd pg && docker compose up -d --wait --quiet-pull 2>&1 | tail -1; docker compose ps --format '{{.Health}}'" "healthy" 600
-works "docker exec psql: create, insert, query" "cd pg && docker compose exec -T db psql -U postgres -tAc \"create table t(n int); insert into t select generate_series(1,5); select sum(n) from t\"" "15"
+printf 'services:\n  db:\n    image: %s\n    environment: {POSTGRES_PASSWORD: example}\n    healthcheck: {test: ["CMD", "pg_isready", "-U", "postgres"], interval: 2s, retries: 30}\n' "$PG_IMG" >"$TMP/pg.yaml"
+put "$TMP/pg.yaml" "pg/compose.yaml"
+# Exactly "healthy" (a substring match would also take "unhealthy"), and
+# `up --wait` must itself succeed.
+works "postgres starts and becomes healthy" "cd pg && docker compose up -d --wait --wait-timeout 120 --quiet-pull >/tmp/pg.log 2>&1 && docker compose ps --format '{{.Health}}' | grep -qx healthy && echo health=ok" "health=ok" 600
+works "docker exec psql: create, insert, query" "cd pg && docker compose exec -T db psql -U postgres -tAc \"create table t(n int); insert into t select generate_series(1,5); select sum(n) from t\" | grep -qx 15 && echo sum=15" "sum=15"
 works "postgres runs as a non-root user" "cd pg && docker compose exec -T db stat -c %U /proc/1" "postgres"
-run "cd pg && docker compose down" >/dev/null
+run "cd pg && docker compose down -v" >/dev/null
 
 # ---------------------------------------------------------------------------
 printf "\n3. multi-stage Go build: tests in the build, served through the port URL\n"
@@ -157,45 +172,66 @@ func TestGreet(t *testing.T) {
 }
 EOF
 printf 'module example.com/hello\n\ngo 1.23\n' >"$TMP/go.mod"
-printf 'FROM golang:1.23-alpine AS build\nWORKDIR /src\nCOPY . .\nRUN CGO_ENABLED=0 go test ./... && CGO_ENABLED=0 go build -o /hello .\n\nFROM alpine:3.22\nCOPY --from=build /hello /hello\nCMD ["/hello"]\n' >"$TMP/Dockerfile.go"
-for f in main.go main_test.go go.mod; do put "$TMP/$f" "gobuild/$f" >/dev/null; done
-put "$TMP/Dockerfile.go" "gobuild/Dockerfile" >/dev/null
+printf 'FROM %s AS build\nWORKDIR /src\nCOPY . .\nRUN CGO_ENABLED=0 go test ./... && CGO_ENABLED=0 go build -o /hello .\n\nFROM %s\nCOPY --from=build /hello /hello\nCMD ["/hello"]\n' "$GO_IMG" "$ALPINE_IMG" >"$TMP/Dockerfile.go"
+for f in main.go main_test.go go.mod; do put "$TMP/$f" "gobuild/$f"; done
+put "$TMP/Dockerfile.go" "gobuild/Dockerfile"
 works "multi-stage build runs the Go tests and builds" "cd gobuild && docker build -q -t hello-go . >/dev/null && echo built" "built" 600
-works "the small image runs the server" "docker run -d --name hello-go -p 8081:8081 hello-go >/dev/null && sleep 2 && docker ps --filter name=hello-go --format '{{.Status}}'" "Up"
+works "the small image runs the server" "docker run -d --name hello-go -p 8081:8081 hello-go >/dev/null && sleep 2 && docker ps --filter name=^hello-go$ --format '{{.Status}}'" "Up"
 g=$(url 8081 "")
 [ "$g" = "hello, agent" ] && pass "port URL serves the Go app" || fail "Go app through port URL" "got '$g'"
 run "docker rm -f hello-go" >/dev/null
 
 # ---------------------------------------------------------------------------
 printf "\n4. WebSocket server through the port URL\n"
-works "websocket echo server starts" "docker pull -q jmalloc/echo-server:v0.3.7 >/dev/null && docker run -d --name ws -p 8086:8080 jmalloc/echo-server:v0.3.7 >/dev/null && sleep 3 && docker ps --filter name=ws --format '{{.Status}}'" "Up" 300
+works "websocket echo server starts" "docker pull -q $WS_IMG >/dev/null && docker run -d --name ws -p 8086:8080 $WS_IMG >/dev/null && sleep 3 && docker ps --filter name=^ws$ --format '{{.Status}}'" "Up" 300
 ws=$(python3 - "$PORT" "$SB" "$TMP/auth" <<'EOF'
-import base64, os, socket, sys
+# A minimal WebSocket client: the upgrade through the port URL, then one
+# text frame each way. jmalloc/echo-server greets each connection first.
+import base64, os, socket, struct, sys
 port, sb, authfile = int(sys.argv[1]), sys.argv[2], sys.argv[3]
-auth = open(authfile).read().strip()
-key = base64.b64encode(os.urandom(16)).decode()
-s = socket.create_connection(("127.0.0.1", port), timeout=15)
-s.sendall((f"GET /v1/sandboxes/{sb}/ports/8086/.ws HTTP/1.1\r\nHost: x\r\n{auth}\r\n"
-           f"Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n"
-           f"Sec-WebSocket-Key: {key}\r\n\r\n").encode())
-buf = b""
-while b"\r\n\r\n" not in buf:
-    buf += s.recv(4096)
-head, rest = buf.split(b"\r\n\r\n", 1)
-if b" 101 " not in head.split(b"\r\n")[0]:
-    print("no-upgrade:" + head.split(b"\r\n")[0].decode()); sys.exit()
-def frame(text):  # a masked client text frame
-    p, m = text.encode(), os.urandom(4)
-    return bytes([0x81, 0x80 | len(p)]) + m + bytes(b ^ m[i % 4] for i, b in enumerate(p))
-def read_frame(rest):
-    while len(rest) < 2: rest += s.recv(4096)
-    n = rest[1] & 0x7F
-    while len(rest) < 2 + n: rest += s.recv(4096)
-    return rest[2:2 + n].decode(errors="replace"), rest[2 + n:]
-msg, rest = read_frame(rest)          # the server's greeting
-s.sendall(frame("ping from the agent"))
-msg, rest = read_frame(rest)
-print("echo:" + msg)
+try:
+    auth = open(authfile).read().strip()
+    s = socket.create_connection(("127.0.0.1", port), timeout=15)
+    def more():
+        d = s.recv(4096)
+        if not d:
+            raise RuntimeError("connection closed")
+        return d
+    key = base64.b64encode(os.urandom(16)).decode()
+    s.sendall((f"GET /v1/sandboxes/{sb}/ports/8086/.ws HTTP/1.1\r\nHost: x\r\n{auth}\r\n"
+               f"Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n"
+               f"Sec-WebSocket-Key: {key}\r\n\r\n").encode())
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        buf += more()
+    head, rest = buf.split(b"\r\n\r\n", 1)
+    if b" 101 " not in head.split(b"\r\n")[0]:
+        raise RuntimeError("no upgrade: " + head.split(b"\r\n")[0].decode())
+    def need(rest, n):
+        while len(rest) < n:
+            rest += more()
+        return rest
+    def read_text(rest):  # the next text frame; control frames skipped
+        while True:
+            rest = need(rest, 2)
+            op, n, off = rest[0] & 0x0F, rest[1] & 0x7F, 2
+            if n == 126:
+                rest = need(rest, 4); n, off = struct.unpack("!H", rest[2:4])[0], 4
+            elif n == 127:
+                rest = need(rest, 10); n, off = struct.unpack("!Q", rest[2:10])[0], 10
+            rest = need(rest, off + n)
+            payload, rest = rest[off:off + n], rest[off + n:]
+            if op == 1:
+                return payload.decode(errors="replace"), rest
+    def frame(text):  # a masked client text frame (short)
+        p, m = text.encode(), os.urandom(4)
+        return bytes([0x81, 0x80 | len(p)]) + m + bytes(b ^ m[i % 4] for i, b in enumerate(p))
+    _, rest = read_text(rest)  # the server's greeting
+    s.sendall(frame("ping from the agent"))
+    msg, rest = read_text(rest)
+    print("echo:" + msg)
+except Exception as e:
+    print("error:", e)
 EOF
 )
 [ "$ws" = "echo:ping from the agent" ] && pass "WebSocket upgrade and echo through the port URL" || fail "WebSocket through port URL" "$ws"
@@ -203,11 +239,14 @@ run "docker rm -f ws" >/dev/null
 
 # ---------------------------------------------------------------------------
 printf "\n5. Docker's storage full: clean failure, Docker survives, cleanup frees it\n"
-r=$(run "docker pull -q alpine:3.22 >/dev/null; docker run --rm alpine:3.22 sh -c 'dd if=/dev/zero of=/fill bs=1M count=4000 2>&1 | grep -m1 -o \"No space left on device\"'" 300)
+# Fill it from a container that stays (no --rm), so the prune below has
+# something to free; 4000 MB is more than the 2 GB tmpfs.
+r=$(run "docker pull -q $ALPINE_IMG >/dev/null; docker run --name fill $ALPINE_IMG sh -c 'dd if=/dev/zero of=/fill bs=1M count=4000 2>&1 | grep -m1 -o \"No space left on device\"'" 300)
 [[ "$r" == *"No space left on device"* ]] && pass "filling it fails with 'No space left on device'" || fail "storage full" "$r"
-works "Docker still answers" "docker info --format '{{.ServerVersion}}'" "."
+works "Docker still answers" "docker info --format 'docker={{.ServerVersion}}'" "docker=2"
 works "the sandbox still runs commands" "echo alive" "alive"
-works "cleanup frees the space" "docker system prune -af >/dev/null 2>&1; df -h /var/lib/docker | tail -1 | awk '{print \$5}'" "%"
+works "storage is nearly full before cleanup" "u=\$(df --output=pcent /var/lib/docker | tail -1 | tr -dc 0-9); [ \"\$u\" -ge 90 ] && echo used=\$u" "used="
+works "cleanup frees the space" "docker system prune -af --volumes >/dev/null 2>&1; u=\$(df --output=pcent /var/lib/docker | tail -1 | tr -dc 0-9); [ \"\$u\" -lt 50 ] && echo used=\$u" "used="
 
 printf "\n%d passed, %d failed\n" "$PASSED" "$FAILED"
 [ "$FAILED" -eq 0 ]
