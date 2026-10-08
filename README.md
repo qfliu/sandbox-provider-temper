@@ -56,6 +56,7 @@ To work on the code, run `source ./env.sh` (like a Python venv; `deactivate_sand
 | `code/scripts/smoke-api.sh` | API end to end (28 checks) |
 | `code/scripts/test-gateway-e2e.sh` | SSH gateway end to end, incl. attacks (16 checks) |
 | `code/scripts/test-sandbox-hardening.sh` | what code inside a sandbox can and can't do, and the admission policy (35 checks) |
+| `code/scripts/test-agent-workflow.sh` | agent workflows end to end: an app with Redis, Postgres, a multi-stage Go build, WebSockets through a port URL, Docker storage full (17 checks) |
 | `code/scripts/test-ports.sh` | port URLs: proxying, credential stripping, refusals (13 checks) |
 | `code/scripts/test-docker.sh` | Docker in an `ubuntu-docker` sandbox: build, run, `-p`, compose with ports; isolation of nested containers; forged packets stay on the node |
 | `code/scripts/test-network-policy.sh` | sandbox network isolation (15 checks) |
