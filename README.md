@@ -122,7 +122,7 @@ flowchart LR
     (raw sockets on, 6 more capabilities, granted inside gVisor only), or
     under Kata (the same 6 plus `SYS_RESOURCE` and `SYS_PTRACE`, inside its VM), with 2 CPUs
     and 4 GiB, half of it for Docker's storage, which is in memory.
-  - Limits: 1 CPU / 1 GiB memory / 5 GiB disk.
+  - Limits (`ubuntu-base`, `ubuntu-dev`): 1 CPU / 1 GiB memory / 5 GiB disk.
   - Workspace: `/home/user` survives restarts of the process, not loss of the
     pod or its node; a lost sandbox is marked `lost`, not recreated.
 - **Guard rails in the cluster**:
@@ -226,13 +226,12 @@ already on the node:
 | What | Time |
 |---|---|
 | One sandbox, create → `running` | **1.1 s** (first exec 1.2 s) |
-| 10 at once, `ubuntu-base`, → `running` | **p50 2.4 s, p95 4.4 s** (10/10) |
-| 10 at once, `ubuntu-dev` | p50 3.1 s, p95 4.3 s (10/10) |
+| 10 at once, `ubuntu-base`, → `running` | **p50 2.5–2.8 s, p95 3.6–4.7 s** (10/10; the create request 0.1 s, D68) |
+| … before the client rate-limit fix (D48) | p50 2.4 s, p95 4.4 s; `ubuntu-dev` p50 3.1 s, p95 4.3 s |
 | First `ubuntu-dev` sandbox on a node **without** the pre-pull | ~5.5 s (4.8–5.1 s of it is the image download + unpack, from a registry on the same VM) |
 | … **with** the pre-pull DaemonSet | 0.6 s |
-| `up.sh` from a fresh clone / again (VM stopped) | 305–367 s / 84 s |
+| `up.sh` from a fresh clone / again (VM stopped), before `ubuntu-docker` | 305–367 s / 84 s |
 | `deploy.sh` (platform image build + `helm upgrade --install`) on a cluster with gVisor and images | ~20 s |
-| 10 at once after the client rate-limit fix (D68), `ubuntu-base` | p50 2.5–2.8 s, p95 3.6–4.7 s; the create request 0.1 s |
 
 Capacity on this VM is about 10 sandboxes (250m CPU requested each); past
 that, creates succeed but stay `pending` until room frees up (D48). The
@@ -268,7 +267,6 @@ before Docker's nftables backend replaced its few hundred `iptables` calls
 A later fresh deployment (the final check before submission) measured, 10 at
 once: gVisor p50 3.2 s / p95 3.6 s, with Docker 3.2 / 3.8 s; Kata 5.1 / 5.9 s,
 with Docker 13.8 / 14.4 s. `cloud-up.sh` took 884 s.
-
 
 An **earlier deployment**, gVisor only (2 × `Standard_D2ps_v5`, arm64, 2 vCPU /
 8 GiB; images pre-pulled from the cluster's registry), D56. Kept for the

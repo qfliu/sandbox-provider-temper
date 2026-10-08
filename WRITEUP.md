@@ -23,7 +23,7 @@ would add. The full decision log, with every alternative considered, is
   agent can do real work on; a graphical desktop is "seeing the remote
   desktop", which the brief lists as a stretch goal (D1).
 
-The brief's own words, and the assigner's later answers on scope, are in
+The brief's own words, and Temper's later answers on scope, are in
 DESIGN.md §2.
 
 ## Compared with hosted sandbox providers
@@ -49,7 +49,7 @@ what this platform has.
 
 | Feature | Who offers it | Here |
 |---|---|---|
-| **Snapshot / restore / fork, pause / resume** | all three: files everywhere; memory and running processes in E2B's default pause/resume, experimental at Modal, VM sandboxes only at Daytona | not built. On 2026-10-06 the assigner noted gVisor can't give the snapshot/restore hosted providers offer; his 2026-10-08 follow-up made Docker inside sandboxes the requirement and didn't list snapshots, so the time went there. gVisor can checkpoint a running sandbox (`runsc checkpoint`); the missing part is restoring it into a new pod: Kubernetes has no restore path for gVisor checkpoints (its checkpoint API is for runc containers) |
+| **Snapshot / restore / fork, pause / resume** | all three: files everywhere; memory and running processes in E2B's default pause/resume, experimental at Modal, VM sandboxes only at Daytona | not built. On 2026-10-06 Temper's follow-up noted gVisor can't give the snapshot/restore hosted providers offer; the 2026-10-08 follow-up made Docker inside sandboxes the requirement and didn't list snapshots, so the time went there. gVisor can checkpoint a running sandbox (`runsc checkpoint`); the missing part is restoring it into a new pod: Kubernetes has no restore path for gVisor checkpoints (its checkpoint API is for runc containers) |
 | **Streaming command output, background processes, stdin** | all three | commands run to completion and return their output; SSH streams |
 | **Custom images / templates** (your own Dockerfile, start and ready commands) | all three | three fixed images; build and run any image *inside* `ubuntu-docker` |
 | **Environment variables and secrets at create** | all three | none |
@@ -70,11 +70,11 @@ only if pause/resume becomes a requirement.
 ## Main trade-offs
 
 **Two runtimes, chosen per sandbox: gVisor by default, Kata for a VM
-boundary (D4, D60, D64, D65).** The assigner asked for Docker inside
+boundary (D4, D60, D64, D65).** The 2026-10-08 follow-up asked for Docker inside
 sandboxes, said gVisor "struggles there, so check that first", and pointed
 at Kata or Firecracker for a real VM boundary: "your call, just explain the
 tradeoffs". We tested gVisor first, as asked (it works, with the changes in
-D61-D62), then added Kata beside it rather than instead of it.
+D61–D62), then added Kata beside it rather than instead of it.
 
 | | **gVisor** (`gvisor`) | **Kata + Cloud Hypervisor** (`kata`) | **Firecracker directly** (not built) |
 |---|---|---|---|
@@ -188,14 +188,14 @@ applies (D45).
   page).
 - **No auto-refresh:** an earlier htmx version polled every few seconds. It
   was removed for simplicity (D50); a Refresh link is enough for v1.
-- **Interact:** the assigner's "baseline UI": create a sandbox (image,
+- **Interact** (a baseline UI, as asked): create a sandbox (image,
   runtime when the cluster has Kata, lifetime), a "Run a command" box on a
   running sandbox's page (the same exec path as the API, 60 s limit, D69),
   the SSH command to copy, delete; API keys; an admin view of everything.
 
 ## Optional features: what agents need most (D66)
 
-The assigner left four to us: streaming, custom images, public URLs for
+The follow-up left four to us: streaming, custom images, public URLs for
 ports, and secrets. Ranked by how much an agent is stuck without them:
 
 1. **URLs for sandbox ports: built.** An agent that runs `docker compose up`
@@ -227,7 +227,7 @@ ports, and secrets. Ranked by how much an agent is stuck without them:
 
 ## Scaling to thousands (D67)
 
-Measured at the scale the assigner asked for: 10 sandboxes at once, p50/p95
+Measured at the scale the follow-up asked for: 10 sandboxes at once, p50/p95
 to `running`, per runtime and image, on two 4-vCPU AKS nodes (README, D70):
 gVisor p50 3.0–3.3 s / p95 3.7–4.3 s, Kata 5.5–5.7 s / 6.1–6.8 s; with
 Docker, gVisor 3.6–4.0 s / 4.0–5.9 s and Kata 16.6 s / 17.7–19.6 s, the one
@@ -261,8 +261,8 @@ was our own: client-go's default client-side rate limit of 5 requests/s
 (burst 10) per API replica, shared with the reaper and reconcile: under
 1.7 creates/s once the burst is spent, and at 10 at once the create request
 itself waited 2-4 s. It's now 50/s (burst 100); measured at 10 at once on
-the laptop, the create request dropped from p50 2.3-4.2 s to 0.1 s and p95
-to `running` from 4.9-5.2 s to 3.6-4.7 s (D68). Above that, the API
+the laptop, the create request dropped from p50 2.3–4.2 s to 0.1 s and p95
+to `running` from 4.9–5.2 s to 3.6–4.7 s (D68). Above that, the API
 server's own fairness limits and the control plane's size apply: AKS's
 Free tier is for testing, its Standard tier is for this. Two costs grow
 with the number of sandboxes rather than requests:
@@ -298,8 +298,8 @@ modest instance. What it needs at that point is availability: a managed,
 highly available Postgres (a next step below), and a connection pooler
 once API and gateway replicas add up (each has its own pool).
 
-**Image pulls.** 145-350 MB per image (`ubuntu-base`, `ubuntu-dev`;
-`ubuntu-docker` about 350 MB), pulled once per node and kept (pre-pull). A cold node took
+**Image pulls.** 145 MB (`ubuntu-base`), 218 MB (`ubuntu-dev`), about
+350 MB (`ubuntu-docker`), pulled once per node and kept (pre-pull). A cold node took
 5-10 s per image from a registry in the same region (D56, arm64 nodes);
 with autoscaling that's on the critical path only for the first sandboxes
 on a brand-new node. Registry replication or image streaming help further.
@@ -344,7 +344,8 @@ default of 10 live sandboxes per user stops one user long before this):
   - on a laptop, one sandbox reaches `running` in about 1.1 s; 10 at once
     p50 2.5–2.8 s, p95 3.6–4.7 s;
   - on AKS (2 × 4-vCPU nodes), 10 at once: gVisor p50 3.0–3.3 s, Kata
-    5.1–5.7 s; with Docker, gVisor 3.2–4.0 s and Kata 13.8–16.6 s (D70).
+    5.5–5.7 s; with Docker, gVisor 3.6–4.0 s and Kata 16.6 s (D70; a final
+    fresh deployment measured 3.2 / 5.1 / 3.2 / 13.8 s).
 - **What got it there:**
   - the readiness probe runs every second;
   - each sandbox requests 1 GiB of ephemeral storage, not the full 5 GiB
