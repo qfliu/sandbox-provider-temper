@@ -466,7 +466,7 @@ func (u *ui) detailPage(r *http.Request) (page, error) {
 	return page{ActiveKeys: active, Self: selfURL(r),
 		Title: sb.ID, User: &user, Sandbox: sb,
 		SSHCommand: sshCommand(sb.ID, u.gateway), GatewaySet: gatewaySet(u.gateway),
-		SSHCommandWithKey: strings.Replace(sshCommand(sb.ID, u.gateway), "ssh ", "ssh -i ~/.ssh/your_key ", 1),
+		SSHCommandWithKey: sshCommandWithKey(sb.ID, u.gateway),
 	}, err
 }
 
@@ -718,4 +718,10 @@ func sshCommand(id, gateway string) string {
 		return "ssh " + id + "@" + host
 	}
 	return "ssh -p " + port + " " + id + "@" + host
+}
+
+// sshCommandWithKey is sshCommand naming a key file, for keys ssh doesn't
+// offer on its own.
+func sshCommandWithKey(id, gateway string) string {
+	return "ssh -i ~/.ssh/your_key" + strings.TrimPrefix(sshCommand(id, gateway), "ssh")
 }

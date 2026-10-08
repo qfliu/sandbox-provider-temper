@@ -285,6 +285,10 @@ func TestSSHCommand(t *testing.T) {
 		if got := sshCommand("sb-x", gateway); got != want {
 			t.Errorf("sshCommand(%q) = %q, want %q", gateway, got, want)
 		}
+		// The same with a key file: -i right after ssh, before any -p.
+		if got, want := sshCommandWithKey("sb-x", gateway), strings.Replace(want, "ssh ", "ssh -i ~/.ssh/your_key ", 1); got != want {
+			t.Errorf("sshCommandWithKey(%q) = %q, want %q", gateway, got, want)
+		}
 	}
 }
 
