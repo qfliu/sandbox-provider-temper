@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Deploys the sandbox provider to Azure (Phase 7, D54): an AKS cluster with
-# 2 x86 nodes and a container registry (Terraform), gVisor on the nodes,
-# the platform images, the Helm chart with a public SSH gateway and a public
-# HTTPS address for the API and dashboard (Let's Encrypt certificate on an
+# 2 x86 nodes and a container registry (Terraform), gVisor and Kata on the
+# nodes, the platform images, the Helm chart with a public SSH gateway and a
+# public HTTPS address for the API and dashboard (Let's Encrypt certificate on an
 # Azure DNS name), and an admin API key. Re-run to deploy new code (this
 # restarts the API and gateway, ending SSH sessions); change only who may
 # connect with --allowlist-only. ./cloud-down.sh deletes everything.
@@ -38,6 +38,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 START=$(date +%s)
 NS=sandbox-system
+KATA_CHART=oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy
+KATA_VERSION=4.2.0
 MODE=full
 case "${1:-}" in
 "") ;;
@@ -205,6 +207,15 @@ kubectl get nodes -o wide | cut -c1-100
 echo "==> gVisor on the nodes"
 kubectl apply -f code/deploy/cloud/gvisor-installer.yaml >/dev/null
 kubectl -n gvisor-system rollout status ds/gvisor-installer --timeout=10m >/dev/null
+# Kata Containers (D64): x86 sizes only (Azure's nested virtualization; its
+# Arm sizes have none). The official kata-deploy chart, pinned; it restarts
+# containerd on each node once, so it goes before the platform.
+if [ "$ARCH" = amd64 ]; then
+	echo "==> Kata Containers $KATA_VERSION on the nodes"
+	helm upgrade --install kata-deploy "$KATA_CHART" --version "$KATA_VERSION" -n kube-system \
+		-f code/deploy/cloud/kata-values.yaml --wait --timeout 10m >/dev/null
+	kubectl get runtimeclass kata >/dev/null
+fi
 
 echo "==> images: build on the local cluster for $ARCH, push to $ACR"
 DIRTY="$(git diff --quiet HEAD -- code || echo -dirty)"

@@ -2,8 +2,8 @@
 # Cluster-wide objects (one release per cluster).
 #
 # The API's ServiceAccount may create pods there. Without this policy, a
-# compromised API (or a mistaken admin) could create a pod that skips gVisor,
-# i.e. untrusted code on the node's real kernel. Kubernetes evaluates these
+# compromised API (or a mistaken admin) could create a pod that skips gVisor
+# or Kata (D64), i.e. untrusted code on the node's real kernel. Kubernetes evaluates these
 # rules itself (ValidatingAdmissionPolicy, built in since 1.30), for every
 # client, before a pod is stored.
 #
@@ -34,8 +34,15 @@ spec:
   variables:
   - name: containers
     expression: "object.spec.containers + (has(object.spec.initContainers) ? object.spec.initContainers : [])"
+  - name: runtime
+    expression: "has(object.spec.runtimeClassName) ? object.spec.runtimeClassName : ''"
+  # Kata (D64): each pod is its own VM with its own kernel, so what a
+  # capability allows reaches only that VM.
+  - name: kata
+    expression: "variables.runtime == 'kata'"
+  # Runtimes under which Docker's capabilities are allowed.
   - name: docker
-    expression: "has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor-docker'"
+    expression: "variables.runtime == 'gvisor-docker' || variables.kata"
   # What sshd and sudo need (D45).
   - name: baseCaps
     expression: >-
@@ -49,9 +56,14 @@ spec:
   # dockerd's iptables setup in gVisor.
   - name: dockerCaps
     expression: "['MKNOD', 'NET_RAW', 'SETFCAP', 'SETPCAP', 'SYS_ADMIN', 'NET_ADMIN']"
+  # Kata only, for Docker: runc lowers each nested container's OOM score
+  # below the pod's (Kubernetes gives a Burstable pod ~900), which needs
+  # SYS_RESOURCE. gVisor doesn't apply OOM scores, so it never needs it.
+  - name: kataCaps
+    expression: "['SYS_RESOURCE']"
   validations:
-  - expression: "has(object.spec.runtimeClassName) && object.spec.runtimeClassName in ['gvisor', 'gvisor-docker']"
-    message: "sandbox pods must run under gVisor (runtimeClassName: gvisor or gvisor-docker)"
+  - expression: "variables.runtime in ['gvisor', 'gvisor-docker', 'kata']"
+    message: "sandbox pods must run under gVisor or Kata (runtimeClassName: gvisor, gvisor-docker or kata)"
   - expression: "has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false"
     message: "sandbox pods must not mount a service account token"
   # automountServiceAccountToken only covers the automatic mount: also no
@@ -74,8 +86,8 @@ spec:
       variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.capabilities) ||
         !has(c.securityContext.capabilities.add) ||
         c.securityContext.capabilities.add.all(a, a in variables.baseCaps ||
-          (variables.docker && a in variables.dockerCaps)))
-    message: "sandbox containers may only add back the capabilities sshd and sudo need (and, under gvisor-docker, Docker's)"
+          (variables.docker && a in variables.dockerCaps) || (variables.kata && a in variables.kataCaps)))
+    message: "sandbox containers may only add back the capabilities sshd and sudo need (and, under gvisor-docker or kata, Docker's)"
   - expression: >-
       variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.privileged) ||
         c.securityContext.privileged == false)

@@ -1,0 +1,36 @@
+# Kata Containers on AKS (step 8.4, D64): values for the official kata-deploy
+# chart (oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy, pinned
+# by cloud-up.sh), which installs Kata on every node and configures
+# containerd. Sandboxes then pick `runtimeClassName: kata`: each pod is its own
+# lightweight VM with its own Linux kernel (Cloud Hypervisor, KVM), on x86
+# nodes with nested virtualization (Dv5/Dsv5, D63).
+#
+# Only Cloud Hypervisor (`clh`), Kata's default hypervisor: the smallest
+# device model of the mature ones, virtio-fs for the pod's files (so Secret
+# and emptyDir volumes work as for any pod). Not Firecracker (no virtio-fs;
+# needs a devmapper pool on every node, D60) and not QEMU (larger).
+shims:
+  disableAll: true
+  clh:
+    enabled: true
+
+defaultShim:
+  amd64: clh
+
+runtimeClasses:
+  enabled: true
+  # `kata` (the name sandboxes use) points at clh; kata-deploy also creates
+  # `kata-clh`, which nothing uses.
+  createDefault: true
+  defaultName: kata
+
+# No extra snapshotters (nydus/erofs are for pulling images inside the guest,
+# which we don't use: images come from containerd's normal store).
+snapshotter:
+  setup: []
+
+imagePullPolicy: IfNotPresent
+# The installer image, pinned by digest (4.2.0, the chart's appVersion).
+image:
+  reference: quay.io/kata-containers/kata-deploy
+  tag: "4.2.0@sha256:8878e275eeb611f5ed1613009db195f4034b25fea461aef61d407fead58872d3"

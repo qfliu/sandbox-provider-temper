@@ -4,7 +4,8 @@
 # what was taken away is refused (raw sockets, mknod), and even root's
 # capability bounding set is exactly the allowed list. Also checks the
 # admission policy rejects pods that don't follow the rules, including
-# Docker's capabilities outside the gvisor-docker runtime (D61) and the host
+# Docker's capabilities outside the gvisor-docker and kata runtimes (D61,
+# D64), plain runc and Kata's own rules where they exist, and the host
 # rules Pod Security baseline used to enforce. Prints
 # PASS/FAIL per check; exits non-zero on any failure.
 #
@@ -139,6 +140,7 @@ for c in "runs without gVisor|\$_='' if /runtimeClassName/|must run under gVisor
 	"adds SYS_ADMIN without gvisor-docker|s/add: \[CHOWN\]/add: [CHOWN, SYS_ADMIN]/|may only add back" \
 	"adds SYS_PTRACE under gvisor-docker|${DOCKER}s/add: \[CHOWN\]/add: [CHOWN, SYS_ADMIN, SYS_PTRACE]/|may only add back" \
 	"adds ALL under gvisor-docker|${DOCKER}s/add: \[CHOWN\]/add: [ALL]/|may only add back" \
+	"adds SYS_RESOURCE under gvisor-docker (Kata only)|${DOCKER}s/add: \[CHOWN\]/add: [CHOWN, SYS_RESOURCE]/|may only add back" \
 	"is privileged under gvisor-docker|${DOCKER}$(CSC 'privileged: true')|must not be privileged" \
 	"lacks a seccomp profile|\$_='' if /seccompProfile/|seccomp" \
 	"overrides seccomp with Localhost|s/^      seccompProfile: \{type: RuntimeDefault\}/      seccompProfile: {type: Localhost, localhostProfile: x.json}/|seccomp" \
@@ -160,6 +162,25 @@ for c in "runs without gVisor|\$_='' if /runtimeClassName/|must run under gVisor
 	out=$(probe "$name" "$expr")
 	[[ "$out" == *"$want"* ]] && pass "pod that $name is denied" || fail "pod that $name" "$out"
 done
+
+# Clusters with Kata (D64) or a plain runc RuntimeClass (AKS has one): a
+# probe can only reach the policy when the RuntimeClass exists.
+if kubectl get runtimeclass runc >/dev/null 2>&1; then
+	out=$(probe x 's/runtimeClassName: gvisor$/runtimeClassName: runc/')
+	[[ "$out" == *"must run under gVisor or Kata"* ]] && pass "pod that runs under runc (no sandbox) is denied" || fail "pod under runc" "$out"
+fi
+if kubectl get runtimeclass kata >/dev/null 2>&1; then
+	KATA='s/runtimeClassName: gvisor$/runtimeClassName: kata/;'
+	admitted "a kata pod with Docker's capabilities and SYS_RESOURCE" \
+		"${KATA}"'s/add: \[CHOWN\]/add: [CHOWN, MKNOD, NET_RAW, SETFCAP, SETPCAP, SYS_ADMIN, NET_ADMIN, SYS_RESOURCE]/'
+	for c in "adds SYS_PTRACE under kata|${KATA}s/add: \[CHOWN\]/add: [CHOWN, SYS_PTRACE]/|may only add back" \
+		"is privileged under kata|${KATA}$(CSC 'privileged: true')|must not be privileged" \
+		"mounts a hostPath volume under kata|${KATA}s/^(  automountServiceAccountToken: .*)\$/\$1\n  volumes: [{name: h, hostPath: {path: \/}}]/|must not mount hostPath volumes"; do
+		IFS='|' read -r name expr want <<<"$c"
+		out=$(probe "$name" "$expr")
+		[[ "$out" == *"$want"* ]] && pass "pod that $name is denied" || fail "pod that $name" "$out"
+	done
+fi
 
 printf "\n%d passed, %d failed\n" "$PASSED" "$FAILED"
 [ "$FAILED" -eq 0 ]
