@@ -20,24 +20,42 @@ would add. The full decision log, with every alternative considered, is
 
 ## Main trade-offs
 
-**gVisor, not Kata Containers or Firecracker (D4).**
-- **What it gives:**
-  - Each sandbox's system calls go to a user-space kernel, so a kernel bug
-    reachable from the sandbox is far less likely to reach the host.
-  - It runs on any cloud VM without nested virtualization.
-  - It plugs into Kubernetes as a RuntimeClass and starts in well under a
-    second.
-- **What it costs:**
-  - Weaker than a hardware boundary: one gVisor bug plus one host bug.
-  - Some syscalls and `/proc` details differ, so a few tools behave
-    differently.
-  - Some performance is lost on syscall-heavy work.
-- **Upgrade path:** Kata or Firecracker microVMs give each sandbox its own
-  kernel behind a VM boundary. They need bare-metal or nested-virtualization
-  nodes and cost more memory and startup time per sandbox. For the most
-  sensitive tenants, run them on separate node pools.
+**Two runtimes, chosen per sandbox: gVisor by default, Kata for a VM
+boundary (D4, D60, D64, D65).** The assigner asked for Docker inside
+sandboxes and pointed at Kata or Firecracker for a real VM boundary. We
+tested gVisor first, as asked, then added Kata beside it rather than
+instead of it.
 
-**Defence in depth around the runtime.** gVisor is one layer. The others:
+| | **gVisor** (`gvisor`) | **Kata + Cloud Hypervisor** (`kata`) | **Firecracker directly** (not built) |
+|---|---|---|---|
+| Boundary | a user-space kernel (gVisor's Sentry) between the sandbox and the host kernel | a hardware-virtualized VM with its own Linux kernel | a microVM, as Kata |
+| Runs on | any node, including arm64 and a laptop | x86 nodes with nested virtualization (Azure Dv5/Dsv5; Azure's Arm sizes have none) | the same as Kata |
+| Start, one sandbox on AKS | ~3 s to `running` | ~7 s | ~125 ms VM boot; the rest is ours to build |
+| Fixed cost per sandbox | none beyond its pod | +250m CPU, +130 Mi (the VM) | lower than Kata |
+| Docker inside | works, with gVisor's raw-socket flags, a separate runtime class and 6 extra capabilities (D61, D62); no ICMP NAT | works with a real kernel (Docker's own networking); the capabilities stay inside the VM (D64) | works |
+| Compatibility | most software; some syscalls and `/proc` details differ | everything a Linux kernel runs | the same |
+| What it took us | a node installer we wrote (D54) | the official installer, one Helm chart (D64) | a VM orchestrator of our own, replacing the pod layer: weeks |
+
+- **Why both:** gVisor starts faster, costs nothing extra per sandbox, runs
+  on every node and on a laptop, so it's the default. Kata is the stronger
+  boundary (a bug must escape a VM, not a user-space kernel) and runs
+  anything a Linux kernel runs, at a few seconds and a few hundred MB more.
+  The caller chooses per sandbox (`"runtime": "kata"`); both run on the
+  same x86 nodes.
+- **Why not Firecracker:** its strengths (fastest boot, smallest footprint,
+  memory snapshots for pause/resume) matter at E2B-like density or with
+  pause/resume, which the assigner said isn't needed. Used directly it
+  means our own VM orchestration instead of Kubernetes pods; through Kata
+  (`kata-fc`) it needs a devmapper pool on every node and can't share
+  folders into the VM (Secrets, emptyDir). Kata can switch to it later by
+  configuration, not redesign.
+- **What Kata costs us in defence in depth:** under Kata the VM is the only
+  boundary. Kata turns off seccomp in the guest and the guest has no
+  AppArmor, so a Docker sandbox (SYS_ADMIN) is root in its VM; that's by
+  design, and why the admission policy blocks Kata's pod annotations (they
+  could reconfigure the VM, D64).
+
+**Defence in depth around the runtime.** The runtime (gVisor or Kata) is one layer. The others:
 - **Admission policy** (CEL), enforced by Kubernetes itself, even against
   the API's own service account:
   - only gVisor (`gvisor`, or `gvisor-docker` for sandboxes that run Docker);
@@ -147,6 +165,79 @@ ports, and secrets. Ranked by how much an agent is stuck without them:
    sandbox image must contain (sshd, our entrypoint), and slows first starts
    (no pre-pull).
 
+## Scaling to thousands (D67)
+
+Measured at the scale the assigner asked for: 10 sandboxes at once, p50/p95
+to `running` (README, D48/D56, and per runtime in 8.6). The rest is argued
+from the design: what each part costs per sandbox, what limits it first, and
+how it grows. Nothing here holds a sandbox's state in memory that another
+replica couldn't rebuild from Postgres and the Kubernetes API.
+
+**Nodes: the real cost.** A sandbox *requests* 250m CPU and 256 Mi (Docker
+sandboxes 1 Gi); Kata adds 250m and 130 Mi per VM (its RuntimeClass
+overhead). A 4-vCPU AKS node has 3.86 CPUs allocatable, of which AKS's own
+pods and ours take 1.4, so it fits about 9 gVisor or 4 Kata sandboxes:
+that's why 10 at once needs two nodes. On 16-vCPU nodes the fixed share
+shrinks: about 58 gVisor or 29 Kata per node, so 1,000 live sandboxes is
+roughly 18 gVisor nodes or 35 Kata nodes (CPU requests; most sandboxes
+idle far below their 1-2 CPU limits, which is why requests are low).
+Growth: the cluster autoscaler adds nodes when sandboxes stay `pending`;
+the pre-pull DaemonSet (D46) puts the images on a new node before or while
+its first sandboxes wait, and a warm pool (pods started ahead, assigned at
+create) hides the node and image time entirely.
+
+**Kubernetes API.** A create is two writes (the host-key Secret, the pod)
+and a delete one (the Secret goes with the pod). The first limit a burst
+hits is ours: client-go's default rate limit of 5 requests/s (burst 10)
+per API replica, about 2.5 creates/s once the burst is spent; it's raised
+in 8.6 (measured there). Beyond that the API server's own fairness limits
+and the control plane's size apply: AKS's Free tier is for testing, the
+Standard tier (and its SLA) is for this. The pod watch (one informer per API
+replica on the sandboxes namespace) costs a few KB per pod: tens of
+thousands are fine.
+
+**API replicas: stateless.** Each request is independent; the replicas
+share Postgres. Per sandbox, each replica keeps at most one pooled SSH
+connection (sshd allows 64 sessions on it) for exec, files and port URLs,
+closed when idle. CPU goes to SSH crypto and to copying bytes for exec
+output and file transfers, so replicas scale with request volume, not with
+the number of sandboxes. More replicas behind the same Service; nothing to
+coordinate (the reaper claims rows atomically, D32).
+
+**SSH gateway: stateless.** Each SSH session is two TCP connections and a
+few goroutines; a replica caps itself at 1,000 connections, 20 handshakes
+per client and 10 per sandbox (D49). More replicas behind the one load
+balancer; a session that loses its replica reconnects to another.
+
+**Postgres: small and boring.** Writes: one row per create, one update per
+status change, one activity touch per exec or file call, and one
+`ssh_activity` upsert per open SSH session per minute. The reconcile reads
+every live sandbox every 30 s per API replica (indexed). At 10,000 live
+sandboxes that's a few hundred writes and a few hundred rows read per
+second: one modest instance. What it needs at that point is availability,
+not size: a managed, highly available Postgres (D10 next step), and a
+connection pooler once replicas × 10 connections gets large.
+
+**Image pulls.** 145 to 350 MB per image, pulled once per node and kept
+(pre-pull). From a registry in the same region a cold node takes 5-10 s per
+image (D56). With autoscaling, that's on the critical path only for the
+first sandboxes on a brand-new node; registry replication or image
+streaming help at larger scale.
+
+**Beyond one cluster.** One cluster runs thousands of sandboxes (Kubernetes
+supports 5,000 nodes and 150,000 pods; AKS allows 250 pods per node with
+this network setup). Past that, or for regions and failure isolation: more
+clusters ("cells"), each with its own gateway; Postgres records which cell
+a sandbox lives in, and the API sends each call there. The sandbox ID
+already routes every request, so that's an addition, not a redesign.
+
+**What would break first at 1,000 concurrent creates, in order:** node
+capacity (sandboxes wait as `pending` until the autoscaler adds nodes),
+then the API's client-side rate limit (fixed in 8.6), then the per-user
+quota row lock if one user creates them all (it serializes that user's
+creates; per-sandbox reservations would remove it), then the Kubernetes
+control plane tier.
+
 ## Reliability
 
 - **Platform:** API and gateway run 2 replicas each and are stateless. On
@@ -233,9 +324,9 @@ ports, and secrets. Ranked by how much an agent is stuck without them:
      nodes and the platform another 0.4 vCPU, so 7 sandboxes fit, not 10.
    Since then (7.6) the API and dashboard have a public HTTPS address there
    (Caddy with a Let's Encrypt certificate on an Azure DNS name, optional
-   IP allowlist), so testers need only a key. Still to do: more or larger
-   nodes and the cluster autoscaler for a real cold-node load test, and
-   multi-arch images for amd64 nodes.
+   IP allowlist), so testers need only a key. Phase 8 moved the nodes to
+   x86 (D63) for Kata, with images cross-built for amd64 on the Mac. Still
+   to do: the cluster autoscaler for a real cold-node load test.
 2. **Managed Postgres** (RDS/Azure Database) as a chart option, with the
    db-setup Job pointed at it.
 3. **Warm pool**, through agent-sandbox or our own pod layer.
@@ -251,11 +342,8 @@ ports, and secrets. Ranked by how much an agent is stuck without them:
    - *Option 2:* every sandbox joins the tailnet for a direct `ssh sb-…`. It
      costs a node and an auth key per sandbox, so it doesn't scale like
      option 1.
-8. **Harder isolation tier:** Kata Containers or Firecracker node pools for
-   tenants that need a VM boundary, selected per sandbox by RuntimeClass.
-   Installed by us on bare-metal or nested-virtualization nodes, not a
-   managed sandboxing feature such as AKS Pod Sandboxing or GKE Sandbox,
-   which the brief rules out (D10).
+8. **Firecracker** under Kata (`kata-fc`) or directly, if density, faster
+   starts or pause/resume become requirements (see the runtime table).
 
 ## How it was built
 
