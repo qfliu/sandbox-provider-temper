@@ -112,7 +112,7 @@ spec:
   securityContext: {seccompProfile: {type: RuntimeDefault}}   # pod level; a container may not override it
   containers:
   - name: c
-    image: sandbox/ubuntu-base:0.2
+    image: sandbox/ubuntu-base:0.3
     resources: {limits: {cpu: "1", memory: 1Gi}}
     securityContext:
       capabilities: {drop: [ALL], add: [CHOWN]}

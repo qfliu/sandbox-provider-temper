@@ -13,10 +13,11 @@
 #     nftables.)
 #   - Docker's MTU matched to the pod's (fragmented forwarding in gVisor is
 #     unreliable, gVisor issue 14011).
-# Under Kata (a VM with a real Linux kernel), Docker's normal networking
-# (its own iptables rules), after three changes that, like the capabilities
+# Under Kata (a VM with a real Linux kernel), Docker's own networking (its
+# nftables backend, D70), after three changes that, like the capabilities
 # they use, reach only this sandbox's own VM (docker-in-docker's usual setup):
-#   - /proc/sys writable (Docker turns on IP forwarding);
+#   - /proc/sys writable (this script turns on IP forwarding; Docker's
+#     nftables backend doesn't);
 #   - a cgroup2 filesystem mounted from inside the container's cgroup
 #     namespace (the runtime's is read-only, and its root can lie above the
 #     namespace, so runc wrote nested containers' cgroups to the wrong
@@ -66,6 +67,8 @@ prepare_gvisor() { # sets DOCKERD_ARGS
 prepare_vm() { # sets DOCKERD_ARGS
   mount -o remount,rw,bind /proc/sys 2>/dev/null || mount -o remount,rw /proc/sys ||
     { log "can't make /proc/sys writable"; return 1; }
+  # With the nftables backend Docker doesn't turn forwarding on itself.
+  echo 1 >/proc/sys/net/ipv4/ip_forward || { log "can't enable IP forwarding"; return 1; }
   # Always a fresh mount: the runtime's is read-only, and its root may lie
   # outside the container's cgroup namespace. (A restarted container gets
   # the runtime's mount again.)
@@ -82,7 +85,12 @@ prepare_vm() { # sets DOCKERD_ARGS
     { log "no cgroup controllers to delegate"; return 1; }
   sed -e 's/ / +/g' -e 's/^/+/' </sys/fs/cgroup/cgroup.controllers >/sys/fs/cgroup/cgroup.subtree_control ||
     { log "can't enable cgroup controllers"; return 1; }
-  DOCKERD_ARGS="--mtu=$mtu"
+  # nftables, not iptables: Docker's iptables setup is a few hundred
+  # separate iptables processes, and starting processes is slow in a nested
+  # VM; with 10 Kata sandboxes starting at once on two 4-vCPU nodes that
+  # step took ~15 s per sandbox (D70). nftables applies the rules in a few
+  # batches. No IPv6 rules: sandboxes have IPv4 only.
+  DOCKERD_ARGS="--mtu=$mtu --ip6tables=false --firewall-backend=nftables"
 }
 
 start_dockerd() {
@@ -105,12 +113,13 @@ start_dockerd() {
       sleep 2
     done
   ) &
-  # Wait for the API socket (about a second), so the sandbox reports
-  # "running" only once Docker answers.
-  i=0
-  while [ $i -lt 150 ]; do
-    docker version >/dev/null 2>&1 && return 0
-    sleep 0.1; i=$((i + 1))
+  # Wait for the API socket (a second or two), so the sandbox reports
+  # "running" only once Docker answers; at most 15 s by the clock (each
+  # check bounded too), so a dockerd that can't start doesn't hold up SSH.
+  deadline=$(($(date +%s) + 15))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    timeout 2 docker version >/dev/null 2>&1 && return 0
+    sleep 0.1
   done
   return 1
 }

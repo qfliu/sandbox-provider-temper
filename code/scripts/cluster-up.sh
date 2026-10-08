@@ -8,7 +8,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-IMAGE_TAG=0.2 # = sandboxImages.tag in the chart
+IMAGE_TAG=0.3 # = sandboxImages.tag in the chart
 
 # vfkit talks to the VM over a Unix socket under MINIKUBE_HOME, and macOS
 # caps socket paths at 104 bytes; past that, minikube just times out after

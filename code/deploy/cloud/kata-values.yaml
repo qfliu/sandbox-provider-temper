@@ -3,7 +3,7 @@
 # by cloud-up.sh), which installs Kata on every node and configures
 # containerd. Sandboxes then pick `runtimeClassName: kata`: each pod is its own
 # lightweight VM with its own Linux kernel (Cloud Hypervisor, KVM), on x86
-# nodes with nested virtualization (Dv5/Dsv5, D63).
+# nodes with nested virtualization (Dv5/Dsv5/Dsv6, D63, D70).
 #
 # Only Cloud Hypervisor (`clh`), Kata's default hypervisor: the smallest
 # device model of the mature ones, virtio-fs for the pod's files (so Secret

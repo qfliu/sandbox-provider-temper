@@ -16,8 +16,9 @@ would add. The full decision log, with every alternative considered, is
   A sandbox's files survive process crashes but not the loss of its pod or
   node (D8). Persistent disks are the next step below, not v1.
 - **Startup time matters**, so the target is about a second for one sandbox
-  on a warm node (met on the laptop; ~3 s on AKS with gVisor, ~7 s with
-  Kata), and no image download on the critical path.
+  on a warm node (met on the laptop; on AKS one sandbox takes ~3 s with
+  gVisor and ~4 s with Kata, and 10 at once p50 3.0–3.3 s and 5.5–5.7 s),
+  and no image download on the critical path.
 - **"Proper Linux desktops"** (in the baseline) means full Linux machines an
   agent can do real work on; a graphical desktop is "seeing the remote
   desktop", which the brief lists as a stretch goal (D1).
@@ -77,9 +78,9 @@ instead of it.
 | | **gVisor** (`gvisor`) | **Kata + Cloud Hypervisor** (`kata`) | **Firecracker directly** (not built) |
 |---|---|---|---|
 | Boundary | a user-space kernel (gVisor's Sentry) between the sandbox and the host kernel | a hardware-virtualized VM with its own Linux kernel | a microVM, as Kata |
-| Runs on | any node, including arm64 and a laptop | x86 nodes with nested virtualization (Azure Dv5/Dsv5; Azure's Arm sizes have none) | the same as Kata |
-| Start: one sandbox, create → `running` on AKS (end to end) | ~3 s | ~7 s | not measured (its VM boot alone is ~125 ms, published) |
-| Declared cost per sandbox | none (gVisor's own processes count against the sandbox's limits) | +250m CPU, +130 Mi (the VM's overhead) | lower than Kata (expected) |
+| Runs on | any node, including arm64 and a laptop | x86 nodes with nested virtualization (Azure Dv5/Dsv5/Dsv6; Azure's Arm sizes have none) | the same as Kata |
+| Start: 10 at once, create → `running` on AKS, p50 / p95 (end to end, D70) | 3.0–3.3 s / 3.7–4.3 s (with Docker: 3.6–4.0 / 4.0–5.9 s) | 5.5–5.7 s / 6.1–6.8 s (with Docker: 16.6 / 17.7–19.6 s) | not measured (its VM boot alone is ~125 ms, published) |
+| Cost per sandbox | no declared overhead; ~90 MiB of host memory idle (gVisor's own processes, counted against the sandbox's limits) | +250m CPU, +130 Mi declared; ~250 MiB of host memory idle (measured) | lower than Kata (expected) |
 | Docker inside | works, with gVisor's raw-socket flags, a separate runtime class and 6 extra capabilities (D61, D62); no ICMP NAT | works with a real kernel (Docker's own networking); the capabilities stay inside the VM (D64) | expected (not tested) |
 | Compatibility | most software; some syscalls and `/proc` details differ | nearly everything Linux runs (a minimal guest kernel, no host devices) | the same as Kata |
 | What it took us | a node installer we wrote (D54) | the official installer, one Helm chart (D64) | a VM orchestrator of our own, replacing the pod layer: weeks |
@@ -87,8 +88,9 @@ instead of it.
 - **Why both:** gVisor starts faster, costs nothing extra per sandbox, runs
   on every node and on a laptop, so it's the default. Kata is the stronger
   boundary (a bug must escape a VM, not a user-space kernel) and runs
-  nearly anything Linux runs, at a few seconds more to start and 250m
-  CPU / 130 Mi more declared per sandbox.
+  nearly anything Linux runs, at 2-3 s more to start (much more for Docker
+  sandboxes started in bulk on small nodes) and ~160 MiB more host memory
+  per idle sandbox.
   The caller chooses per sandbox (`"runtime": "kata"`); both run on the
   same x86 nodes.
 - **Why not Firecracker:** its strengths (fastest boot, smallest footprint,
@@ -220,7 +222,10 @@ ports, and secrets. Ranked by how much an agent is stuck without them:
 ## Scaling to thousands (D67)
 
 Measured at the scale the assigner asked for: 10 sandboxes at once, p50/p95
-to `running` (README). The rest is argued from the design: what each part
+to `running`, per runtime and image, on two 4-vCPU AKS nodes (README, D70):
+gVisor p50 3.0–3.3 s / p95 3.7–4.3 s, Kata 5.5–5.7 s / 6.1–6.8 s; with
+Docker, gVisor 3.6–4.0 s / 4.0–5.9 s and Kata 16.6 s / 17.7–19.6 s, the one
+CPU-bound case (Docker starting in 10 VMs at once). The rest is argued from the design: what each part
 costs per sandbox, what limits it first, and how it grows. No part keeps
 state that another replica couldn't rebuild from Postgres and the
 Kubernetes API.

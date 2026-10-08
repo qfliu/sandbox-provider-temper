@@ -77,7 +77,7 @@ func LoadAPI() (API, error) {
 		Sandbox: Sandbox{
 			Namespace:         getenv("SANDBOX_NAMESPACE", "sandboxes"),
 			ImageRepo:         getenv("SANDBOX_IMAGE_REPO", "sandbox/"),
-			ImageTag:          getenv("SANDBOX_IMAGE_TAG", "0.2"),
+			ImageTag:          getenv("SANDBOX_IMAGE_TAG", "0.3"),
 			DefaultTTL:        time.Hour,
 			MaxTTL:            24 * time.Hour,
 			IdleTimeout:       30 * time.Minute,
