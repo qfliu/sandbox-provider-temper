@@ -40,12 +40,15 @@ would add. The full decision log, with every alternative considered, is
 **Defence in depth around the runtime.** gVisor is one layer. The others:
 - **Admission policy** (CEL), enforced by Kubernetes itself, even against
   the API's own service account:
-  - only the `gvisor` runtime;
+  - only gVisor (`gvisor`, or `gvisor-docker` for sandboxes that run Docker);
   - no service-account token;
-  - only the capabilities sshd and sudo need;
+  - only the capabilities sshd and sudo need, plus Docker's six only under
+    `gvisor-docker`;
+  - no host namespaces, hostPath, host ports, sysctls or AppArmor/SELinux
+    overrides (Pod Security `baseline`'s rules, which the namespace can no
+    longer enforce itself because Docker needs capabilities it forbids);
   - limits required;
   - no debug containers.
-- **Pod Security `baseline`.**
 - **NetworkPolicies:** sandboxes reach DNS and the public internet, not
   private ranges, the cluster, the nodes or the cloud metadata endpoint.
 - **Least-privilege Postgres roles:** the API isn't a superuser; the gateway

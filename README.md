@@ -104,8 +104,9 @@ flowchart LR
 - **Guard rails in the cluster**:
   - An admission policy rejects any pod in the sandboxes namespace that isn't
     gVisor, mounts a token, adds capabilities beyond the ones sshd and sudo
-    need, or skips limits, even if the request comes from the API.
-  - Pod Security `baseline` applies on top.
+    need (plus Docker's, only under the `gvisor-docker` runtime), uses the
+    host's namespaces, paths or ports, or skips limits, even if the request
+    comes from the API.
   - NetworkPolicies let sandboxes reach DNS and the public internet only. Only
     the API and gateway may reach a sandbox, on port 22.
   - Postgres roles keep the API off superuser and limit the gateway to

@@ -4,8 +4,9 @@
 #   helm upgrade --install sandbox code/deploy/helm -n sandbox-system --create-namespace \
 #     --set image.tag=<tag> --set api.sshGatewayAddr=<host:port users ssh to>
 #
-# Prerequisite on every node: gVisor and the `gvisor` RuntimeClass
-# (code/scripts/install-gvisor.sh on minikube). The chart can't install
+# Prerequisite on every node: gVisor and the `gvisor` and `gvisor-docker`
+# RuntimeClasses (code/scripts/install-gvisor.sh on minikube,
+# code/deploy/cloud/gvisor-installer.yaml on AKS). The chart can't install
 # node software.
 #
 # Install only with `helm upgrade --install` (as above). The chart reuses
