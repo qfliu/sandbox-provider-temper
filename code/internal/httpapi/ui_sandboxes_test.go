@@ -333,8 +333,8 @@ func TestUntil(t *testing.T) {
 func TestUISandboxRoutesRefuseCrossSitePOSTs(t *testing.T) {
 	svc := aliceAndBob()
 	h := sandboxUI(svc, "")
-	for _, path := range []string{"/ui/sandboxes", "/ui/sandboxes/sb-alice0000001/delete"} {
-		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("image=ubuntu-dev&ssh_public_key=ssh-ed25519+AAAA&ttl_hours=1"))
+	for _, path := range []string{"/ui/sandboxes", "/ui/sandboxes/sb-alice0000001/delete", "/ui/sandboxes/sb-alice0000001/exec"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("image=ubuntu-dev&ssh_public_key=ssh-ed25519+AAAA&ttl_hours=1&command=id"))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Sec-Fetch-Site", "cross-site")
 		req.AddCookie(alice)
@@ -344,8 +344,8 @@ func TestUISandboxRoutesRefuseCrossSitePOSTs(t *testing.T) {
 			t.Errorf("cross-site POST %s = %d, want 403", path, rec.Code)
 		}
 	}
-	if len(svc.created) != 0 || len(svc.deleted) != 0 {
-		t.Fatalf("cross-site POSTs changed state: created %v, deleted %v", svc.created, svc.deleted)
+	if len(svc.created) != 0 || len(svc.deleted) != 0 || len(svc.execs) != 0 {
+		t.Fatalf("cross-site POSTs changed state: created %v, deleted %v, ran %v", svc.created, svc.deleted, svc.execs)
 	}
 }
 
@@ -561,6 +561,16 @@ func TestUIExec(t *testing.T) {
 	if rec := uiDo(h, http.MethodPost, "/ui/sandboxes/sb-alice0000001/exec", url.Values{"command": {"  "}}, alice); rec.Code != http.StatusBadRequest {
 		t.Fatalf("empty command = %d, want 400", rec.Code)
 	}
+	// The limit counts characters (as the browser's maxlength does), not bytes.
+	if rec := uiDo(h, http.MethodPost, "/ui/sandboxes/sb-alice0000001/exec", url.Values{"command": {strings.Repeat("é", 4097)}}, alice); rec.Code != http.StatusBadRequest {
+		t.Fatalf("4097-character command = %d, want 400", rec.Code)
+	}
+	svc.execs = nil
+	quoted := uiDo(h, http.MethodPost, "/ui/sandboxes/sb-alice0000001/exec", url.Values{"command": {strings.Repeat("é", 4000) + `"><script>x()</script>`}}, alice).Body.String()
+	if len(svc.execs) != 1 || strings.Contains(quoted, `"><script>x()`) {
+		t.Fatal("a long non-ASCII command was refused, or the echoed command broke out of its attribute")
+	}
+	svc.execs = []string{"echo hi"}
 	if rec := uiDo(h, http.MethodPost, "/ui/sandboxes/sb-bob000000001/exec", url.Values{"command": {"id"}}, alice); rec.Code != http.StatusNotFound {
 		t.Fatalf("another user's sandbox = %d, want 404", rec.Code)
 	}

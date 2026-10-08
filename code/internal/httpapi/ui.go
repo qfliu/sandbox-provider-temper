@@ -499,10 +499,14 @@ func (u *ui) exec(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case cmd == "":
 		status, p.Error = http.StatusBadRequest, "Type a command to run."
-	case len(cmd) > maxUICommand:
+	case utf8.RuneCountInString(cmd) > maxUICommand:
 		status, p.Error = http.StatusBadRequest, fmt.Sprintf("The command is longer than %d characters.", maxUICommand)
 	default:
-		res, err := u.sandboxes.Exec(r.Context(), userFrom(r.Context()), p.Sandbox.ID,
+		user := userFrom(r.Context())
+		// Who ran something where (not what: commands can hold secrets).
+		u.log.Info("dashboard exec", "user", user.Name, "sandbox", p.Sandbox.ID,
+			"owner_is_user", p.Sandbox.UserID == user.ID, "command_chars", utf8.RuneCountInString(cmd))
+		res, err := u.sandboxes.Exec(r.Context(), user, p.Sandbox.ID,
 			sandbox.ExecRequest{Command: cmd, TimeoutSeconds: uiExecTimeout})
 		if err != nil {
 			var msg string
