@@ -2,7 +2,7 @@
 
 What was built, the choices behind it, where it stops, and what production
 would add. The full decision log, with every alternative considered, is
-[DESIGN.md](DESIGN.md); the numbers in brackets (D4, …) point into it.
+[DESIGN.md](DESIGN.md); the IDs in parentheses (D4, …) point into it.
 
 ## Reading of the brief
 
@@ -23,7 +23,7 @@ would add. The full decision log, with every alternative considered, is
   agent can do real work on; a graphical desktop is "seeing the remote
   desktop", which the brief lists as a stretch goal (D1).
 
-The brief's own words, and the assigner's later answers on scope, are in
+The brief's own words, and Temper's later answers on scope, are in
 DESIGN.md §2.
 
 ## Compared with hosted sandbox providers
@@ -49,7 +49,7 @@ what this platform has.
 
 | Feature | Who offers it | Here |
 |---|---|---|
-| **Snapshot / restore / fork, pause / resume** | all three: files everywhere; memory and running processes in E2B's default pause/resume, experimental at Modal, VM sandboxes only at Daytona | not built: the assigner's follow-up (2026-10-08) names Docker inside sandboxes, not snapshots, as the requirement. gVisor can checkpoint a running sandbox (`runsc checkpoint`); the missing part is restoring it into a new pod: Kubernetes has no restore path for gVisor checkpoints (its checkpoint API is for runc containers) |
+| **Snapshot / restore / fork, pause / resume** | all three: files everywhere; memory and running processes in E2B's default pause/resume, experimental at Modal, VM sandboxes only at Daytona | not built. On 2026-10-06 Temper's follow-up noted gVisor can't give the snapshot/restore hosted providers offer; the 2026-10-08 follow-up made Docker inside sandboxes the requirement and didn't list snapshots, so the time went there. gVisor can checkpoint a running sandbox (`runsc checkpoint`); the missing part is restoring it into a new pod: Kubernetes has no restore path for gVisor checkpoints (its checkpoint API is for runc containers) |
 | **Streaming command output, background processes, stdin** | all three | commands run to completion and return their output; SSH streams |
 | **Custom images / templates** (your own Dockerfile, start and ready commands) | all three | three fixed images; build and run any image *inside* `ubuntu-docker` |
 | **Environment variables and secrets at create** | all three | none |
@@ -70,10 +70,11 @@ only if pause/resume becomes a requirement.
 ## Main trade-offs
 
 **Two runtimes, chosen per sandbox: gVisor by default, Kata for a VM
-boundary (D4, D60, D64, D65).** The assigner asked for Docker inside
-sandboxes and pointed at Kata or Firecracker for a real VM boundary. We
-tested gVisor first, as asked, then added Kata beside it rather than
-instead of it.
+boundary (D4, D60, D64, D65).** The 2026-10-08 follow-up asked for Docker inside
+sandboxes, said gVisor "struggles there, so check that first", and pointed
+at Kata or Firecracker for a real VM boundary: "your call, just explain the
+tradeoffs". We tested gVisor first, as asked (it works, with the changes in
+D61–D62), then added Kata beside it rather than instead of it.
 
 | | **gVisor** (`gvisor`) | **Kata + Cloud Hypervisor** (`kata`) | **Firecracker directly** (not built) |
 |---|---|---|---|
@@ -88,9 +89,9 @@ instead of it.
 - **Why both:** gVisor starts faster, costs nothing extra per sandbox, runs
   on every node and on a laptop, so it's the default. Kata is the stronger
   boundary (a bug must escape a VM, not a user-space kernel) and runs
-  nearly anything Linux runs, at 2-3 s more to start (much more for Docker
-  sandboxes started in bulk on small nodes) and ~160 MiB more host memory
-  per idle sandbox.
+  nearly anything Linux runs, at about 1 s more to start alone and 2-2.5 s
+  more at 10 at once (much more for Docker sandboxes started in bulk on
+  small nodes) and ~160 MiB more host memory per idle sandbox.
   The caller chooses per sandbox (`"runtime": "kata"`); both run on the
   same x86 nodes.
 - **Why not Firecracker:** its strengths (fastest boot, smallest footprint,
@@ -159,8 +160,9 @@ applies (D45).
   edge (cloud load balancer or firewall) belongs in front of it.
 
 **Own pod layer, not `kubernetes-sigs/agent-sandbox` (D27).**
-- **Why:** about 120 lines of client-go that we control and tested with
-  hand-installed gVisor on arm64.
+- **Why:** a few hundred lines of client-go that we control (`pods.go`,
+  `watch.go`), tested under gVisor on minikube and under gVisor and Kata on
+  AKS.
 - **Defence in depth:** every sandbox pod has `activeDeadlineSeconds` = TTL +
   60 s, so the kubelet kills it even if the API is down.
 - **What production would look at:** the agent-sandbox `Sandbox` CRD, mainly
@@ -186,10 +188,14 @@ applies (D45).
   page).
 - **No auto-refresh:** an earlier htmx version polled every few seconds. It
   was removed for simplicity (D50); a Refresh link is enough for v1.
+- **Interact** (a baseline UI, as asked): create a sandbox (image,
+  runtime when the cluster has Kata, lifetime), a "Run a command" box on a
+  running sandbox's page (the same exec path as the API, 60 s limit, D69),
+  the SSH command to copy, delete; API keys; an admin view of everything.
 
 ## Optional features: what agents need most (D66)
 
-The assigner left four to us: streaming, custom images, public URLs for
+The follow-up left four to us: streaming, custom images, public URLs for
 ports, and secrets. Ranked by how much an agent is stuck without them:
 
 1. **URLs for sandbox ports: built.** An agent that runs `docker compose up`
@@ -221,7 +227,7 @@ ports, and secrets. Ranked by how much an agent is stuck without them:
 
 ## Scaling to thousands (D67)
 
-Measured at the scale the assigner asked for: 10 sandboxes at once, p50/p95
+Measured at the scale the follow-up asked for: 10 sandboxes at once, p50/p95
 to `running`, per runtime and image, on two 4-vCPU AKS nodes (README, D70):
 gVisor p50 3.0–3.3 s / p95 3.7–4.3 s, Kata 5.5–5.7 s / 6.1–6.8 s; with
 Docker, gVisor 3.6–4.0 s / 4.0–5.9 s and Kata 16.6 s / 17.7–19.6 s, the one
@@ -255,8 +261,8 @@ was our own: client-go's default client-side rate limit of 5 requests/s
 (burst 10) per API replica, shared with the reaper and reconcile: under
 1.7 creates/s once the burst is spent, and at 10 at once the create request
 itself waited 2-4 s. It's now 50/s (burst 100); measured at 10 at once on
-the laptop, the create request dropped from p50 2.3-4.2 s to 0.1 s and p95
-to `running` from 4.9-5.2 s to 3.6-4.7 s (D68). Above that, the API
+the laptop, the create request dropped from p50 2.3–4.2 s to 0.1 s and p95
+to `running` from 4.9–5.2 s to 3.6–4.7 s (D68). Above that, the API
 server's own fairness limits and the control plane's size apply: AKS's
 Free tier is for testing, its Standard tier is for this. Two costs grow
 with the number of sandboxes rather than requests:
@@ -292,8 +298,8 @@ modest instance. What it needs at that point is availability: a managed,
 highly available Postgres (a next step below), and a connection pooler
 once API and gateway replicas add up (each has its own pool).
 
-**Image pulls.** 145-350 MB per image (`ubuntu-base`, `ubuntu-dev`,
-`ubuntu-docker`), pulled once per node and kept (pre-pull). A cold node took
+**Image pulls.** 145 MB (`ubuntu-base`), 218 MB (`ubuntu-dev`), about
+350 MB (`ubuntu-docker`), pulled once per node and kept (pre-pull). A cold node took
 5-10 s per image from a registry in the same region (D56, arm64 nodes);
 with autoscaling that's on the critical path only for the first sandboxes
 on a brand-new node. Registry replication or image streaming help further.
@@ -334,14 +340,21 @@ default of 10 live sandboxes per user stops one user long before this):
 
 ## Startup time
 
-- **Measured** on a laptop (README):
-  - one sandbox reaches `running` in about 1.1 s;
-  - 10 at once: p50 2.4 s, p95 4.4 s.
+- **Measured** (README):
+  - on a laptop, one sandbox reaches `running` in about 1.1 s; 10 at once
+    p50 2.5–2.8 s, p95 3.6–4.7 s;
+  - on AKS (2 × 4-vCPU nodes), 10 at once: gVisor p50 3.0–3.3 s, Kata
+    5.5–5.7 s; with Docker, gVisor 3.6–4.0 s and Kata 16.6 s (D70; a final
+    fresh deployment measured 3.2 / 5.1 / 3.2 / 13.8 s).
 - **What got it there:**
   - the readiness probe runs every second;
   - each sandbox requests 1 GiB of ephemeral storage, not the full 5 GiB
     limit, which had capped the node at 6 sandboxes;
-  - the images are pre-pulled on every node (a DaemonSet).
+  - the images are pre-pulled on every node (a DaemonSet);
+  - the API's own client-side limit toward Kubernetes was raised, which
+    took the create request from 2–4 s to 0.1 s at 10 at once (D68);
+  - under Kata, Docker uses its nftables backend (27 → 16.6 s for Docker
+    sandboxes at 10 at once, D70).
 - **What pre-pull is worth:** proven and measured (D51, D56). Without it,
   the first `ubuntu-dev` sandbox (218 MB) on a node waits for the image:
   about 5 s from a registry on the same machine, **7.6–9.3 s from Azure's
@@ -352,8 +365,8 @@ default of 10 live sandboxes per user stops one user long before this):
     startup to roughly the API round trip, at the cost of idle resources.
   - **Scheduling-aware creates:** say "waiting for capacity" from the pod's
     scheduling condition.
-  - **Per-sandbox quota locking:** when one user creates many at once, the
-    per-user row lock serializes them.
+  - **Creating the pod after replying** (a queue), so a burst of creates
+    doesn't hold HTTP requests open.
 
 ## Known limits of v1
 
@@ -378,35 +391,50 @@ default of 10 live sandboxes per user stops one user long before this):
 - **Postgres:** no external or managed Postgres option in the chart yet.
 - **Images:** three fixed images (D2, D62). User-supplied images would need image
   scanning and policy.
+- **Docker inside:** its storage is a 2 GB tmpfs inside the sandbox's 4 GiB
+  memory limit, so very large images or builds run out of space; nested
+  `ping` over a bridge network doesn't work under gVisor (its NAT is TCP/UDP
+  only, D62).
+- **Port URLs:** they need the API key in a header, so a browser can't open
+  them directly; subdomain URLs with signed links are the next step (D66).
 - **Tenancy:** users and admins only, no organizations, teams or per-sandbox
   sharing.
 - **Observability:** JSON logs only; no metrics or traces yet (the next
   thing to add: Prometheus metrics for create latency, exec latency, gateway
   connections).
 
+## What running it on Azure found
+
+`./cloud-up.sh` builds it all from nothing in about 15 minutes (plus about
+5 the first time, to build the amd64 images on the Mac) and `./cloud-down.sh`
+removes it; the demo and every test suite pass there under both runtimes.
+The cloud found things the laptop couldn't:
+- **AKS's containerd config is a hybrid:** it declares `version = 2` but uses
+  containerd 2.x's section names, so gVisor's runtime, added under the old
+  names, was silently ignored ("no runtime for runsc"). The installer now
+  picks names by what the file uses and checks what containerd actually
+  loaded, rolling back otherwise (D56).
+- **The Kubernetes API has a public address on AKS.** The `kubernetes`
+  Service forwards there, and the "public internet" egress rule let
+  sandboxes open connections to it (no credentials, so requests were
+  refused, but it broke the isolation rule). The chart now blocks that
+  address automatically (D56).
+- **Capacity:** on the first, small arm64 nodes AKS's own pods left room
+  for 7 sandboxes, not 10. The x86 nodes Kata needs (D63, D70) fit 10 at once
+  of either runtime.
+- **Docker under Kata** needed its own setup (cgroups, `SYS_RESOURCE`,
+  `SYS_PTRACE`, D64, D71), and its iptables setup was slow under nested
+  virtualization (D70).
+
+The API and dashboard have a public HTTPS address there (Caddy with a Let's
+Encrypt certificate on an Azure DNS name, optional IP allowlist, D57), so
+testers need only a key.
+
 ## Next steps
 
-1. **Cloud: done on Azure AKS (Phase 7, D54–D56).** `./cloud-up.sh` builds
-   it from nothing in about 10 minutes and `./cloud-down.sh` removes it; the
-   demo and every test suite pass there. Running it found three things the
-   laptop couldn't:
-   - **AKS's containerd config is a hybrid:** it declares `version = 2` but
-     uses containerd 2.x's section names, so gVisor's runtime, added under
-     the old names, was silently ignored ("no runtime for runsc"). The
-     installer now picks names by what the file uses and checks what
-     containerd actually loaded, rolling back otherwise.
-   - **The Kubernetes API has a public address on AKS.** The `kubernetes`
-     Service forwards there, and the "public internet" egress rule let
-     sandboxes open connections to it (no credentials, so requests were
-     refused, but it broke the isolation rule). The chart now blocks that
-     address automatically (as of each install or upgrade).
-   - **Capacity:** AKS's own system pods request a third of two small
-     nodes and the platform another 0.4 vCPU, so 7 sandboxes fit, not 10.
-   Since then (7.6) the API and dashboard have a public HTTPS address there
-   (Caddy with a Let's Encrypt certificate on an Azure DNS name, optional
-   IP allowlist), so testers need only a key. Phase 8 moved the nodes to
-   x86 (D63) for Kata, with images cross-built for amd64 on the Mac. Still
-   to do: the cluster autoscaler for a real cold-node load test.
+1. **Cluster autoscaler** for a real cold-node load test: new nodes, the
+   images pulled while the first sandboxes wait, Kata installed on them
+   (with the two node installers ordered; D64's known limit).
 2. **Managed Postgres** (RDS/Azure Database) as a chart option, with the
    db-setup Job pointed at it.
 3. **Warm pool**, through agent-sandbox or our own pod layer.
@@ -434,6 +462,12 @@ default of 10 live sandboxes per user stops one user long before this):
   security boundary.
 - **Testing in a real cluster:** Go unit tests, tests against a real
   Postgres, and end-to-end scripts on the cluster: API smoke test, gateway,
-  sandbox hardening, network policy, load and pre-pull. The Helm chart was
+  sandbox hardening, network policy, Docker, port URLs, load and pre-pull,
+  and an agent-workflow suite (five realistic workflows: a Redis-backed app,
+  Postgres, a multi-stage Go build, WebSockets, Docker's storage filling up),
+  each run under both runtimes on AKS. Running an agent's workflow end to end
+  found a bug the feature suites missed (D71). CI (GitHub Actions) runs the
+  Go tests with Postgres, Helm lint and renders, Terraform validate and a
+  syntax check of every script (D59). The Helm chart was
   verified both by a from-scratch install on a second cluster and by taking
   over an existing deployment without losing data.
