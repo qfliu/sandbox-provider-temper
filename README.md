@@ -225,7 +225,9 @@ free account starts at 4, so request more under Quotas, or set
 `AZURE_NODE_SIZE=Standard_D2ps_v5` for 2 small arm64 nodes, gVisor only),
 and the local cluster from `./up.sh`. For x86 nodes `cloud-up.sh` builds
 amd64 images on the local (arm64) cluster under QEMU emulation, about 5
-minutes the first time (D63).
+minutes the first time (D63). Node size and count are remembered only while
+the cluster exists, so a new cluster gets the x86 default even after an
+earlier arm64 run.
 
 ```bash
 ./code/scripts/bootstrap-cloud-tools.sh      # Terraform + Azure CLI into ./.devenv (once)

@@ -28,7 +28,8 @@
 # empty or "none": open to anyone, who still needs an API key / sandbox key.
 # Settings are remembered (.devenv/state/aks/settings): a re-run without
 # them keeps the last values, and changing one that would replace an
-# existing cluster (region, name, node size or count) is refused.
+# existing cluster (region, name, node size or count) is refused. Node size
+# and count are remembered only while that cluster exists.
 # ACME_EMAIL: optional, for Let's Encrypt notices. AZURE_DNS_LABEL: the
 # name's first part (default sandbox-<8 hex of the subscription>, stable);
 # Let's Encrypt issues at most 5 certificates a week for one name and every
@@ -59,9 +60,13 @@ grep -q '"azurerm_kubernetes_cluster"' .devenv/state/terraform/aks.tfstate 2>/de
 # setting <key> <env var> <default> <why>: the variable if set, else the
 # remembered value, else the default. With a cluster up, a different value is
 # refused, for <why>.
+# With a 5th argument "while-up", the remembered value counts only while the
+# cluster exists: a new cluster gets the current default (review of #74: an
+# old run's arm64 size otherwise outlived the switch to x86).
 setting() {
 	local key=$1 var=$2 def=$3 why=$4 env=${!2:-} old
 	old=$(saved "$key")
+	[ "${5:-}" != while-up ] || [ -n "$EXISTS" ] || old=""
 	if [ -n "$EXISTS" ] && [ -n "$env" ] && [ -n "$old" ] && [ "$env" != "$old" ]; then
 		echo "$var=$env, but the running cluster has $old: $why." >&2
 		echo "Run ./cloud-down.sh first, or leave $var unset." >&2
@@ -73,8 +78,8 @@ REPLACE="changing it would make Terraform replace the cluster and delete its dat
 RESIZE="cloud-up.sh doesn't resize a running cluster (its quota check only runs before the first apply)"
 LOCATION=$(setting LOCATION AZURE_LOCATION westus2 "$REPLACE")
 NAME=$(setting NAME AZURE_NAME sandbox-provider "$REPLACE")
-NODE_SIZE=$(setting NODE_SIZE AZURE_NODE_SIZE Standard_D4s_v5 "$RESIZE")
-NODES=$(setting NODES AZURE_NODES 2 "$RESIZE")
+NODE_SIZE=$(setting NODE_SIZE AZURE_NODE_SIZE Standard_D4s_v5 "$RESIZE" while-up)
+NODES=$(setting NODES AZURE_NODES 2 "$RESIZE" while-up)
 # Who may connect: as given (empty or "none": anyone), else as last time.
 if [ "${ALLOWED_CIDRS+set}" = set ]; then CIDRS=$ALLOWED_CIDRS; else CIDRS=$(saved ALLOWED_CIDRS); fi
 [ "$CIDRS" != none ] || CIDRS=""
@@ -105,7 +110,8 @@ LABEL=${LABEL:-sandbox-$(printf %s "$SUB" | shasum | cut -c1-8)}
 ALLOWED=""
 # Your IP first, then the rest without repeats (a remembered list often
 # already holds it).
-[ -z "$CIDRS" ] || ALLOWED=$(printf '%s\n' "$MYIP/32" ${CIDRS//,/ } | awk 'NF && !seen[$0]++' | paste -sd, -)
+[ -z "$CIDRS" ] || ALLOWED=$(printf '%s,%s' "$MYIP/32" "$CIDRS" | tr ', ' '\n\n' |
+	awk 'NF { if ($0 !~ /\//) $0 = $0 "/32"; if (!seen[$0]++) print }' | paste -sd, -)
 
 if [ "$MODE" = allowlist ]; then
 	# Only the allowlists change: the proxy reloads its config and Azure
@@ -203,20 +209,26 @@ kubectl -n gvisor-system rollout status ds/gvisor-installer --timeout=10m >/dev/
 echo "==> images: build on the local cluster for $ARCH, push to $ACR"
 DIRTY="$(git diff --quiet HEAD -- code || echo -dirty)"
 TAG="$(git rev-parse --short HEAD)${DIRTY}-$(date +%s)"
-# The local cluster is arm64 on an Apple Silicon Mac. For arm64 nodes its own
-# sandbox images (from ./up.sh) are pushed as they are; for x86 nodes every
-# image is built for amd64 here, the sandbox images under QEMU emulation
-# (D63; about 5 minutes the first time, then cached).
-PLATFORM=()
-if [ "$ARCH" = amd64 ]; then
+# When the nodes have the local cluster's architecture, its own sandbox
+# images (from ./up.sh) are pushed as they are. Otherwise (x86 nodes, an
+# Apple Silicon Mac) every image is built for amd64 here, the sandbox images
+# under QEMU emulation (D63; about 5 minutes the first time, then cached).
+LOCAL_ARCH=$(mk ssh -- uname -m | tr -d '\r')
+case "$LOCAL_ARCH" in aarch64 | arm64) LOCAL_ARCH=arm64 ;; x86_64) LOCAL_ARCH=amd64 ;; esac
+CROSS=""
+if [ "$ARCH" != "$LOCAL_ARCH" ]; then
+	[ "$ARCH" = amd64 ] ||
+		{ echo "the local cluster is $LOCAL_ARCH and the nodes $ARCH: only building amd64 on arm64 is supported; pick an x86 AZURE_NODE_SIZE" >&2; exit 1; }
 	mk_env ./code/scripts/enable-amd64-builds.sh
-	PLATFORM=(--build-opt=opt=platform=linux/amd64)
+	CROSS=--build-opt=opt=platform=linux/amd64
 fi
-mk image build -t "$ACR/sandbox/api:$TAG" "${PLATFORM[@]}" code >"$TMPDIR/cloud-build.log" 2>&1 ||
+# ${CROSS:+...}, not an empty array: macOS's bash 3.2 calls "${a[@]}" of an
+# empty array unbound under set -u (review of #74).
+mk image build -t "$ACR/sandbox/api:$TAG" ${CROSS:+"$CROSS"} code >"$TMPDIR/cloud-build.log" 2>&1 ||
 	{ tail -30 "$TMPDIR/cloud-build.log"; echo "platform image build failed" >&2; exit 1; }
-if [ "$ARCH" = amd64 ]; then
+if [ -n "$CROSS" ]; then
 	for target in base dev docker; do
-		mk image build -t "$ACR/sandbox/ubuntu-$target:0.1" "${PLATFORM[@]}" --build-opt=opt=target="$target" \
+		mk image build -t "$ACR/sandbox/ubuntu-$target:0.1" "$CROSS" --build-opt=opt=target="$target" \
 			code/images/sandbox >>"$TMPDIR/cloud-build.log" 2>&1 ||
 			{ tail -30 "$TMPDIR/cloud-build.log"; echo "sandbox image build ($target, amd64) failed" >&2; exit 1; }
 	done
@@ -229,19 +241,21 @@ TOKEN=$(az acr login -n "$ACR_NAME" --expose-token --query accessToken -o tsv --
 	{ echo "couldn't get a token for the registry $ACR_NAME" >&2; exit 1; }
 push() { # push <local ref> <registry ref>
 	local out
-	out=$(printf '%s\n' "$TOKEN" | mk ssh -- "read -r T; sudo ctr -n k8s.io images tag --force $1 $2 >/dev/null &&
+	local tag="sudo ctr -n k8s.io images tag --force $1 $2 >/dev/null &&"
+	[ "$1" != "$2" ] || tag="" # built under its registry name already
+	out=$(printf '%s\n' "$TOKEN" | mk ssh -- "read -r T; $tag
 		sudo ctr -n k8s.io images push --user 00000000-0000-0000-0000-000000000000:\$T $2 >/dev/null && echo pushed-ok" 2>&1 |
 		tr -d '\r') || true
 	if ! grep -q pushed-ok <<<"$out"; then
 		echo "push of $2 failed: $(tail -3 <<<"$out")" >&2
-		echo "(if it says 'content digest … not found', rebuild the local images: ./up.sh)" >&2
+		[ -n "$CROSS" ] || echo "(if it says 'content digest … not found', rebuild the local images: ./up.sh)" >&2
 		return 1
 	fi
 	echo "    $2"
 }
 push "$ACR/sandbox/api:$TAG" "$ACR/sandbox/api:$TAG"
 for img in ubuntu-base ubuntu-dev ubuntu-docker; do
-	if [ "$ARCH" = amd64 ]; then
+	if [ -n "$CROSS" ]; then
 		push "$ACR/sandbox/$img:0.1" "$ACR/sandbox/$img:0.1"
 	else
 		push "docker.io/sandbox/$img:0.1" "$ACR/sandbox/$img:0.1"
