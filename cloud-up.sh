@@ -214,7 +214,7 @@ push() { # push <local ref> <registry ref>
 	echo "    $2"
 }
 push "$ACR/sandbox/api:$TAG" "$ACR/sandbox/api:$TAG"
-for img in ubuntu-base ubuntu-dev; do
+for img in ubuntu-base ubuntu-dev ubuntu-docker; do
 	push "docker.io/sandbox/$img:0.1" "$ACR/sandbox/$img:0.1"
 done
 unset TOKEN

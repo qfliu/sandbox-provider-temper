@@ -53,7 +53,8 @@ To work on the code, run `source ./env.sh` (like a Python venv; `deactivate_sand
 | `code/scripts/test-db.sh` | all Go tests, including the ones against Postgres |
 | `code/scripts/smoke-api.sh` | API end to end (28 checks) |
 | `code/scripts/test-gateway-e2e.sh` | SSH gateway end to end, incl. attacks (16 checks) |
-| `code/scripts/test-sandbox-hardening.sh` | what code inside a sandbox can and can't do (18 checks) |
+| `code/scripts/test-sandbox-hardening.sh` | what code inside a sandbox can and can't do, and the admission policy (35 checks) |
+| `code/scripts/test-docker.sh` | Docker in an `ubuntu-docker` sandbox: build, run, `-p`, compose with ports; isolation of nested containers; forged packets stay on the node |
 | `code/scripts/test-network-policy.sh` | sandbox network isolation (15 checks) |
 | `code/scripts/load-test.sh N [image]` | N sandboxes at once, startup percentiles |
 | `code/scripts/test-prepull.sh`, `measure-prepull.sh` | image pre-pull proof and timing |
@@ -94,10 +95,15 @@ flowchart LR
   the connection to the pod with the internal key, pinning the pod's host
   key. It's stateless and has connection limits per replica, per client and
   per sandbox.
-- **Sandboxes**: `ubuntu-base` (git, curl, build tools, sshd) or `ubuntu-dev`
-  (plus Python 3, Node.js, package managers).
+- **Sandboxes**: `ubuntu-base` (git, curl, build tools, sshd), `ubuntu-dev`
+  (plus Python 3, Node.js, package managers) or `ubuntu-docker` (plus Docker
+  Engine 29, Compose and Buildx: `docker build`, `docker run -p`,
+  `docker compose up` work as `user`, without sudo).
   - Runtime: gVisor, as `root` inside the pod with only the capabilities sshd
     and sudo need. The agent works as `user`.
+  - `ubuntu-docker` runs under its own gVisor runtime, `gvisor-docker`
+    (raw sockets on, 6 more capabilities, granted inside gVisor only), with
+    2 CPUs and 4 GiB, half of it for Docker's storage, which is in memory.
   - Limits: 1 CPU / 1 GiB memory / 5 GiB disk.
   - Workspace: `/home/user` survives restarts of the process, not loss of the
     pod or its node; a lost sandbox is marked `lost`, not recreated.
@@ -131,7 +137,7 @@ Every call needs `Authorization: Bearer <api key>`. Errors are
 Notes:
 
 - **Create**
-  - `image` is `ubuntu-base` or `ubuntu-dev`.
+  - `image` is `ubuntu-base`, `ubuntu-dev` or `ubuntu-docker`.
   - `ttl_seconds` runs from 60 to 86400; the default is 3600.
   - `ssh_public_key` is the only key the gateway accepts for this sandbox.
 - **Exec**

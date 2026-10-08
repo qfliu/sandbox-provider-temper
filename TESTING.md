@@ -39,7 +39,8 @@ refresh on their own; use the Refresh link.
 ```bash
 ssh-keygen -t ed25519 -N "" -f ~/.ssh/sandbox-test      # a key pair for SSH (step 5)
 
-# Create one: image ubuntu-base or ubuntu-dev (Python, Node.js), 10-minute lifetime.
+# Create one: image ubuntu-base, ubuntu-dev (Python, Node.js) or ubuntu-docker
+# (plus Docker and Compose), 10-minute lifetime.
 curl -s -H @$HOME/.sandbox-auth -X POST $SANDBOX/v1/sandboxes \
   -d "{\"image\":\"ubuntu-dev\",\"ttl_seconds\":600,\"ssh_public_key\":\"$(cat ~/.ssh/sandbox-test.pub)\"}"
 # → {"id":"sb-…","status":"pending",…}
@@ -83,6 +84,13 @@ instead, ask the person running the deployment for the line to put in
   them should time out. `uname -r` shows the gVisor kernel, not the host's.
 - **Inside the sandbox:** `sudo` works (you're `user`), and package installs
   work: `pip` (in a virtualenv) and `npm` (in `ubuntu-dev`).
+- **Docker** (`ubuntu-docker`): `docker run`, `docker build`, `docker run -p
+  8080:80 nginx` then `curl localhost:8080`, and `docker compose up` with
+  `ports:` all work as `user`. Docker's storage is in the sandbox's memory
+  (2 GB of its 4 GB), so very large images or builds can run out. `ping`
+  from a nested container works only with `--network=host` (gVisor can't NAT
+  ICMP). A nested `--privileged` container starts but gets no more than the
+  sandbox's own capabilities.
 - **Other people's sandboxes:** another tester's sandbox id returns `404`,
   and SSH with your key to their sandbox is refused.
 - **Limits:**

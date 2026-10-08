@@ -2,8 +2,10 @@ package k8s
 
 import (
 	"context"
-	corev1 "k8s.io/api/core/v1"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -80,6 +82,62 @@ func TestBuildPodIsolation(t *testing.T) {
 	if pod.Name != "sb-abc" || pod.Namespace != "sandboxes" ||
 		pod.Labels[LabelSandboxID] != "sb-abc" || pod.Labels[LabelOwner] != "u1" {
 		t.Fatalf("unexpected metadata %+v", pod.ObjectMeta)
+	}
+}
+
+// A Docker sandbox differs only where it must (D61, D62): its runtime, its
+// six extra capabilities, more memory and CPU. Everything else is the plain
+// sandbox's, and plain sandboxes never get Docker's capabilities.
+func TestBuildPodDocker(t *testing.T) {
+	sb := testSandbox
+	sb.Image = DockerImage
+	pod := BuildPod(sb, testCfg)
+	if rc := pod.Spec.RuntimeClassName; rc == nil || *rc != "gvisor-docker" {
+		t.Fatalf("runtime = %v, want gvisor-docker", rc)
+	}
+	c := pod.Spec.Containers[0]
+	if c.Image != "sandbox/ubuntu-docker:0.1" {
+		t.Fatalf("image = %q", c.Image)
+	}
+	want := map[corev1.Capability]bool{}
+	for _, c := range append(append([]corev1.Capability{}, SandboxCapabilities...), DockerCapabilities...) {
+		want[c] = true
+	}
+	got := c.SecurityContext.Capabilities.Add
+	if len(got) != len(want) {
+		t.Fatalf("capabilities = %v, want %d", got, len(want))
+	}
+	for _, capability := range got {
+		if !want[capability] {
+			t.Fatalf("unexpected capability %s", capability)
+		}
+	}
+	if d := c.SecurityContext.Capabilities.Drop; len(d) != 1 || d[0] != "ALL" {
+		t.Fatal("docker pod must still drop all capabilities first")
+	}
+	if p := c.SecurityContext.Privileged; p == nil || *p {
+		t.Fatal("docker pod must not be privileged")
+	}
+	if c.Resources.Limits.Memory().Cmp(resource.MustParse("4Gi")) != 0 {
+		t.Fatalf("memory limit = %v, want 4Gi", c.Resources.Limits.Memory())
+	}
+	if len(c.Env) != 1 || c.Env[0].Name != "DOCKER_STORAGE_SIZE" {
+		t.Fatalf("env = %v, want DOCKER_STORAGE_SIZE", c.Env)
+	}
+	if *pod.Spec.AutomountServiceAccountToken || *pod.Spec.EnableServiceLinks {
+		t.Fatal("docker pod must keep the plain sandbox's isolation")
+	}
+
+	plain := BuildPod(testSandbox, testCfg).Spec.Containers[0]
+	for _, capability := range plain.SecurityContext.Capabilities.Add {
+		for _, d := range DockerCapabilities {
+			if capability == d {
+				t.Fatalf("plain sandbox got Docker capability %s", d)
+			}
+		}
+	}
+	if len(plain.Env) != 0 {
+		t.Fatalf("plain sandbox env = %v", plain.Env)
 	}
 }
 

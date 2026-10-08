@@ -36,7 +36,7 @@ minikube start \
 
 echo "==> building sandbox images"
 LOG="$ROOT/.devenv/state/tmp/image-build.log"
-for target in base dev; do
+for target in base dev docker; do
   # BuildKit (containerd) spells the target option `--opt target=...`.
   minikube image build -t "sandbox/ubuntu-$target:$IMAGE_TAG" \
     --build-opt=opt=target="$target" "$ROOT/code/images/sandbox" >"$LOG" 2>&1 \
