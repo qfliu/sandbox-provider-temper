@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Installs gVisor (runsc) into the minikube node and registers the `gvisor`
-# RuntimeClass. Replaces `minikube addons enable gvisor`, whose download URL
-# is stale: gVisor now ships one gvisor.tar.bz2 bundle per arch instead of
-# separate runsc / containerd-shim-runsc-v1 files.
+# and `gvisor-docker` RuntimeClasses (D61). Replaces `minikube addons enable
+# gvisor`, whose download URL is stale: gVisor now ships one gvisor.tar.bz2
+# bundle per arch instead of separate runsc / containerd-shim-runsc-v1 files.
 #
 # The node's / and /etc are tmpfs (reset on every VM boot) while /data is on
 # disk, so binaries live in /data/gvisor and the symlinks + containerd config
@@ -49,7 +49,10 @@ if [ "$(minikube ssh -- "cat /data/gvisor/RELEASE 2>/dev/null || true" 2>/dev/nu
     && echo $GVISOR_RELEASE | sudo tee /data/gvisor/RELEASE >/dev/null"
 fi
 
-# 3. Link onto PATH and register the runsc runtime with containerd.
+# 3. Link onto PATH and register two runsc runtimes with containerd, each
+#    with its own runsc config (D60, D61):
+#    - runsc (RuntimeClass gvisor): every sandbox except Docker ones;
+#    - runsc-docker (RuntimeClass gvisor-docker): sandboxes that run Docker.
 #    runsc finds its sidecar binaries in gvisor-bin/ next to its real path,
 #    which is /data/gvisor (symlinks resolve through /proc/self/exe).
 echo "==> configuring containerd"
@@ -59,26 +62,44 @@ echo "==> configuring containerd"
 #    breaks thread creation ("can't start new thread", tested), so gVisor's
 #    own syscall filter is the barrier (D45). Raw sockets stay off (runsc's
 #    default, net-raw = false).
+#    runsc-docker.toml adds what dockerd needs inside gVisor (gVisor's
+#    "Docker in gVisor" guide; without them dockerd's network setup fails):
+#    raw sockets, and writes on packet sockets (ARP/NDP on Docker's bridge).
+#    They let the sandbox write any frame onto its pod's interface, so
+#    beyond the NetworkPolicies, Calico's anti-spoofing checks on workload
+#    interfaces are what drop forged source addresses (D61).
 minikube ssh -- 'set -e
   sudo ln -sf /data/gvisor/runsc /usr/bin/runsc
   sudo ln -sf /data/gvisor/containerd-shim-runsc-v1 /usr/bin/containerd-shim-runsc-v1
   printf "[runsc_config]\n  allow-suid = \"true\"\n" | sudo tee /etc/containerd/runsc.toml >/dev/null
-  if ! grep -q "runtimes.runsc.options\]" /etc/containerd/config.toml; then
-    grep -q "runtimes.runsc\]" /etc/containerd/config.toml || \
-      printf "\n[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runsc]\n  runtime_type = \"io.containerd.runsc.v1\"\n" \
+  printf "[runsc_config]\n  allow-suid = \"true\"\n  net-raw = \"true\"\n  allow-packet-socket-write = \"true\"\n" \
+    | sudo tee /etc/containerd/runsc-docker.toml >/dev/null
+  changed=
+  for rt in runsc runsc-docker; do
+    grep -q "runtimes\.$rt\.options\]" /etc/containerd/config.toml && continue
+    grep -q "runtimes\.$rt\]" /etc/containerd/config.toml || \
+      printf "\n[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.$rt]\n  runtime_type = \"io.containerd.runsc.v1\"\n" \
         | sudo tee -a /etc/containerd/config.toml >/dev/null
-    printf "\n[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runsc.options]\n  TypeUrl = \"io.containerd.runsc.v1.options\"\n  ConfigPath = \"/etc/containerd/runsc.toml\"\n" \
+    printf "\n[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.$rt.options]\n  TypeUrl = \"io.containerd.runsc.v1.options\"\n  ConfigPath = \"/etc/containerd/$rt.toml\"\n" \
       | sudo tee -a /etc/containerd/config.toml >/dev/null
-    sudo systemctl restart containerd
-  fi'
+    changed=1
+  done
+  [ -z "$changed" ] || sudo systemctl restart containerd'
 
-# 4. RuntimeClass so pods can opt in with `runtimeClassName: gvisor`.
+# 4. RuntimeClasses: pods opt in with `runtimeClassName: gvisor` or
+#    `gvisor-docker`.
 kubectl apply -f - >/dev/null <<'EOF'
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
 metadata:
   name: gvisor
 handler: runsc
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor-docker
+handler: runsc-docker
 EOF
 
-echo "==> gVisor $GVISOR_RELEASE ready (RuntimeClass: gvisor)"
+echo "==> gVisor $GVISOR_RELEASE ready (RuntimeClasses: gvisor, gvisor-docker)"

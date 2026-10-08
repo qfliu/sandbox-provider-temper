@@ -5,21 +5,27 @@
 #      the SHA-512 pinned below (not one fetched next to the download), and
 #      unpacks it to the node's /opt/gvisor/<release>;
 #   2. links runsc and its containerd shim into /usr/local/bin, writes
-#      /etc/containerd/runsc.toml and adds the runsc runtime to containerd's
-#      config (containerd 1.x's version 2 section names, or 2.x's for
-#      config versions 3 and 4). The edit is made on a copy that containerd
-#      must accept (`config dump`) before it replaces the real file, and if
-#      containerd isn't healthy after the restart the old config is put back,
-#      so a bad edit can't leave a node without a container runtime (there's
-#      no ssh into AKS nodes to fix one). Running containers survive the
-#      restart; it can make the kubelet run this init container once more,
-#      and the second run finds the config in place ("already has ...");
+#      /etc/containerd/runsc.toml and runsc-docker.toml, and adds the runsc and
+#      runsc-docker runtimes (D61) to containerd's config (containerd 1.x's
+#      version 2 section names, or 2.x's for config versions 3 and 4). The edit
+#      is made on a copy that containerd must accept (`config dump`) before it
+#      replaces the real file, and if containerd isn't healthy after the
+#      restart the old config is put back, so a bad edit can't leave a node
+#      without a container runtime (there's no ssh into AKS nodes to fix one).
+#      Running containers survive the restart; it can make the kubelet run this
+#      init container once more, and the second run finds the config in place
+#      ("already has ...");
 #   3. idles on pause, so a new node gets the same treatment.
 # Idempotent: a node that already has this release and config is left alone.
 # To upgrade gVisor, change GVISOR_RELEASE and both SHA-512s in the pod
 # template below: that rolls the DaemonSet, so every node reruns this.
 # The same runsc settings as minikube: allow-suid for sudo inside sandboxes
 # (D22), no oci-seccomp (breaks threads under gVisor, D45), raw sockets off.
+# runsc-docker (RuntimeClass gvisor-docker, only for sandboxes that run
+# Docker) also turns on raw sockets and packet-socket writes, which dockerd
+# needs inside gVisor. They let the sandbox write any frame onto its pod's
+# interface, so beyond the NetworkPolicies, Calico's anti-spoofing checks on
+# workload interfaces are what drop forged source addresses (D61).
 #
 # Privileged with the host's PID namespace and /: it is node setup, like a
 # cloud-init script, and lives in its own namespace that nothing else uses.
@@ -67,19 +73,27 @@ data:
     ln -sf /opt/gvisor/$REL/runsc /usr/local/bin/runsc
     ln -sf /opt/gvisor/$REL/containerd-shim-runsc-v1 /usr/local/bin/containerd-shim-runsc-v1
     printf '[runsc_config]\n  allow-suid = "true"\n' >/etc/containerd/runsc.toml
+    printf '[runsc_config]\n  allow-suid = "true"\n  net-raw = "true"\n  allow-packet-socket-write = "true"\n' \
+      >/etc/containerd/runsc-docker.toml
     CONF=/etc/containerd/config.toml
     # Whether containerd's own parse of a config file (default: the live one)
-    # yields the runsc runtime. Not the file's text: AKS's hybrid config
-    # kept an appended old-style runsc section that this parse dropped, which
-    # is exactly the failure to catch. (It parses the file; it doesn't ask
-    # the running daemon, hence the restart before the final check.)
-    loaded() { containerd ${1:+--config "$1"} config dump 2>/dev/null | grep -Eq "runtimes\.[\"']?runsc[\"']?\]"; }
+    # yields both runtimes, runsc and runsc-docker. Not the file's text: AKS's
+    # hybrid config kept an appended old-style runsc section that this parse
+    # dropped, which is exactly the failure to catch. (It parses the file; it
+    # doesn't ask the running daemon, hence the restart before the final check.)
+    loaded() {
+      dump=$(containerd ${1:+--config "$1"} config dump 2>/dev/null) || return 1
+      for rt in runsc runsc-docker; do
+        printf '%s\n' "$dump" | grep -Eq "runtimes\.[\"']?$rt[\"']?\]" || return 1
+      done
+    }
     if loaded; then
-      echo "containerd already has the runsc runtime"
+      echo "containerd already has the runsc and runsc-docker runtimes"
       exit 0
     fi
     # Start from the node's own config if an earlier run saved it, so a
-    # section a previous attempt added is not carried along.
+    # section a previous attempt (or an older installer, with runsc only)
+    # added is not carried along.
     BASE=$CONF
     [ -f "$CONF.before-gvisor" ] && BASE=$CONF.before-gvisor
     # The CRI plugin's section name: containerd 2.x's if the file already
@@ -93,8 +107,10 @@ data:
     fi
     # Edit a copy, let containerd check it, then swap it in.
     cp "$BASE" "$CONF.gvisor-new"
-    printf '\n[%s.containerd.runtimes.runsc]\n  runtime_type = "io.containerd.runsc.v1"\n[%s.containerd.runtimes.runsc.options]\n  TypeUrl = "io.containerd.runsc.v1.options"\n  ConfigPath = "/etc/containerd/runsc.toml"\n' \
-      "$CRI" "$CRI" >>"$CONF.gvisor-new"
+    for rt in runsc runsc-docker; do
+      printf '\n[%s.containerd.runtimes.%s]\n  runtime_type = "io.containerd.runsc.v1"\n[%s.containerd.runtimes.%s.options]\n  TypeUrl = "io.containerd.runsc.v1.options"\n  ConfigPath = "/etc/containerd/%s.toml"\n' \
+        "$CRI" "$rt" "$CRI" "$rt" "$rt" >>"$CONF.gvisor-new"
+    done
     if ! containerd --config "$CONF.gvisor-new" config dump >/dev/null 2>&1; then
       echo "containerd rejects the edited config; node left unchanged:" >&2
       containerd --config "$CONF.gvisor-new" config dump 2>&1 >/dev/null | tail -3 >&2
@@ -102,21 +118,26 @@ data:
       exit 1
     fi
     if ! loaded "$CONF.gvisor-new"; then
-      echo "containerd would ignore the runsc section ($CRI); node left unchanged" >&2
+      echo "containerd would ignore the runsc sections ($CRI); node left unchanged" >&2
       rm -f "$CONF.gvisor-new"
       exit 1
     fi
     [ -f "$CONF.before-gvisor" ] || cp "$CONF" "$CONF.before-gvisor"
+    # Roll back to the config the node was running, not to .before-gvisor:
+    # on a node from the runsc-only installer that would take away a
+    # working runsc (review of #72).
+    cp "$CONF" "$CONF.gvisor-prev"
     mv "$CONF.gvisor-new" "$CONF"
     systemctl restart containerd
     sleep 3
     if ! systemctl is-active --quiet containerd || ! loaded; then
-      echo "containerd isn't running with the runsc runtime after the change; restoring the old config" >&2
-      cp "$CONF.before-gvisor" "$CONF"
+      echo "containerd isn't running with the runsc runtimes after the change; restoring the previous config" >&2
+      cp "$CONF.gvisor-prev" "$CONF"
       systemctl restart containerd
       exit 1
     fi
-    echo "containerd configured for runsc (config version ${VER:-2}, $CRI) and restarted"
+    rm -f "$CONF.gvisor-prev"
+    echo "containerd configured for runsc and runsc-docker (config version ${VER:-2}, $CRI) and restarted"
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -136,6 +157,10 @@ spec:
   template:
     metadata:
       labels: {app: gvisor-installer}
+      annotations:
+        # The scripts live in the ConfigMap, whose changes don't restart
+        # pods: bump this with any change to them so every node reruns.
+        gvisor-installer/scripts: "2"   # 2: runsc-docker (D61)
     spec:
       hostPID: true
       automountServiceAccountToken: false
@@ -175,7 +200,8 @@ spec:
       - name: config
         configMap: {name: gvisor-installer}
 ---
-# Pods opt in with `runtimeClassName: gvisor` (sandbox pods always do; the
+# Pods opt in with `runtimeClassName: gvisor`, or `gvisor-docker` for
+# sandboxes that run Docker (sandbox pods always use one of them; the
 # admission policy requires it). No scheduling constraint: a node added later
 # could get a sandbox pod before its installer finishes; that pod fails to
 # start ("no runtime for runsc") and is retried, never run without gVisor.
@@ -185,3 +211,9 @@ kind: RuntimeClass
 metadata:
   name: gvisor
 handler: runsc
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor-docker
+handler: runsc-docker

@@ -3,7 +3,9 @@
 # sandbox: everyday work still works (sudo, apt, pip, gcc, chown) while
 # what was taken away is refused (raw sockets, mknod), and even root's
 # capability bounding set is exactly the allowed list. Also checks the
-# admission policy rejects pods that don't follow the rules. Prints
+# admission policy rejects pods that don't follow the rules, including
+# Docker's capabilities outside the gvisor-docker runtime (D61) and the host
+# rules Pod Security baseline used to enforce. Prints
 # PASS/FAIL per check; exits non-zero on any failure.
 #
 # Usage (from the project root, with the API deployed):
@@ -112,23 +114,48 @@ spec:
       capabilities: {drop: [ALL], add: [CHOWN]}
       seccompProfile: {type: RuntimeDefault}
 EOF
-# probe <name> <sed expression | "+<line to append at pod level>">
+# probe <name> <perl expression | "+<line to append at pod level>">
 probe() {
 	if [[ "$2" == +* ]]; then
 		{ cat "$TMP/pod.yaml"; printf '  %s\n' "${2#+}"; } | kubectl apply --dry-run=server -f - 2>&1 | tail -1
 	else
-		sed "$2" "$TMP/pod.yaml" | kubectl apply --dry-run=server -f - 2>&1 | tail -1
+		perl -pe "$2" "$TMP/pod.yaml" | kubectl apply --dry-run=server -f - 2>&1 | tail -1
 	fi
 }
-out=$(probe "conforming" "s/^//")
-[[ "$out" == *"created (server dry run)"* ]] && pass "a conforming pod is admitted (dry run)" || fail "conforming pod" "$out"
-for c in "keeps default capabilities|s/drop: \[ALL\], //|drop ALL" \
+# Edits used below: run under gvisor-docker; add a line to the container's
+# securityContext.
+DOCKER='s/runtimeClassName: gvisor$/runtimeClassName: gvisor-docker/;'
+CSC() { printf 's/^(      capabilities: .*)$/$1\\n      %s/;' "$1"; }
+admitted() { # admitted <name> <expr>
+	local out; out=$(probe "$1" "$2")
+	[[ "$out" == *"created (server dry run)"* ]] && pass "$1 is admitted (dry run)" || fail "$1" "$out"
+}
+admitted "a conforming pod" 's/^//'
+admitted "a gvisor-docker pod with Docker's capabilities" \
+	"$DOCKER"'s/add: \[CHOWN\]/add: [CHOWN, MKNOD, NET_RAW, SETFCAP, SETPCAP, SYS_ADMIN, NET_ADMIN]/'
+for c in "runs without gVisor|\$_='' if /runtimeClassName/|must run under gVisor" \
+	"keeps default capabilities|s/drop: \[ALL\], //|drop ALL" \
 	"adds MKNOD|s/add: \[CHOWN\]/add: [CHOWN, MKNOD]/|may only add back" \
-	"lacks a seccomp profile|/seccompProfile/d|seccomp" \
-	"overrides seccomp with Localhost|s/      seccompProfile: {type: RuntimeDefault}/      seccompProfile: {type: Localhost, localhostProfile: x.json}/|seccomp" \
-	"lacks CPU and memory limits|/resources:/d|CPU and memory limits" \
+	"adds SYS_ADMIN without gvisor-docker|s/add: \[CHOWN\]/add: [CHOWN, SYS_ADMIN]/|may only add back" \
+	"adds SYS_PTRACE under gvisor-docker|${DOCKER}s/add: \[CHOWN\]/add: [CHOWN, SYS_ADMIN, SYS_PTRACE]/|may only add back" \
+	"adds ALL under gvisor-docker|${DOCKER}s/add: \[CHOWN\]/add: [ALL]/|may only add back" \
+	"is privileged under gvisor-docker|${DOCKER}$(CSC 'privileged: true')|must not be privileged" \
+	"lacks a seccomp profile|\$_='' if /seccompProfile/|seccomp" \
+	"overrides seccomp with Localhost|s/^      seccompProfile: \{type: RuntimeDefault\}/      seccompProfile: {type: Localhost, localhostProfile: x.json}/|seccomp" \
+	"lacks CPU and memory limits|\$_='' if /resources:/|CPU and memory limits" \
 	"mounts a service account token|+volumes: [{name: tok, projected: {sources: [{serviceAccountToken: {path: token}}]}}]|service account token" \
-	"uses another service account|+serviceAccountName: hardening-probe|default service account"; do
+	"uses another service account|+serviceAccountName: hardening-probe|default service account" \
+	"uses the host network|+hostNetwork: true|must not use the host's network, PID or IPC namespace" \
+	"uses the host PID namespace|+hostPID: true|must not use the host's network, PID or IPC namespace" \
+	"uses the host IPC namespace|+hostIPC: true|must not use the host's network, PID or IPC namespace" \
+	"mounts a hostPath volume|+volumes: [{name: h, hostPath: {path: /}}]|must not mount hostPath volumes" \
+	"uses a host port|s/^(    resources: )/    ports: [{containerPort: 22, hostPort: 2222}]\n\$1/|must not use host ports" \
+	"sets a sysctl|s/^  securityContext: \{seccompProfile: \{type: RuntimeDefault\}\}/  securityContext: {seccompProfile: {type: RuntimeDefault}, sysctls: [{name: net.ipv4.ping_group_range, value: \"0 0\"}]}/|must not set sysctls" \
+	"runs AppArmor-unconfined|$(CSC 'appArmorProfile: {type: Unconfined}')|must not run AppArmor-unconfined" \
+	"unmasks /proc (with hostUsers false, which the API requires)|s/^(  runtimeClassName: .*)\$/\$1\n  hostUsers: false/;$(CSC 'procMount: Unmasked')|must not unmask /proc" \
+	"sets SELinux options|$(CSC 'seLinuxOptions: {type: spc_t}')|must not set SELinux options" \
+	"sets pod-level SELinux options|s/^  securityContext: \{seccompProfile: \{type: RuntimeDefault\}\}/  securityContext: {seccompProfile: {type: RuntimeDefault}, seLinuxOptions: {type: spc_t}}/|must not set SELinux options" \
+	"has an AppArmor-unconfined annotation|s/^(  labels: .*)\$/\$1\n  annotations: {container.apparmor.security.beta.kubernetes.io\/c: unconfined}/|must not run AppArmor-unconfined"; do
 	IFS='|' read -r name expr want <<<"$c"
 	out=$(probe "$name" "$expr")
 	[[ "$out" == *"$want"* ]] && pass "pod that $name is denied" || fail "pod that $name" "$out"

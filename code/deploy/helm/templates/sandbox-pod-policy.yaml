@@ -6,6 +6,18 @@
 # i.e. untrusted code on the node's real kernel. Kubernetes evaluates these
 # rules itself (ValidatingAdmissionPolicy, built in since 1.30), for every
 # client, before a pod is stored.
+#
+# Since D61 this policy is the whole pod-level guard: Pod Security `baseline`
+# can't be enforced on the namespace any more (Docker sandboxes need
+# SYS_ADMIN, NET_ADMIN and NET_RAW, which baseline forbids and which only
+# gVisor contains), so the baseline rules that matter for these pods (no host
+# namespaces, hostPath, host ports, unsafe sysctls, unmasked /proc, AppArmor
+# or SELinux overrides, Windows host processes) are repeated here.
+# Ordering: Helm applies the Namespace before this policy, so the one upgrade
+# from a pre-D61 release has a moment (about a second) when the namespace is
+# already `privileged` and the old policy, without the host rules, is still
+# in force. Accepted: only the API's service account can create pods there,
+# and it would have to be compromised in that moment (review of #72).
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -22,9 +34,24 @@ spec:
   variables:
   - name: containers
     expression: "object.spec.containers + (has(object.spec.initContainers) ? object.spec.initContainers : [])"
+  - name: docker
+    expression: "has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor-docker'"
+  # What sshd and sudo need (D45).
+  - name: baseCaps
+    expression: >-
+      ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'SETUID', 'SETGID', 'KILL',
+       'NET_BIND_SERVICE', 'SYS_CHROOT', 'AUDIT_WRITE']
+  # Docker sandboxes (D61): plus the rest of Docker's default container set
+  # (dockerd can't give nested containers what it hasn't got: without these
+  # every `docker run` fails "unable to apply caps"), plus what dockerd itself
+  # needs for mounts and its bridge network. Measured: removing MKNOD, NET_RAW,
+  # SETFCAP and SETPCAP breaks `docker run`; removing NET_RAW also stops
+  # dockerd's iptables setup in gVisor.
+  - name: dockerCaps
+    expression: "['MKNOD', 'NET_RAW', 'SETFCAP', 'SETPCAP', 'SYS_ADMIN', 'NET_ADMIN']"
   validations:
-  - expression: "has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor'"
-    message: "sandbox pods must run under gVisor (runtimeClassName: gvisor)"
+  - expression: "has(object.spec.runtimeClassName) && object.spec.runtimeClassName in ['gvisor', 'gvisor-docker']"
+    message: "sandbox pods must run under gVisor (runtimeClassName: gvisor or gvisor-docker)"
   - expression: "has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false"
     message: "sandbox pods must not mount a service account token"
   # automountServiceAccountToken only covers the automatic mount: also no
@@ -46,9 +73,9 @@ spec:
   - expression: >-
       variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.capabilities) ||
         !has(c.securityContext.capabilities.add) ||
-        c.securityContext.capabilities.add.all(a, a in ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID',
-          'SETUID', 'SETGID', 'KILL', 'NET_BIND_SERVICE', 'SYS_CHROOT', 'AUDIT_WRITE']))
-    message: "sandbox containers may only add back the capabilities sshd and sudo need"
+        c.securityContext.capabilities.add.all(a, a in variables.baseCaps ||
+          (variables.docker && a in variables.dockerCaps)))
+    message: "sandbox containers may only add back the capabilities sshd and sudo need (and, under gvisor-docker, Docker's)"
   - expression: >-
       variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.privileged) ||
         c.securityContext.privileged == false)
@@ -63,6 +90,45 @@ spec:
   # rules above; admins reach sandboxes through the API (D39).
   - expression: "!has(object.spec.ephemeralContainers) || size(object.spec.ephemeralContainers) == 0"
     message: "ephemeral (debug) containers are not allowed in sandbox pods"
+  # Pod Security baseline's host rules (see the top of this file).
+  - expression: >-
+      !(has(object.spec.hostNetwork) && object.spec.hostNetwork) &&
+      !(has(object.spec.hostPID) && object.spec.hostPID) &&
+      !(has(object.spec.hostIPC) && object.spec.hostIPC)
+    message: "sandbox pods must not use the host's network, PID or IPC namespace"
+  - expression: "!has(object.spec.volumes) || object.spec.volumes.all(v, !has(v.hostPath))"
+    message: "sandbox pods must not mount hostPath volumes"
+  - expression: >-
+      variables.containers.all(c, !has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))
+    message: "sandbox containers must not use host ports"
+  - expression: >-
+      !has(object.spec.securityContext) || !has(object.spec.securityContext.sysctls) ||
+      size(object.spec.securityContext.sysctls) == 0
+    message: "sandbox pods must not set sysctls"
+  - expression: >-
+      variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.procMount) ||
+        c.securityContext.procMount == 'Default')
+    message: "sandbox containers must not unmask /proc"
+  - expression: >-
+      (!has(object.spec.securityContext) || !has(object.spec.securityContext.seLinuxOptions)) &&
+      variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.seLinuxOptions))
+    message: "sandbox pods must not set SELinux options"
+  - expression: >-
+      (!has(object.spec.securityContext) || !has(object.spec.securityContext.appArmorProfile) ||
+        object.spec.securityContext.appArmorProfile.type != 'Unconfined') &&
+      variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.appArmorProfile) ||
+        c.securityContext.appArmorProfile.type != 'Unconfined') &&
+      (!has(object.metadata.annotations) || object.metadata.annotations.all(k,
+        !k.startsWith('container.apparmor.security.beta.kubernetes.io/') ||
+        object.metadata.annotations[k] != 'unconfined'))
+    message: "sandbox pods must not run AppArmor-unconfined"
+  - expression: >-
+      !(has(object.spec.securityContext) && has(object.spec.securityContext.windowsOptions) &&
+        has(object.spec.securityContext.windowsOptions.hostProcess) &&
+        object.spec.securityContext.windowsOptions.hostProcess) &&
+      variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.windowsOptions) ||
+        !has(c.securityContext.windowsOptions.hostProcess) || !c.securityContext.windowsOptions.hostProcess)
+    message: "sandbox pods must not be Windows host processes"
   - expression: >-
       variables.containers.all(c, has(c.resources) && has(c.resources.limits) &&
         'cpu' in c.resources.limits && 'memory' in c.resources.limits)

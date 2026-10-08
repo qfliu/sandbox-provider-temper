@@ -5,9 +5,11 @@ metadata:
   name: {{ .Values.sandboxNamespace }}
   labels:
     {{- include "sp.labels" . | nindent 4 }}
-    # Pod Security Admission: reject privileged pods, host namespaces,
-    # hostPath, extra capabilities, etc. "restricted" isn't possible because
-    # sandbox sshd runs as root. sandbox-pod-policy.yaml adds the gVisor
-    # requirement and the rest (H3).
-    pod-security.kubernetes.io/enforce: baseline
-    pod-security.kubernetes.io/enforce-version: latest
+    # Pod Security Admission can't enforce `baseline` here any more: Docker
+    # sandboxes (runtimeClassName gvisor-docker) need SYS_ADMIN, NET_ADMIN and
+    # NET_RAW, which only gVisor contains (D61). sandbox-pod-policy.yaml
+    # enforces gVisor and least privilege per runtime, and repeats baseline's
+    # host rules (no host namespaces, hostPath, host ports, ...), for every
+    # client. `privileged` is set explicitly so a cluster-wide default can't
+    # silently reject Docker sandboxes.
+    pod-security.kubernetes.io/enforce: privileged
