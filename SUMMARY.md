@@ -7,9 +7,8 @@ key creates a sandbox, runs commands in it, moves files in and out, opens
 URLs to apps it starts there, and can SSH in. Each sandbox is an Ubuntu pod
 under **gVisor** (a user-space kernel, the default) or, per sandbox,
 **Kata Containers** (a lightweight VM with its own kernel, on x86 nodes with
-nested virtualization). It runs on a
-Mac (minikube) and on Azure AKS, where every test suite passes under both
-runtimes.
+nested virtualization). It runs on a Mac (minikube, gVisor only) and on
+Azure AKS, where every test suite passes under both runtimes.
 
 ## What was asked, and where it's answered
 
@@ -57,6 +56,13 @@ can switch to it later by configuration.
 ./down.sh    # stop the VM
 ```
 
+This runs everything except Kata. **Why not Kata on a Mac:** the
+Kubernetes node there is itself a VM, so Kata would have to start its VMs
+inside it (nested virtualization). Apple allows that only on M3 or newer
+chips with macOS 15+, and minikube doesn't turn it on; on the M1 this was
+built on, macOS reports it as unsupported (D74). Kata runs, and was tested,
+on the Azure cluster's x86 nodes.
+
 For Azure, see [README § On Azure](README.md#on-azure-aks).
 
 ## The documents
@@ -65,4 +71,4 @@ For Azure, see [README § On Azure](README.md#on-azure-aks).
 - [WRITEUP.md](WRITEUP.md): trade-offs, optional features, scaling, limits, next steps.
 - [TESTING.md](TESTING.md): the guide for testers.
 - [docs/REFERENCE.md](docs/REFERENCE.md): detail moved out of the above (all scripts, full API notes, every measurement, tester access, other clusters, the full scaling walkthrough).
-- [DESIGN.md](DESIGN.md): the full decision log (D1–D73), for reference.
+- [DESIGN.md](DESIGN.md): the full decision log (D1–D74), for reference.

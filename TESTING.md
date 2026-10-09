@@ -1,7 +1,14 @@
 # Testing the sandbox provider
 
-A guide for testers of a running deployment. You need three things from the
-person running it:
+A guide for testers of a running deployment. For what the project is, read
+[SUMMARY.md](SUMMARY.md) first (five minutes). No deployment from us? Run it
+on a Mac with `./up.sh` ([README quickstart](README.md#quickstart-macos)).
+The API, dashboard, Docker and port URLs work the same there; Kata needs the
+Azure cluster. Locally, `$SANDBOX` is `http://localhost:18080` after the
+README's port-forward, your key is the admin key, there's no allowlist, and
+SSH goes to `$(minikube ip)` on port 30022 (`-p 30022`).
+
+For a running deployment, you need three things from the person running it:
 
 - **The address**, like `https://sandbox-1a2b3c4d.westus2.cloudapp.azure.com`.
 - **Your API key** (`sk_…`). It's personal: don't share it, and don't paste
