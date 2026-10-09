@@ -2,8 +2,11 @@
 
 A guide for testers of a running deployment. For what the project is, read
 [SUMMARY.md](SUMMARY.md) first (five minutes). No deployment from us? Run it
-on a Mac with `./up.sh` ([README quickstart](README.md#quickstart-macos)):
-everything here works there except Kata, which needs the Azure cluster.
+on a Mac with `./up.sh` ([README quickstart](README.md#quickstart-macos)).
+The API, dashboard, Docker and port URLs work the same there; Kata needs the
+Azure cluster. Locally, `$SANDBOX` is `http://localhost:18080` after the
+README's port-forward, your key is the admin key, there's no allowlist, and
+SSH goes to `$(minikube ip)` on port 30022 (`-p 30022`).
 
 For a running deployment, you need three things from the person running it:
 

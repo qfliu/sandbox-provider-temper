@@ -35,8 +35,9 @@ end to end, run `source ./env.sh && ./code/scripts/test-agent-workflow.sh`.
 Every test script is listed in [REFERENCE](docs/REFERENCE.md#development-scripts).
 
 The local cluster runs gVisor only. Kata would have to start VMs inside the
-minikube VM (nested virtualization), which Apple Silicon allows only on M3
-or newer and minikube doesn't turn on; Kata runs on the Azure cluster below.
+minikube VM (nested virtualization), which Apple allows only on M3 or newer
+with macOS 15+ (not tried here), and minikube doesn't turn it on; Kata runs
+on the [Azure cluster](#on-azure-aks).
 
 ## Architecture
 
