@@ -1,5 +1,7 @@
 # Agent Sandbox Provider — Design Doc
 
+> **Reference, not required reading.** This is the full decision log (D1–D73), kept for anyone checking why something is the way it is. For an overview, read [SUMMARY.md](SUMMARY.md), then [README.md](README.md) and [WRITEUP.md](WRITEUP.md).
+>
 > Living document. Every decision is logged in **§3 Decision Log**; update it whenever a new decision is made.
 > Status legend: ✅ Decided · 🟡 Proposed (not yet confirmed) · ❓ Open
 
@@ -70,7 +72,8 @@ that, this section was written from memory; R1–R8 match it.
   `runsc checkpoint`/`restore`; Kubernetes has no path to restore that into a
   new pod, its own checkpoint API being for runc containers, so that is the
   work it would take.) Comparison with hosted providers:
-  WRITEUP.md, "Compared with hosted sandbox providers".
+  WRITEUP.md, "Compared with hosted providers" (the full table in
+  docs/REFERENCE.md).
 - 2026-10-08, his answers ("my last email was a bit muddled"): **Docker
   must work inside the sandboxes** (build, run, compose with ports, a recent
   version); "gVisor struggles there, so check that first"; Firecracker or
@@ -80,7 +83,7 @@ that, this section was written from memory; R1–R8 match it.
   "build what you think matters most for agents and tell us why"; the
   dashboard's "interact" means a baseline UI; ~10 concurrent sandboxes with
   p50/p95 startup times is enough scale, "argue the rest from the design".
-  Snapshot/restore isn't among them. Phase 8 (D60–D72) is the response.
+  Snapshot/restore isn't among them. Phase 8 (D60–D73) is the response.
 
 ### Must have
 - R1. Sandbox provider for agents to securely run code.
@@ -174,6 +177,7 @@ that, this section was written from memory; R1–R8 match it.
 | D70 | 2026-10-08 | Startup per runtime on AKS (the assigner's scale) | ✅ **2 × `Standard_D4s_v6`** (Intel, 4 vCPU / 16 GiB; the v6 nodes have `/dev/kvm`, checked; DSv5 quota was refused to this subscription, Dsv6 had 10). Default node size now `Standard_D4s_v6`. `load-test.sh 10`, 3 runs each, all 10 `running` every time; p50 / p95 create → `running`: gVisor `ubuntu-base` 3.0–3.3 / 3.7–4.3 s; gVisor `ubuntu-docker` 3.6–4.0 / 4.0–5.9 s; Kata `ubuntu-base` 5.5–5.7 / 6.1–6.8 s; Kata `ubuntu-docker` **26–27 / 28–29 s at first**, 16.6 s in each of 3 runs / 17.7–19.6 s after the fix below. Create request p50 0.3–0.5 s. Host memory per idle `ubuntu-base` sandbox (RSS of its host processes, on the node): gVisor ~90 MiB (Sentry + Gofer), Kata ~250 MiB (Cloud Hypervisor ~197 MiB + virtiofsd + shim); `kubectl top` shows Kata pods at ~1 Mi (inside the VM only), so it can't be used for this. **Found:** Docker's start inside a Kata VM is a few hundred `iptables` processes, and process start is slow under nested virtualization; with 10 VMs at once that step alone took ~15 s per VM. Kata path now `--firewall-backend=nftables --ip6tables=false` (whole dockerd start in an idle VM: 3.4 → 1.75 s). Docker 29 labels the nftables backend experimental; with it there is no `DOCKER-USER` chain (custom rules go through `nft`), and with IPv6 rules off a user network created with `--ipv6` gets no IPv6 NAT/isolation (pods are IPv4-only). `nftables` is installed explicitly: the backend runs `nft`. With nftables Docker doesn't turn on IP forwarding, so the entrypoint does (the first try without it never started Docker); and the Docker wait is now bounded by the clock (15 s, each check 2 s), since a dockerd crash-looping stretched the old count-based wait so SSH stayed down for minutes. Every Kata Docker sandbox reported `dockerd ready` (none ran out the wait); what remains is CPU: Docker starting in 10 VMs at once on 8 nested vCPUs (8–12 s each). Images to tag **0.3** (D46). **Review of #80:** stale comments (entrypoint, Dockerfile), `nftables` made an explicit package, wording of the numbers (one "alone" figure; 16.6 s is each run's p50; not "halved"), Dsv6 named where nested-virtualization sizes are listed. Docker suite 22/22 under both runtimes on AKS after the change; locally (gVisor) 22/22, smoke 31/31. | The assigner's scale question, answered with numbers per runtime. Kata + Docker in bulk on small nodes is the one slow case; bigger nodes or a warm pool are the remedy (WRITEUP). |
 | D71 | 2026-10-08 | `docker exec` under Kata | ✅ Found by an agent-style demo through the public API (create → upload a Redis-backed app → unit tests → `docker compose up --build` → its port URL from outside → delete; all worked): **`docker exec` into a container whose process isn't root failed under Kata** (`runc init: failed to open /proc/<pid>/ns/ipc: Permission denied`). Joining another user's process's namespaces needs `SYS_PTRACE`; the suites only ever exec'd into root containers (nginx). Checked on AKS with Redis: Kata without `SYS_PTRACE` fails, Kata with it works, gVisor works either way (its own kernel). **Docker sandboxes under Kata now also get `SYS_PTRACE`** (`KataDockerCapabilities`, the policy's `kataCaps`); like `SYS_RESOURCE` it reaches only the sandbox's VM. gVisor Docker sandboxes still can't have it (probe). `test-docker.sh` now execs into Redis (non-root); the Kata `--privileged` bounding set is 18 capabilities (`a92c35fb`); the hardening probe for a capability Kata may not add is `SYS_MODULE`. Docker 23/23 and hardening 45/45 under both runtimes on AKS; with the plain-gVisor `SYS_PTRACE` probe added in review, hardening 46/46 on AKS (39 on minikube, without the Kata and runc probes). | Redis, Postgres and many official images run as non-root; `docker exec` into them is everyday agent work. |
 | D72 | 2026-10-08 | Agent workflow suite | ✅ `code/scripts/test-agent-workflow.sh`: what an agent actually does with a Docker sandbox, through the API only, in sequence (the feature suites check features one at a time; a workflow like this found D71). Five workflows in one `ubuntu-docker` sandbox: (1) a Redis-backed counter app: upload, unit tests, `compose up --build`, three visits through the port URL, `docker exec` into Redis (non-root); (2) Postgres in compose: healthy, SQL through `docker exec psql`, running as non-root `postgres`; (3) a multi-stage Go build with `go test` in the build stage, served through the port URL; (4) a WebSocket echo server (`jmalloc/echo-server`) through the port URL: upgrade and echo, from a raw client; (5) Docker's storage (the tmpfs) filled: the write fails with "No space left on device", Docker and the sandbox keep working, `docker system prune` frees it. 17 checks: 17/17 on minikube (gVisor) and on AKS under gVisor and Kata. **Review of #83** found three checks that could pass wrongly or hang, all fixed: Postgres "healthy" also matched "unhealthy" (now exact, and `up --wait` must succeed); "cleanup frees the space" couldn't fail (the fill container was `--rm`, and any `df` row matches `%`: the data now stays, usage must be ≥90% before and <50% after the prune, one more check); the WebSocket client could spin on a closed connection (EOF-safe now, with extended lengths and control frames handled). Also exact matches for single values, a readiness retry before counting visits, uploads that fail loudly, `down -v`, exact container-name filters, image names in variables (Go now `1.27.1-alpine`, the repo's version), a note on Docker Hub's rate limit. No new platform bugs; the first local run's 6 failures were all in the new script (busybox `ps`, a timeout over the API's 600 s maximum, pull progress hiding results). | Realistic sequences catch the gaps between features. |
+| D73 | 2026-10-08 | Shorter reader-facing docs | ✅ The four documents had grown to about 8,300 words before DESIGN.md (README 3,548, WRITEUP 4,716). Now: **SUMMARY.md** (~600 words) is the entry point: each ask from the brief and follow-ups, where it is answered, the headline numbers, the runtime decision. README (~1,200) keeps quickstart, architecture, API, one measurement table and the Azure commands; WRITEUP (~1,600) keeps the reasoning, with the runtime table, the other choices one line each, scaling as bullets plus what breaks first. Everything cut moved to **docs/REFERENCE.md** (all scripts, full API notes, every measurement, Azure detail and tester access, other clusters, the full scaling walkthrough, the full comparison with hosted providers) or was already in this log. TESTING.md is unchanged. A reader's path is SUMMARY → README → WRITEUP, about 3,400 words. |
 
 ---
 
@@ -194,7 +198,7 @@ _None open. New questions get added here as they come up._
 6. **HTTPS front** (D57, optional, on AKS): Caddy with a Let's Encrypt certificate and an IP allowlist in front of the API and dashboard.
 
 ### API
-README.md § API is the authoritative reference: create (`image`, `ssh_public_key`, `ttl_seconds`, `runtime`), list, get, delete, exec (`command`, `timeout_seconds`, `workdir`), file upload and download, `/ports/{port}/{path}` (port URLs), `GET /v1/me`. All requests use `Authorization: Bearer <api_key>`.
+README.md § API, with the details in docs/REFERENCE.md § API details, is the authoritative reference: create (`image`, `ssh_public_key`, `ttl_seconds`, `runtime`), list, get, delete, exec (`command`, `timeout_seconds`, `workdir`), file upload and download, `/ports/{port}/{path}` (port URLs), `GET /v1/me`. All requests use `Authorization: Bearer <api_key>`.
 
 ### Isolation (D4, D60–D65)
 - gVisor (`gvisor`, `gvisor-docker`) or Kata (`kata`), per sandbox.
@@ -207,8 +211,10 @@ README.md § API is the authoritative reference: create (`image`, `ssh_public_ke
 
 ```
 sandbox-provider/
-├── README.md                 quickstart, API, measurements, deploying
+├── SUMMARY.md                start here: the asks, where each is answered, headline numbers (D73)
+├── README.md                 quickstart, architecture, API, measurements, Azure
 ├── WRITEUP.md                trade-offs, scaling, next steps
+├── docs/REFERENCE.md         detail moved out of README and WRITEUP (D73)
 ├── TESTING.md                guide for testers
 ├── DESIGN.md                 design doc + decision log (this file)
 ├── up.sh demo.sh down.sh     local cluster: build and run, walkthrough, stop
@@ -340,6 +346,7 @@ Update checkboxes as work progresses. **Workflow:** one branch and one PR **per 
 - [x] 8.8 WRITEUP "Scaling to thousands" (the assigner: "argue the rest from the design"): what bounds each part (API replicas, gateway connections, Postgres and its row locks, the Kubernetes API and pod churn, scheduling, image pulls, per-node density per runtime) and how each scales out (cluster autoscaler, more node pools, warm pools, managed Postgres, several clusters behind one API); grounded in measured numbers (D67); the client rate limit it identified is fixed here (D68)
 - [x] 8.9 Optional: a "run a command" box on the dashboard's sandbox page (exec through the same API; output shown when the command ends). Done (D69)
 - [x] 8.10 Agent workflow suite; `docker exec` into non-root containers under Kata (D71, D72)
+- [x] 8.11 Shorter docs: SUMMARY.md, docs/REFERENCE.md, condensed README and WRITEUP (D73)
 
 ### Optional (outside the time budget)
 - [ ] Tailscale sidecar for the gateway/API (D16 option 1)
