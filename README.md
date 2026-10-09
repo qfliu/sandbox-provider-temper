@@ -11,7 +11,7 @@ sandbox (build, run, compose with published ports).
 **New here? Start with [SUMMARY.md](SUMMARY.md)** (five minutes). Then
 [WRITEUP.md](WRITEUP.md) for the trade-offs, [TESTING.md](TESTING.md) to try
 it, [docs/REFERENCE.md](docs/REFERENCE.md) for detail, and
-[DESIGN.md](DESIGN.md) for the full decision log (D1–D73).
+[DESIGN.md](DESIGN.md) for the full decision log (D1–D74).
 
 ## Quickstart (macOS)
 
@@ -33,6 +33,10 @@ The admin key is saved to `.devenv/state/admin-api-key` and never printed
 and open <http://localhost:18080/ui>. To see Docker, compose and port URLs
 end to end, run `source ./env.sh && ./code/scripts/test-agent-workflow.sh`.
 Every test script is listed in [REFERENCE](docs/REFERENCE.md#development-scripts).
+
+The local cluster runs gVisor only. Kata would have to start VMs inside the
+minikube VM (nested virtualization), which Apple Silicon allows only on M3
+or newer and minikube doesn't turn on; Kata runs on the Azure cluster below.
 
 ## Architecture
 

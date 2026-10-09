@@ -65,4 +65,4 @@ For Azure, see [README § On Azure](README.md#on-azure-aks).
 - [WRITEUP.md](WRITEUP.md): trade-offs, optional features, scaling, limits, next steps.
 - [TESTING.md](TESTING.md): the guide for testers.
 - [docs/REFERENCE.md](docs/REFERENCE.md): detail moved out of the above (all scripts, full API notes, every measurement, tester access, other clusters, the full scaling walkthrough).
-- [DESIGN.md](DESIGN.md): the full decision log (D1–D73), for reference.
+- [DESIGN.md](DESIGN.md): the full decision log (D1–D74), for reference.

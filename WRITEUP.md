@@ -140,6 +140,11 @@ cluster's capacity, creates stay `pending` with no reason shown yet (D48).
 ## Known limits
 
 - No persistent disks or pause/resume: the workspace is lost with the pod.
+- Kata doesn't run on a Mac: the Kubernetes node there is a VM, and Kata's
+  VMs inside it need nested virtualization (M3 or newer only, and minikube
+  doesn't turn it on), so the local cluster is gVisor only (D74). Apple's
+  `container` tool runs a VM per container on any Apple Silicon Mac, but
+  outside Kubernetes, so the platform can't use it.
 - One SSH key per sandbox; SSH certificates would add expiry and revocation,
   and admin SSH (admins reach others' sandboxes through the API only, D39).
 - The dashboard cookie holds the API key itself (HttpOnly, 12 h; D40).
