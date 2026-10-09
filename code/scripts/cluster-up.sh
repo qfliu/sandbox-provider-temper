@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Brings up the local cluster from scratch (or restarts a stopped one):
-#   minikube VM (vfkit) + Calico + gVisor + both sandbox images.
+#   minikube VM (vfkit) + Calico + gVisor + the three sandbox images.
 # The platform itself is installed by deploy.sh (Helm chart). Idempotent;
 # safe to re-run.
 #

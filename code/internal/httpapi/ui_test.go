@@ -132,6 +132,20 @@ func TestUILoginRejectsBadKeys(t *testing.T) {
 	}
 }
 
+// Dashboard bodies are capped: a huge form isn't parsed (or buffered), even
+// on /ui/login, which needs no session.
+func TestUIBodyCapped(t *testing.T) {
+	h := uiHandler()
+	big := url.Values{"api_key": {goodKey}, "pad": {strings.Repeat("a", maxUIBody)}}
+	if rec := uiDo(h, http.MethodPost, "/ui/login", big, nil); rec.Code == http.StatusSeeOther {
+		t.Fatalf("login with a %d-byte body succeeded; want it refused", len(big.Encode()))
+	}
+	small := url.Values{"api_key": {goodKey}, "pad": {strings.Repeat("a", 1000)}}
+	if rec := uiDo(h, http.MethodPost, "/ui/login", small, nil); rec.Code != http.StatusSeeOther {
+		t.Fatalf("login with a small body = %d, want 303", rec.Code)
+	}
+}
+
 // A cookie whose key was revoked (or never existed) ends the session: the
 // browser is sent to the login page and the cookie is cleared.
 func TestUIRevokedKeyEndsSession(t *testing.T) {

@@ -49,7 +49,8 @@ func (s *Service) Exec(ctx context.Context, user store.User, id string, req Exec
 	timeout := defaultExecTimeout
 	if req.TimeoutSeconds != 0 {
 		timeout = time.Duration(req.TimeoutSeconds) * time.Second
-		if timeout < time.Second || timeout > maxExecTimeout {
+		// Whole seconds first: a huge value would overflow Duration.
+		if req.TimeoutSeconds < 1 || req.TimeoutSeconds > int(maxExecTimeout/time.Second) {
 			return sshx.ExecResult{}, &ValidationError{fmt.Sprintf(
 				"timeout_seconds must be between 1 and %d", int(maxExecTimeout/time.Second))}
 		}

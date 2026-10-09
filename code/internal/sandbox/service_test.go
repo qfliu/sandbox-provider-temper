@@ -133,13 +133,15 @@ func TestCreate(t *testing.T) {
 func TestCreateValidation(t *testing.T) {
 	f := newFixture(t)
 	cases := map[string]CreateRequest{
-		"unknown image":    {Image: "alpine", SSHPublicKey: validKey},
-		"missing key":      {Image: "ubuntu-dev"},
-		"not a key":        {Image: "ubuntu-dev", SSHPublicKey: "hello"},
-		"two keys":         {Image: "ubuntu-dev", SSHPublicKey: validKey + "\n" + validKey},
-		"ttl too short":    {Image: "ubuntu-dev", SSHPublicKey: validKey, TTLSeconds: 10},
-		"ttl too long":     {Image: "ubuntu-dev", SSHPublicKey: validKey, TTLSeconds: 25 * 3600},
-		"negative ttl":     {Image: "ubuntu-dev", SSHPublicKey: validKey, TTLSeconds: -5},
+		"unknown image": {Image: "alpine", SSHPublicKey: validKey},
+		"missing key":   {Image: "ubuntu-dev"},
+		"not a key":     {Image: "ubuntu-dev", SSHPublicKey: "hello"},
+		"two keys":      {Image: "ubuntu-dev", SSHPublicKey: validKey + "\n" + validKey},
+		"ttl too short": {Image: "ubuntu-dev", SSHPublicKey: validKey, TTLSeconds: 10},
+		"ttl too long":  {Image: "ubuntu-dev", SSHPublicKey: validKey, TTLSeconds: 25 * 3600},
+		"negative ttl":  {Image: "ubuntu-dev", SSHPublicKey: validKey, TTLSeconds: -5},
+		// 18446744134 s overflows Duration and wraps to about 60.3 s.
+		"ttl overflowing":  {Image: "ubuntu-dev", SSHPublicKey: validKey, TTLSeconds: 18446744134},
 		"key with options": {Image: "ubuntu-dev", SSHPublicKey: `from="10.0.0.1" ` + validKey},
 		"certificate":      {Image: "ubuntu-dev", SSHPublicKey: testCertificate(t)},
 	}
@@ -151,6 +153,19 @@ func TestCreateValidation(t *testing.T) {
 	}
 	if len(f.pods.created) != 0 {
 		t.Fatalf("invalid requests created pods: %v", f.pods.created)
+	}
+}
+
+func TestExecTimeoutValidation(t *testing.T) {
+	f := newFixture(t)
+	// 18446744075 s overflows Duration and wraps to about 1.3 s, inside the
+	// allowed 1–600 s.
+	for _, secs := range []int{-1, 601, 18446744075} {
+		var verr *ValidationError
+		_, err := f.svc.Exec(context.Background(), f.alice, "sb-nope", ExecRequest{Command: "true", TimeoutSeconds: secs})
+		if !errors.As(err, &verr) {
+			t.Errorf("timeout_seconds %d: err = %v, want ValidationError", secs, err)
+		}
 	}
 }
 

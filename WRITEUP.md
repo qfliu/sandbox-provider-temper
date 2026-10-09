@@ -15,7 +15,8 @@ add. IDs in parentheses (D4, …) point into the decision log,
   restarts and statuses stay accurate. A sandbox's files don't survive the
   loss of its pod (D8).
 - **Startup matters**: the target is about a second for one sandbox on a
-  warm node (met on a laptop; ~3 s with gVisor and ~4 s with Kata on AKS),
+  warm node (met on a laptop; on AKS one `ubuntu-docker` sandbox takes ~3 s
+  with gVisor and ~4 s with Kata),
   with no image download on the critical path.
 
 ## Compared with hosted providers
@@ -54,7 +55,7 @@ changes in D61–D62), then added Kata beside it.
 
 - **Why both:** gVisor is fast, free per sandbox and runs everywhere, so
   it's the default. Kata is the stronger boundary and runs nearly anything
-  Linux runs, for about 1 s more to start alone (2–2.5 s more at 10 at
+  Linux runs, for about 1 s more to start alone (about 2.5 s more at 10 at
   once, much more for Docker sandboxes started in bulk on small nodes) and
   ~160 MiB more memory. The caller picks per sandbox.
 - **Why not Firecracker:** its strengths (density, pause/resume) aren't v1
@@ -161,8 +162,9 @@ cluster's capacity, creates stay `pending` with no reason shown yet (D48).
 
 ## What running it on Azure found
 
-`./cloud-up.sh` builds everything in about 15 minutes and every suite passes
-there under both runtimes. The cloud found what the laptop couldn't: AKS's
+`./cloud-up.sh` builds everything in about 15 minutes, and the demo and every
+end-to-end suite (except the minikube-only pre-pull checks) pass there under
+both runtimes. The cloud found what the laptop couldn't: AKS's
 hybrid containerd config silently ignored gVisor (D56); sandboxes could
 reach the public Kubernetes API address until the chart blocked it (D56);
 small nodes fit 7 sandboxes, not 10; and Docker under Kata needed its own
@@ -184,7 +186,7 @@ cgroup, capability and nftables setup (D64, D70, D71).
 A step per pull request, each logged in DESIGN.md and checked by a separate
 reviewer agent, with attack-style tests for every security boundary. The
 end-to-end suites (API, gateway, hardening, network policy, Docker, port
-URLs, load, pre-pull and five realistic agent workflows) run under both
+URLs, load and five realistic agent workflows) run under both
 runtimes on AKS; running an agent's workflow end to end found a bug the
 feature suites missed (D71). CI runs the Go tests with Postgres, Helm,
 Terraform and script checks (D59).

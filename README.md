@@ -11,7 +11,7 @@ sandbox (build, run, compose with published ports).
 **New here? Start with [SUMMARY.md](SUMMARY.md)** (five minutes). Then
 [WRITEUP.md](WRITEUP.md) for the trade-offs, [TESTING.md](TESTING.md) to try
 it, [docs/REFERENCE.md](docs/REFERENCE.md) for detail, and
-[DESIGN.md](DESIGN.md) for the full decision log (D1–D74).
+[DESIGN.md](DESIGN.md) for the full decision log (D1–D75).
 
 ## Quickstart (macOS)
 
@@ -32,7 +32,7 @@ The admin key is saved to `.devenv/state/admin-api-key` and never printed
 `source ./env.sh && kubectl -n sandbox-system port-forward svc/sandbox-api 18080:80`
 and open <http://localhost:18080/ui>. To see Docker, compose and port URLs
 end to end, run `source ./env.sh && ./code/scripts/test-agent-workflow.sh`.
-Every test script is listed in [REFERENCE](docs/REFERENCE.md#development-scripts).
+The main scripts are listed in [REFERENCE](docs/REFERENCE.md#development-scripts).
 
 The local cluster runs gVisor only. Kata would have to start VMs inside the
 minikube VM (nested virtualization), which Apple allows only on M3 or newer
@@ -87,7 +87,7 @@ Every call needs `Authorization: Bearer <api key>`. Errors are
 |---|---|
 | `GET /v1/me` | the key's user: `id`, `name`, `is_admin`, `max_sandboxes` |
 | `POST /v1/sandboxes` | create: `{"image": "ubuntu-dev", "ssh_public_key": "ssh-ed25519 …", "ttl_seconds": 3600, "runtime": "gvisor"}` → **201** with the sandbox, `status: "pending"` |
-| `GET /v1/sandboxes[?include_ended=true]` | your sandboxes (`{"sandboxes": [...]}`); live ones unless `include_ended` |
+| `GET /v1/sandboxes[?include_ended=true]` | your sandboxes (`{"sandboxes": [...]}`), newest first; live ones unless `include_ended` (then the newest 1,000) |
 | `GET /v1/sandboxes/{id}` | one sandbox; poll until `status` is `running` |
 | `POST /v1/sandboxes/{id}/exec` | run a command: `{"command": "pytest -q", "timeout_seconds": 60, "workdir": "proj"}` → `stdout`, `stderr`, `exit_code`, `timed_out`, `truncated`, `duration_ms` |
 | `PUT /v1/sandboxes/{id}/files?path=p` | upload the request body to `p` (relative to `/home/user`), up to 100 MiB |

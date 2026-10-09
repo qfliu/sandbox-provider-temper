@@ -218,6 +218,7 @@ func newUI(log *slog.Logger, auth Authenticator, sandboxes SandboxService, keys 
 //   - the cookie is HttpOnly (scripts can't read it), SameSite=Strict (other
 //     sites' pages don't send it) and scoped to /ui;
 //   - http.CrossOriginProtection rejects cross-site POSTs (CSRF);
+//   - request bodies are capped at 64 KiB (maxUIBody);
 //   - every response forbids framing (clickjacking) and caching, and the
 //     CSP only allows our own scripts and styles.
 func (u *ui) routes() http.Handler {
@@ -245,7 +246,20 @@ func (u *ui) routes() http.Handler {
 	if u.admin != nil {
 		mux.Handle("GET /ui/admin", u.requireSession(requireAdmin(http.HandlerFunc(u.adminView))))
 	}
-	return securityHeaders(http.NewCrossOriginProtection().Handler(mux))
+	return securityHeaders(http.NewCrossOriginProtection().Handler(limitUIBody(mux)))
+}
+
+// maxUIBody caps every dashboard request body. The largest form is the
+// "Run a command" box (4096 characters) or an SSH public key; without a cap
+// Go's form parser buffers up to 10 MB per request, and /ui/login needs no
+// session.
+const maxUIBody = 64 << 10
+
+func limitUIBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxUIBody)
+		next.ServeHTTP(w, r)
+	})
 }
 
 // noListing serves files but not directory listings.

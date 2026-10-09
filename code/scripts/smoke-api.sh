@@ -52,7 +52,7 @@ trap cleanup EXIT
 # --- setup -------------------------------------------------------------------
 die() { printf "setup failed: %s\n" "$1" >&2; exit 1; }
 
-# Fail fast (instead of minute-long kubectl waits and 27 confusing failures)
+# Fail fast (instead of minute-long kubectl waits and dozens of confusing failures)
 # if the API isn't deployed and ready.
 READY=$(kubectl -n sandbox-system get deploy sandbox-api -o jsonpath='{.status.readyReplicas}' 2>&1) ||
 	die "can't read deployment sandbox-api: $READY (run deploy.sh)"

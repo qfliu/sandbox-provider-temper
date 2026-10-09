@@ -5,7 +5,7 @@
 # Each step prints the request it makes. Run ./up.sh first. Everything it
 # creates is deleted at the end (also on Ctrl-C).
 #
-# Usage: ./demo.sh [ubuntu-dev|ubuntu-base]
+# Usage: ./demo.sh [ubuntu-dev|ubuntu-base|ubuntu-docker]
 set -uo pipefail
 cd "$(dirname "$0")"
 IMAGE="${1:-ubuntu-dev}"

@@ -8,7 +8,7 @@ URLs to apps it starts there, and can SSH in. Each sandbox is an Ubuntu pod
 under **gVisor** (a user-space kernel, the default) or, per sandbox,
 **Kata Containers** (a lightweight VM with its own kernel, on x86 nodes with
 nested virtualization). It runs on a Mac (minikube, gVisor only) and on
-Azure AKS, where every test suite passes under both runtimes.
+Azure AKS, where the demo and every end-to-end suite pass under both runtimes.
 
 ## What was asked, and where it's answered
 
@@ -43,7 +43,7 @@ nodes or a warm pool fix it.
 gVisor is the default: it starts fastest, costs nothing extra per sandbox
 and runs on any node, including a laptop. Kata is the stronger boundary (an
 escape must break out of a VM) and runs nearly anything Linux runs, for
-about 1 s more to start alone (2–2.5 s more at 10 at once) and ~160 MiB more memory per sandbox; the caller
+about 1 s more to start alone (about 2.5 s more at 10 at once) and ~160 MiB more memory per sandbox; the caller
 picks it with `"runtime": "kata"`. Firecracker would mean building our own
 VM orchestration for gains (density, pause/resume) v1 doesn't need, and Kata
 can switch to it later by configuration.
@@ -70,5 +70,5 @@ For Azure, see [README § On Azure](README.md#on-azure-aks).
 - [README.md](README.md): quickstart, architecture, API, measurements, Azure.
 - [WRITEUP.md](WRITEUP.md): trade-offs, optional features, scaling, limits, next steps.
 - [TESTING.md](TESTING.md): the guide for testers.
-- [docs/REFERENCE.md](docs/REFERENCE.md): detail moved out of the above (all scripts, full API notes, every measurement, tester access, other clusters, the full scaling walkthrough).
-- [DESIGN.md](DESIGN.md): the full decision log (D1–D74), for reference.
+- [docs/REFERENCE.md](docs/REFERENCE.md): detail moved out of the above (the main scripts, full API notes, every measurement, tester access, other clusters, the full scaling walkthrough).
+- [DESIGN.md](DESIGN.md): the full decision log (D1–D75), for reference.
