@@ -150,3 +150,14 @@ func TestCreateRuntimeField(t *testing.T) {
 		t.Fatalf("create = %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// A client that hangs up (cancelled request, upload cut short) gets a quiet
+// 499, not a 500 logged as a server error.
+func TestServiceErrorClientGone(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, err := range []error{context.Canceled, fmt.Errorf("upload: %w", sshx.ErrClientGone)} {
+		if status, _ := serviceError(log, err); status != 499 {
+			t.Errorf("%v: status %d, want 499", err, status)
+		}
+	}
+}

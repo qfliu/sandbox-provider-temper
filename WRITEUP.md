@@ -162,9 +162,9 @@ cluster's capacity, creates stay `pending` with no reason shown yet (D48).
 
 ## What running it on Azure found
 
-`./cloud-up.sh` builds everything in about 15 minutes, and the demo and every
-end-to-end suite (except the minikube-only pre-pull checks) pass there under
-both runtimes. The cloud found what the laptop couldn't: AKS's
+`./cloud-up.sh` builds everything in about 15 minutes, and every end-to-end
+suite passes there under both runtimes (the demo runs under gVisor).
+The cloud found what the laptop couldn't: AKS's
 hybrid containerd config silently ignored gVisor (D56); sandboxes could
 reach the public Kubernetes API address until the chart blocked it (D56);
 small nodes fit 7 sandboxes, not 10; and Docker under Kata needed its own

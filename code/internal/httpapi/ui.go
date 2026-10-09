@@ -258,6 +258,13 @@ const maxUIBody = 64 << 10
 func limitUIBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxUIBody)
+		// Parse here so an oversized form gets a clear 413, not a handler
+		// that sees empty fields.
+		var tooBig *http.MaxBytesError
+		if err := r.ParseForm(); errors.As(err, &tooBig) {
+			http.Error(w, "Form too large.", http.StatusRequestEntityTooLarge)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }

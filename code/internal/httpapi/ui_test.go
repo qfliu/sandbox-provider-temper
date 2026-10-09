@@ -137,8 +137,8 @@ func TestUILoginRejectsBadKeys(t *testing.T) {
 func TestUIBodyCapped(t *testing.T) {
 	h := uiHandler()
 	big := url.Values{"api_key": {goodKey}, "pad": {strings.Repeat("a", maxUIBody)}}
-	if rec := uiDo(h, http.MethodPost, "/ui/login", big, nil); rec.Code == http.StatusSeeOther {
-		t.Fatalf("login with a %d-byte body succeeded; want it refused", len(big.Encode()))
+	if rec := uiDo(h, http.MethodPost, "/ui/login", big, nil); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("login with a %d-byte body = %d, want 413", len(big.Encode()), rec.Code)
 	}
 	small := url.Values{"api_key": {goodKey}, "pad": {strings.Repeat("a", 1000)}}
 	if rec := uiDo(h, http.MethodPost, "/ui/login", small, nil); rec.Code != http.StatusSeeOther {

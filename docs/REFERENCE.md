@@ -64,7 +64,7 @@ under Kata (on a cluster with Kata, i.e. AKS); `load-test.sh` too.
 - **Status**:
   - Live: `pending` → `running` (→ `deleting`).
   - Ended: `deleted`, `failed` (couldn't start) or `lost` (the pod disappeared).
-  - `status_reason` says why. Ended sandboxes stay listed for history.
+  - `status_reason` says why. Ended sandboxes stay listed for history (`include_ended` returns the newest 1,000).
 - **Status codes**:
   - 400: invalid input.
   - 401: missing, unknown or revoked API key.
