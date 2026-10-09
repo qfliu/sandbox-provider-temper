@@ -8,7 +8,7 @@ URLs to apps it starts there, and can SSH in. Each sandbox is an Ubuntu pod
 under **gVisor** (a user-space kernel, the default) or, per sandbox,
 **Kata Containers** (a lightweight VM with its own kernel, on x86 nodes with
 nested virtualization). It runs on a
-Mac (minikube) and on Azure AKS, where every test suite passes under both
+Mac (minikube, gVisor only) and on Azure AKS, where every test suite passes under both
 runtimes.
 
 ## What was asked, and where it's answered
