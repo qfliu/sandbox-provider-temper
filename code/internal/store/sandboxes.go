@@ -176,12 +176,17 @@ func (s *Store) GetSandbox(ctx context.Context, id string) (Sandbox, error) {
 		"SELECT "+sandboxColumns+" FROM sandboxes WHERE id = $1", id))
 }
 
+// maxListed caps ListSandboxes. Live sandboxes are bounded by the quota;
+// this bounds the history.
+const maxListed = 1000
+
 // ListSandboxes returns a user's sandboxes, newest first. Ended ones
-// (deleted, failed, lost) are only included when includeEnded is set.
+// (deleted, failed, lost) are only included when includeEnded is set, and
+// the list stops at the newest maxListed (history is kept forever).
 func (s *Store) ListSandboxes(ctx context.Context, userID string, includeEnded bool) ([]Sandbox, error) {
 	rows, err := s.pool.Query(ctx, "SELECT "+sandboxColumns+` FROM sandboxes
 		WHERE user_id = $1 AND ($2 OR status IN ('pending', 'running', 'deleting'))
-		ORDER BY created_at DESC`, userID, includeEnded)
+		ORDER BY created_at DESC LIMIT $3`, userID, includeEnded, maxListed)
 	if err != nil {
 		return nil, err
 	}

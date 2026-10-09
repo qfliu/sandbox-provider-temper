@@ -1,7 +1,8 @@
 Sandbox provider installed in namespace {{ .Release.Namespace }} (sandboxes run in {{ .Values.sandboxNamespace }}).
 
-Requires gVisor and the `gvisor` RuntimeClass on every node; without it
-sandbox pods are rejected by the admission policy.
+Requires gVisor on every node with both handlers (RuntimeClasses `gvisor`
+and `gvisor-docker`), and Kata (`kata`) where sandboxRuntimes includes it;
+without them sandbox pods are rejected by the admission policy.
 
 1. First admin user and API key (printed once):
      kubectl -n {{ .Release.Namespace }} exec deploy/sandbox-api -- /api create-user --name admin --admin
@@ -10,7 +11,9 @@ sandbox pods are rejected by the admission policy.
      kubectl -n {{ .Release.Namespace }} port-forward svc/sandbox-api 18080:80
      open http://localhost:18080/ui
 
-3. SSH: ssh <sandbox-id>@{{ default "<gateway address>" .Values.api.sshGatewayAddr }}
+{{ $gw := default "<gateway address>" .Values.api.sshGatewayAddr -}}
+{{ $parts := splitList ":" $gw -}}
+3. SSH: {{ if eq (len $parts) 2 }}ssh -p {{ index $parts 1 }} <sandbox-id>@{{ index $parts 0 }}{{ else }}ssh <sandbox-id>@{{ $gw }}{{ end }}
    The gateway's host key, for known_hosts:
      kubectl -n {{ .Release.Namespace }} exec deploy/sandbox-gateway -- /api public-key /keys/host/ssh_host_ed25519_key
 

@@ -222,8 +222,9 @@ func (s *Service) ttl(seconds int) (time.Duration, error) {
 	if seconds == 0 {
 		return s.cfg.DefaultTTL, nil
 	}
+	// Compare whole seconds first: a huge value would overflow Duration.
 	ttl := time.Duration(seconds) * time.Second
-	if ttl < minTTL || ttl > s.cfg.MaxTTL {
+	if seconds < int(minTTL/time.Second) || seconds > int(s.cfg.MaxTTL/time.Second) {
 		return 0, &ValidationError{fmt.Sprintf("ttl_seconds must be between %d and %d",
 			int(minTTL/time.Second), int(s.cfg.MaxTTL/time.Second))}
 	}

@@ -59,7 +59,7 @@ func Upload(client *ssh.Client, p string, r io.Reader) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("open %s: %w", tmp, err)
 	}
-	n, err := io.Copy(f, r)
+	n, err := io.Copy(f, &cutShort{r: r})
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
@@ -74,6 +74,31 @@ func Upload(client *ssh.Client, p string, r io.Reader) (int64, error) {
 		return n, err
 	}
 	return n, nil
+}
+
+// cutShort turns io.ErrUnexpectedEOF into ErrClientGone. net/http returns
+// it when a client disconnects mid-body, and sftp's ReadFrom treats it as a
+// clean end, which would rename a partial file over the target. The error
+// is sticky: a later Read can't turn it back into a clean io.EOF.
+type cutShort struct {
+	r   io.Reader
+	err error
+}
+
+// ErrClientGone means an upload's client disconnected before sending the
+// whole body.
+var ErrClientGone = errors.New("upload ended early: the client disconnected")
+
+func (c *cutShort) Read(p []byte) (int, error) {
+	if c.err != nil {
+		return 0, c.err
+	}
+	n, err := c.r.Read(p)
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		c.err = ErrClientGone
+		err = c.err
+	}
+	return n, err
 }
 
 // Download streams the file at path into w, calling setSize with its length

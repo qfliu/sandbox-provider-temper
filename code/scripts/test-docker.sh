@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Docker inside a sandbox (step 8.2, D62): creates an ubuntu-docker sandbox
 # through the API and, as the sandbox's `user` (no sudo), checks what the
-# assigner asked for: a recent Docker, `docker build`, `docker run`, published
+# brief's follow-up asked for: a recent Docker, `docker build`, `docker run`, published
 # ports (-p), and `docker compose` with service names and `ports:`. Then that
 # the sandbox's isolation still holds for nested containers (no cloud
 # metadata, no cluster; a nested --privileged container gets no more than

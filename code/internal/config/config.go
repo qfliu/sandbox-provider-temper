@@ -36,7 +36,7 @@ type Sandbox struct {
 	// Namespace is where sandbox pods run, apart from platform services (D26).
 	Namespace string
 	// ImageRepo + image name + ":" + ImageTag gives the container image,
-	// e.g. sandbox/ubuntu-dev:0.1 (D2, D23).
+	// e.g. sandbox/ubuntu-dev:0.3 (D2, D23).
 	ImageRepo string
 	ImageTag  string
 	// DefaultTTL applies when a request doesn't set ttl_seconds; MaxTTL caps

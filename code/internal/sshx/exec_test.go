@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -246,6 +248,12 @@ func TestUploadIsAtomic(t *testing.T) {
 	}
 	if _, err := Upload(c, "notes.txt", &failingReader{}); err == nil {
 		t.Fatal("failed upload reported success")
+	}
+	// A client that disconnects mid-body: net/http returns io.ErrUnexpectedEOF,
+	// which sftp's ReadFrom would otherwise treat as a clean end.
+	cut := io.MultiReader(strings.NewReader("PARTIAL"), iotest.ErrReader(io.ErrUnexpectedEOF))
+	if _, err := Upload(c, "notes.txt", cut); err == nil {
+		t.Fatal("upload cut short reported success")
 	}
 	var out bytes.Buffer
 	if err := Download(c, "notes.txt", func(int64) {}, &out); err != nil || out.String() != "important v1" {

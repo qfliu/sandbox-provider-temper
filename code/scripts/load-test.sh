@@ -7,7 +7,7 @@
 # .devenv/state/tmp/load-<N>-<time>.csv.
 #
 # Usage (from the project root, with the API deployed):
-#   source ./env.sh && ./code/scripts/load-test.sh 10 [ubuntu-base|ubuntu-dev]
+#   source ./env.sh && ./code/scripts/load-test.sh 10 [ubuntu-base|ubuntu-dev|ubuntu-docker]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

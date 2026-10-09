@@ -23,9 +23,9 @@ undoes it).
 | `code/scripts/test-docker.sh` | Docker in an `ubuntu-docker` sandbox: build, run, `-p`, compose with ports, `docker exec`; isolation of nested containers; forged packets stay on the node (23 checks) |
 | `code/scripts/test-network-policy.sh` | sandbox network isolation (15 checks on minikube; 18 on AKS, with the load balancer and proxy checks) |
 | `code/scripts/load-test.sh N [image]` | N sandboxes at once, startup percentiles |
-| `code/scripts/test-prepull.sh`, `measure-prepull.sh` | image pre-pull proof and timing |
+| `code/scripts/test-prepull.sh`, `measure-prepull.sh` | image pre-pull proof and timing (minikube only) |
 
-Every script that creates sandboxes takes `SANDBOX_RUNTIME=kata` to run them
+Every test script that creates sandboxes takes `SANDBOX_RUNTIME=kata` to run them
 under Kata (on a cluster with Kata, i.e. AKS); `load-test.sh` too.
 
 ## API details
@@ -64,7 +64,7 @@ under Kata (on a cluster with Kata, i.e. AKS); `load-test.sh` too.
 - **Status**:
   - Live: `pending` → `running` (→ `deleting`).
   - Ended: `deleted`, `failed` (couldn't start) or `lost` (the pod disappeared).
-  - `status_reason` says why. Ended sandboxes stay listed for history.
+  - `status_reason` says why. Ended sandboxes stay listed for history (`include_ended` returns the newest 1,000).
 - **Status codes**:
   - 400: invalid input.
   - 401: missing, unknown or revoked API key.
@@ -72,7 +72,7 @@ under Kata (on a cluster with Kata, i.e. AKS); `load-test.sh` too.
   - 404: not yours, no such sandbox, or no such file.
   - 409: not running yet or anymore.
   - 413: upload over 100 MiB.
-  - 429: quota reached.
+  - 429: quota reached, or 64 port-URL requests to one sandbox already in flight.
   - 502: the sandbox didn't answer.
   - 503: the cluster is busy.
 - **Admins** can do all of this to anyone's sandbox, and see every user and
@@ -123,7 +123,7 @@ pre-pulled; 3 runs of each), D70. The 10-at-once table is in
 
 | Other | |
 |---|---|
-| One sandbox alone: gVisor / Kata, `ubuntu-docker` | ~3 s / ~4 s |
+| One `ubuntu-docker` sandbox alone: gVisor / Kata | ~3 s / ~4 s |
 | The create request itself (the 10-at-once runs) | p50 0.3–0.5 s |
 | Host memory per idle `ubuntu-base` sandbox (RSS of its processes on the node): gVisor / Kata | ~90 MiB / ~250 MiB |
 | `./cloud-up.sh` from nothing (2 nodes, gVisor and Kata, amd64 images cached) | 884–975 s |
