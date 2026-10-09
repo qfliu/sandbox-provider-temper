@@ -6,7 +6,8 @@ Isolated Linux sandboxes for AI agents, on Kubernetes. An agent with an API
 key creates a sandbox, runs commands in it, moves files in and out, opens
 URLs to apps it starts there, and can SSH in. Each sandbox is an Ubuntu pod
 under **gVisor** (a user-space kernel, the default) or, per sandbox,
-**Kata Containers** (a lightweight VM with its own kernel). It runs on a
+**Kata Containers** (a lightweight VM with its own kernel, on x86 nodes with
+nested virtualization). It runs on a
 Mac (minikube) and on Azure AKS, where every test suite passes under both
 runtimes.
 
@@ -15,11 +16,11 @@ runtimes.
 | Ask | Answer | Details |
 |---|---|---|
 | Sandboxes for agents on Kubernetes, strongly isolated | gVisor or Kata per sandbox; an admission policy Kubernetes enforces even against our own API; network policies that allow DNS and the public internet only | [README](README.md#architecture), [WRITEUP](WRITEUP.md#main-trade-offs) |
-| Docker inside sandboxes: build, run, compose with ports, a recent version; "check gVisor first" | `ubuntu-docker` image, Docker Engine 29 with Compose and Buildx; works under gVisor (with changes) and under Kata | [WRITEUP](WRITEUP.md#main-trade-offs), DESIGN D61–D64 |
+| Docker inside sandboxes: build, run, compose with ports, a recent version; "check gVisor first" | `ubuntu-docker` image, Docker Engine 29 with Compose and Buildx; works under gVisor (with changes) and under Kata | [WRITEUP](WRITEUP.md#main-trade-offs), [DESIGN D61–D64](DESIGN.md) |
 | Kata or Firecracker: "your call, just explain the tradeoffs" | Kata built beside gVisor, chosen per sandbox; Firecracker argued, not built | [WRITEUP](WRITEUP.md#main-trade-offs) |
 | Optional features: build what matters, say why | port URLs built; streaming output, secrets, custom images ranked as next | [WRITEUP](WRITEUP.md#optional-features-what-agents-need-most-d66) |
 | A dashboard to interact (baseline UI) | create, run a command, SSH command to copy, delete; API keys; admin view | [README](README.md#architecture) |
-| About 10 at once with p50/p95; argue the rest from the design | measured on AKS under both runtimes; scaling to thousands argued part by part | below, [WRITEUP](WRITEUP.md#scaling-to-thousands-d67) |
+| About 10 at once with p50/p95; argue the rest from the design | measured on AKS under both runtimes; scaling to thousands argued part by part | [below](#headline-numbers), [WRITEUP](WRITEUP.md#scaling-to-thousands-d67) |
 | Runs on a cloud's Kubernetes; macOS is fine for local | `./cloud-up.sh` builds it all on Azure AKS in ~15 minutes; `./up.sh` on a Mac | [README](README.md#quickstart-macos) |
 
 ## Headline numbers

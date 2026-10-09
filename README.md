@@ -22,7 +22,7 @@ command line tools). Clone to a short path (40 characters at most, e.g.
 installed system-wide: tools, caches and the VM live in `./.devenv`.
 
 ```bash
-./up.sh      # tools, a minikube VM with gVisor, images, the platform, an admin key (~6 min first time)
+./up.sh      # tools, a minikube VM with gVisor, images, the platform, an admin key (~6 min first time before `ubuntu-docker`; allow a few more)
 ./demo.sh    # a narrated walkthrough: create, exec, files, SSH, isolation, delete
 ./down.sh    # stop the VM (./up.sh resumes); --delete removes it, --purge also ./.devenv
 ```

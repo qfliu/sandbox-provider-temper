@@ -117,22 +117,14 @@ bandwidth-bound, which is why the images are pre-pulled on every node
 
 ### Azure AKS, both runtimes
 
-On **Azure AKS with both runtimes** (2 × `Standard_D4s_v6`, x86, 4 vCPU /
-16 GiB, gVisor and Kata; images pre-pulled; 3 runs of each), D70. Time from
-the create request to `running`, 10 sandboxes created at once, all 10
-running every time:
-
-| 10 at once | p50 | p95 |
-|---|---|---|
-| gVisor, `ubuntu-base` | 3.0–3.3 s | 3.7–4.3 s |
-| gVisor, `ubuntu-docker` (Docker answering) | 3.6–4.0 s | 4.0–5.9 s |
-| Kata, `ubuntu-base` | 5.5–5.7 s | 6.1–6.8 s |
-| Kata, `ubuntu-docker` (Docker answering) | 16.6 s (each run) | 17.7–19.6 s |
+2 × `Standard_D4s_v6` (x86, 4 vCPU / 16 GiB, gVisor and Kata; images
+pre-pulled; 3 runs of each), D70. The 10-at-once table is in
+[README § Measured](../README.md#measured); the rest:
 
 | Other | |
 |---|---|
 | One sandbox alone: gVisor / Kata, `ubuntu-docker` | ~3 s / ~4 s |
-| The create request itself (all of the above) | p50 0.3–0.5 s |
+| The create request itself (the 10-at-once runs) | p50 0.3–0.5 s |
 | Host memory per idle `ubuntu-base` sandbox (RSS of its processes on the node): gVisor / Kata | ~90 MiB / ~250 MiB |
 | `./cloud-up.sh` from nothing (2 nodes, gVisor and Kata, amd64 images cached) | 884–975 s |
 
@@ -164,7 +156,7 @@ request 1.26 and the platform 0.42, leaving 0.97 and 1.13 on the two nodes,
 room for 3 + 4 sandboxes at 250m each; the other 3 stay `pending` until
 room frees up. More or larger nodes (or the cluster autoscaler) raise that.
 
-### What got startup there
+### What brought startup down
 
 - the readiness probe runs every second;
 - each sandbox requests 1 GiB of ephemeral storage, not the full 5 GiB
@@ -291,7 +283,10 @@ changes; `test-network-policy.sh` checks it). A public API endpoint that
 isn't behind that Service (possibly EKS) goes in
 `networkPolicies.extraBlockedRanges`. Passwords and keys are generated on first install
 and kept across upgrades. Install only with `helm upgrade --install`, not
-`helm template`. For a public HTTPS address, either use your own Ingress
+`helm template` (generated secrets rely on `lookup`, D52). The gateway's
+per-client handshake limit needs the real client IP (`externalTrafficPolicy:
+Local`); behind a load balancer that hides it, use the PROXY protocol or a
+network load balancer that preserves it. For a public HTTPS address, either use your own Ingress
 and TLS, or turn on the chart's Caddy front: `publicApi.enabled=true`,
 `publicApi.host=<a DNS name pointing at its load balancer>`, and optionally
 `publicApi.allowedSourceRanges`.

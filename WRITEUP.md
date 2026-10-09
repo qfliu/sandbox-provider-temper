@@ -14,8 +14,9 @@ add. IDs in parentheses (D4, …) point into the decision log,
 - **Durable** means the platform: users, keys and sandbox records survive
   restarts and statuses stay accurate. A sandbox's files don't survive the
   loss of its pod (D8).
-- **Startup matters**: about a second for one sandbox on a warm node, and no
-  image download on the critical path.
+- **Startup matters**: the target is about a second for one sandbox on a
+  warm node (met on a laptop; ~3 s with gVisor and ~4 s with Kata on AKS),
+  with no image download on the critical path.
 
 ## Compared with hosted providers
 
@@ -54,7 +55,8 @@ changes in D61–D62), then added Kata beside it.
 - **Why both:** gVisor is fast, free per sandbox and runs everywhere, so
   it's the default. Kata is the stronger boundary and runs nearly anything
   Linux runs, for about 1 s more to start alone (2–2.5 s more at 10 at
-  once) and ~160 MiB more memory. The caller picks per sandbox.
+  once, much more for Docker sandboxes started in bulk on small nodes) and
+  ~160 MiB more memory. The caller picks per sandbox.
 - **Why not Firecracker:** its strengths (density, pause/resume) aren't v1
   requirements, and using it directly means replacing Kubernetes pods with
   our own VM orchestration. Kata can switch to it later by configuration.
@@ -128,16 +130,23 @@ per replica; a queue fixes it), then the reconcile's full LIST every 30 s
 API and gateway run 2 replicas each and drain on shutdown; Postgres is one
 replica on a volume (managed HA Postgres is the production step). Expired
 or idle sandboxes are reaped every 30 s, with a pod deadline as backstop.
-Startup got to 1.1 s on a laptop through a 1 s readiness probe, a smaller
+Startup was brought down by a 1 s readiness probe, a smaller
 ephemeral-storage request, pre-pulled images (without them a fresh AKS
-node waits 7.6–9.3 s for `ubuntu-dev`), the rate-limit fix and, under Kata,
-Docker's nftables backend (27 → 16.6 s at 10 at once, D70).
+node waits 7.6–9.3 s for `ubuntu-dev`), the rate-limit fix (for bursts)
+and, under Kata, Docker's nftables backend (27 → 16.6 s at 10 at once,
+D70). One sandbox reaches `running` in 1.1 s on a laptop. Past the
+cluster's capacity, creates stay `pending` with no reason shown yet (D48).
 
 ## Known limits
 
 - No persistent disks or pause/resume: the workspace is lost with the pod.
-- One SSH key per sandbox; SSH certificates would add expiry and revocation.
+- One SSH key per sandbox; SSH certificates would add expiry and revocation,
+  and admin SSH (admins reach others' sandboxes through the API only, D39).
 - The dashboard cookie holds the API key itself (HttpOnly, 12 h; D40).
+- The API is plain HTTP inside the cluster; on AKS one Caddy replica adds
+  HTTPS, so its restart is a brief outage (D57).
+- Install with `helm upgrade --install` only: generated secrets rely on
+  `lookup`, which GitOps rendering doesn't run (D52).
 - Three fixed images; Docker's storage is a 2 GB tmpfs, so very large builds
   run out.
 - Port URLs need the key in a header, so browsers can't open them directly.
